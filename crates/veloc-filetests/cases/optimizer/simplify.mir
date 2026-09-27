@@ -1,15 +1,14 @@
 // ----- algebra
 // run: simplify
 // check: block0($(arg=v\d+): i32):
-// check: : i32 = iconst -1
-// check: $(ones=v\d+): i32 = iconst -1
-// check: $(zero=v\d+): i32 = iconst 0
+// check: $(zero=v\d+): i32 = const 0
+// check: $(ones=v\d+): i32 = const -1
 // check: $(sum=v\d+): i32 = iadd $arg, $arg
 // check: return $arg, $arg, $arg, $ones, $zero, $sum
 local function algebra(i32) -> (i32, i32, i32, i32, i32, i32)
 block0(v0: i32):
-  v1: i32 = iconst 0
-  v2: i32 = iconst -1
+  v1: i32 = const 0
+  v2: i32 = const -1
   v3: i32 = iadd v0, v1
   v4: i32 = iadd v1, v3
   v5: i32 = iand v4, v4
@@ -20,30 +19,29 @@ block0(v0: i32):
 
 // ----- nonconstant-operands
 // run: simplify
-// check: $(one=v\d+): i32 = iconst 1
-// check: $(left=v\d+): i32 = iadd v0, $one
-// check: $(right=v\d+): i32 = iadd $one, v0
-// check: return $left, $right
+// check: $(one=v\d+): i32 = const 1
+// check: $(sum=v\d+): i32 = iadd
+// check: return $sum, $sum
 local function partial(i32) -> (i32, i32)
 block0(v0: i32):
-  v1: i32 = iconst 1
+  v1: i32 = const 1
   v2: i32 = iadd v0, v1
   v3: i32 = iadd v1, v0
   return v2, v3
 
 // ----- division-and-traps
 // run: simplify
+// check: $(remainder=v\d+): i32 = const 0
+// check: $(quotient=v\d+): i32 = const -1073741824
 // check: $(overflow=v\d+): i32 = idiv-s
 // check: $(zero_divisor=v\d+): i32 = idiv-u
-// check: $(quotient=v\d+): i32 = iconst -1073741824
-// check: $(remainder=v\d+): i32 = iconst 0
 // check: return $overflow, $zero_divisor, $quotient, $remainder
 local function division() -> (i32, i32, i32, i32)
 block0():
-  v0: i32 = iconst -2147483648
-  v1: i32 = iconst 0
-  v2: i32 = iconst -1
-  v3: i32 = iconst 2
+  v0: i32 = const -2147483648
+  v1: i32 = const 0
+  v2: i32 = const -1
+  v3: i32 = const 2
   v4: i32 = idiv-s v0, v2
   v5: i32 = idiv-u v3, v1
   v6: i32 = idiv-s v0, v3
@@ -52,19 +50,15 @@ block0():
 
 // ----- wrapping-chain
 // run: simplify
-// check: $(sum=v\d+): i32 = iconst -2147483648
-// check: $(flipped=v\d+): i32 = iconst 2147483647
-// check: $(negated=v\d+): i32 = iconst -2147483647
-// check: $(difference=v\d+): i32 = iconst -2147483648
-// check: $(product=v\d+): i32 = iconst -2147483648
-// check: $(masked=v\d+): i32 = iconst -2147483648
-// check: $(merged=v\d+): i32 = iconst -2147483647
-// check: return $sum, $flipped, $negated, $difference, $product, $masked, $merged
+// check: $(flipped=v\d+): i32 = const 2147483647
+// check: $(sum=v\d+): i32 = const -2147483648
+// check: $(negated=v\d+): i32 = const -2147483647
+// check: return $sum, $flipped, $negated, $sum, $sum, $sum, $negated
 local function wrapping() -> (i32, i32, i32, i32, i32, i32, i32)
 block0():
-  v0: i32 = iconst 2147483647
-  v1: i32 = iconst 1
-  v2: i32 = iconst -1
+  v0: i32 = const 2147483647
+  v1: i32 = const 1
+  v2: i32 = const -1
   v3: i32 = iadd v0, v1
   v4: i32 = ixor v3, v2
   v5: i32 = ineg v4
@@ -76,15 +70,14 @@ block0():
 
 // ----- multiple-results
 // run: simplify
-// check: $(overflow=v\d+): bool = bconst true
-// check: $(wide=v\d+): i64 = iconst -128
-// check: $(negative=v\d+): bool = bconst true
-// check: $(narrow=v\d+): i8 = iconst -128
-// check: return $wide, $overflow, $negative, $narrow
+// check: $(wide=v\d+): i64 = const -128
+// check: $(overflow=v\d+): bool = const true
+// check: $(narrow=v\d+): i8 = const -128
+// check: return $wide, $overflow, $overflow, $narrow
 local function typed() -> (i64, bool, bool, i8)
 block0():
-  v0: i8 = iconst 127
-  v1: i8 = iconst 1
+  v0: i8 = const 127
+  v1: i8 = const 1
   (v2: i8, v3: bool) = iadd-with-overflow v0, v1
   v4: i64 = extends v2
   v5: bool = icmp lts v2, v1

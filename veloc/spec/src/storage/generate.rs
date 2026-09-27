@@ -21,6 +21,9 @@ pub(super) fn stored_type(field: &Field, records: &[RecordDef]) -> Option<String
 }
 
 fn view_type(field: &Field) -> String {
+    if field.policy.borrowed {
+        return format!("&'a {}", field.rust);
+    }
     if let FieldType::Values(n) = field.ty {
         return format!("&'a [Value; {n}]");
     }
@@ -48,6 +51,7 @@ pub(super) fn read_field(field: &Field, records: &[RecordDef], value: &str) -> S
         Some(Access::Values) => format!("reader.take(*{value} as usize)"),
         Some(Access::Edge) => format!("reader.edge(*{value})"),
         Some(Access::Edges) => format!("reader.edges({value})"),
+        _ if field.policy.borrowed => value.into(),
         _ => format!("*{value}"),
     }
 }
@@ -80,10 +84,11 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
             .map(|layout| crate::generate::views::Variant {
                 name: layout.name.clone(),
                 borrowed: layout.fields.iter().any(|field| {
-                    matches!(
-                        field.access(),
-                        Some(Access::Array | Access::Values | Access::Edge | Access::Edges)
-                    )
+                    field.policy.borrowed
+                        || matches!(
+                            field.access(),
+                            Some(Access::Array | Access::Values | Access::Edge | Access::Edges)
+                        )
                 }),
                 fields: layout
                     .fields

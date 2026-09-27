@@ -31,6 +31,10 @@ impl<'a> Expressions<'a> {
         self.body
     }
 
+    pub fn constant(&mut self, value: crate::Constant) -> Value {
+        self.body.edit().constant(value)
+    }
+
     /// Construct a floating expression with the same writers as scheduled MIR.
     /// Speculation safety is a required structural property of candidates;
     /// instruction type/semantic contracts are checked by explicit validation.
@@ -72,13 +76,8 @@ impl FrozenExpressions<'_> {
         self.expressions.body
     }
 
-    /// Materialize a proven constant directly at an executable use.
-    pub fn constant(&mut self, before: Inst, value: crate::ScalarConst) -> Value {
-        let body = &mut self.expressions.body;
-        let inst = body
-            .edit()
-            .insert_before(before, |w| w.scalar_const(value), &[value.ty()]);
-        body.dfg.first_result(inst).expect("constant result")
+    pub fn constant(&mut self, value: crate::ScalarConst) -> Value {
+        self.expressions.constant(value.into())
     }
 
     pub fn place(&mut self, before: Inst, source: Inst, args: &[Value]) -> Inst {
@@ -129,9 +128,18 @@ impl Drop for Expressions<'_> {
             let mut instructions: Vec<_> = core::mem::take(&mut dfg.instructions).into();
             instructions.truncate(self.first_inst);
             dfg.instructions = instructions.into();
-            let mut values: Vec<_> = core::mem::take(&mut dfg.values).into();
-            values.truncate(self.first_value);
-            dfg.values = values.into();
+            // Interned literals may have escaped through rewritten operands,
+            // even if extraction emitted no instructions. Preserve their IDs.
+            if !dfg
+                .values
+                .iter()
+                .skip(self.first_value)
+                .any(|(_, data)| matches!(data.def, crate::ValueDef::Const(_)))
+            {
+                let mut values: Vec<_> = core::mem::take(&mut dfg.values).into();
+                values.truncate(self.first_value);
+                dfg.values = values.into();
+            }
         }
     }
 }

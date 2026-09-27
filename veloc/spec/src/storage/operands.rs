@@ -306,7 +306,6 @@ impl Projection {
     ) -> std::collections::BTreeMap<String, String> {
         crate::model::access::projections(
             op,
-            "self",
             |name| {
                 self.members
                     .iter()

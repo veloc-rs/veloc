@@ -13,15 +13,13 @@ use veloc_mir::{Block, FuncBody, Inst, Value, ValueDef};
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Input {
     Existing(Value),
+    Constant(ScalarConst),
     Result { step: usize, index: usize },
 }
 
-enum Recipe {
-    Constant(ScalarConst),
-    Operation {
-        source: Inst,
-        args: SmallVec<[Input; 3]>,
-    },
+struct Recipe {
+    source: Inst,
+    args: SmallVec<[Input; 3]>,
 }
 
 struct Step {
@@ -56,20 +54,18 @@ impl Extraction {
                 results.push(SmallVec::new());
                 continue;
             }
-            let values = match step.recipe {
-                Recipe::Constant(value) => smallvec::smallvec![ir.constant(step.before, value)],
-                Recipe::Operation { source, args } => {
-                    let args: SmallVec<[Value; 3]> =
-                        args.iter().map(|arg| arg.value(&results)).collect();
-                    let inst = ir.place(step.before, source, &args);
-                    ir.body().dfg().inst_results(inst).into()
-                }
-            };
-            results.push(values);
+            let args: SmallVec<[Value; 3]> = step
+                .recipe
+                .args
+                .iter()
+                .map(|arg| arg.value(&results, ir))
+                .collect();
+            let inst = ir.place(step.before, step.recipe.source, &args);
+            results.push(ir.body().dfg().inst_results(inst).into());
         }
         let mut changed = 0;
         for rewrite in self.rewrites {
-            let value = rewrite.input.value(&results);
+            let value = rewrite.input.value(&results, ir);
             if ir.body().dfg().operands(rewrite.inst)[rewrite.operand as usize] != value {
                 ir.replace_input(rewrite.inst, rewrite.operand, value);
                 changed += 1;
@@ -80,9 +76,10 @@ impl Extraction {
 }
 
 impl Input {
-    fn value(self, results: &[SmallVec<[Value; 2]>]) -> Value {
+    fn value(self, results: &[SmallVec<[Value; 2]>], ir: &mut FrozenExpressions<'_>) -> Value {
         match self {
             Self::Existing(value) => value,
+            Self::Constant(value) => ir.constant(value),
             Self::Result { step, index } => results[step][index],
         }
     }
@@ -117,9 +114,7 @@ impl Plan {
 
     fn restore(&mut self, mark: Mark) {
         for recipe in self.steps.drain(mark.steps..) {
-            if let Recipe::Operation { source, .. } = recipe {
-                self.operations.remove(&source);
-            }
+            self.operations.remove(&recipe.source);
         }
         for class in self.bound.drain(mark.bound..) {
             self.inputs[class] = None;
@@ -138,21 +133,55 @@ impl Plan {
 /// frame tries alternatives until all dependencies can be placed at this use.
 struct Frame {
     class: Value,
-    next: usize,
-    preferred: Option<Value>,
-    selected: Option<Value>,
-    arg: usize,
+    candidates: Candidates,
+    state: State,
     mark: Mark,
+}
+
+#[derive(Clone, Copy)]
+enum State {
+    Start,
+    Choose,
+    Inputs { value: Value, next: usize },
+}
+
+enum Resolve {
+    Ready,
+    Unavailable,
+    Exhausted,
+}
+
+/// Try the preferred value once, then the ranked alternatives without repeats.
+#[derive(Default)]
+struct Candidates {
+    preferred: Option<Value>,
+    next: usize,
+}
+
+impl Candidates {
+    fn next(&mut self, ranked: &[Candidate]) -> Option<Value> {
+        if self.next == 0 {
+            self.next = 1;
+            if let Some(value) = self.preferred {
+                return Some(value);
+            }
+        }
+        while let Some(candidate) = ranked.get(self.next - 1) {
+            self.next += 1;
+            if Some(candidate.value) != self.preferred {
+                return Some(candidate.value);
+            }
+        }
+        None
+    }
 }
 
 impl Frame {
     fn new(class: Value, mark: Mark) -> Self {
         Self {
             class,
-            next: 0,
-            preferred: None,
-            selected: None,
-            arg: 0,
+            candidates: Candidates::default(),
+            state: State::Start,
             mark,
         }
     }
@@ -342,9 +371,7 @@ impl Graph {
                 });
             }
         }
-        let Some(original_cost) = planner.cost(&mut original, model) else {
-            return Extraction::default();
-        };
+        let original_cost = planner.cost(&mut original, model);
         let mut choices = Choices::new();
         let Some(mut best) = planner.select(&visits, &choices, model) else {
             return Extraction::default();
@@ -463,12 +490,13 @@ impl Planner<'_> {
             for (operand, &root) in self.body.dfg().operands(anchor).iter().enumerate() {
                 let class = self.graph.find(root);
                 let mark = plan.mark();
-                if !self.resolve(anchor, base, class, choices, &mut plan, &mut stack) {
-                    if *self.work == 0 {
-                        return None;
+                match self.resolve(anchor, base, class, choices, &mut plan, &mut stack) {
+                    Resolve::Ready => {}
+                    Resolve::Exhausted => return None,
+                    Resolve::Unavailable => {
+                        plan.restore(mark);
+                        plan.bind(class, Input::Existing(root));
                     }
-                    plan.restore(mark);
-                    plan.bind(class, Input::Existing(root));
                 }
                 extraction.rewrites.push(Rewrite {
                     inst: anchor,
@@ -487,19 +515,22 @@ impl Planner<'_> {
             }
             // A multi-result instruction is one computation, not one per class.
             for (step, recipe) in plan.steps.iter().enumerate() {
-                if let Recipe::Operation { source, .. } = recipe {
-                    for (index, &value) in self.body.dfg().inst_results(*source).iter().enumerate()
-                    {
-                        let class = self.graph.find(value);
-                        if self.available.inputs[class].is_none() {
-                            self.available.bind(
-                                class,
-                                Input::Result {
-                                    step: base + step,
-                                    index,
-                                },
-                            );
-                        }
+                for (index, &value) in self
+                    .body
+                    .dfg()
+                    .inst_results(recipe.source)
+                    .iter()
+                    .enumerate()
+                {
+                    let class = self.graph.find(value);
+                    if self.available.inputs[class].is_none() {
+                        self.available.bind(
+                            class,
+                            Input::Result {
+                                step: base + step,
+                                index,
+                            },
+                        );
                     }
                 }
             }
@@ -512,7 +543,7 @@ impl Planner<'_> {
                 }));
             plan.operations.clear();
         }
-        let cost = self.cost(&mut extraction, model)?;
+        let cost = self.cost(&mut extraction, model);
         Some(Selection {
             extraction,
             choices: selected,
@@ -524,26 +555,29 @@ impl Planner<'_> {
     /// by any root. Counting only new recipes would incorrectly make a reused
     /// instruction free, or miss an old computation still needed by another use.
     /// Reference counts belong to occurrences, never to equivalence classes.
-    fn cost(&mut self, extraction: &mut Extraction, model: &dyn CostModel) -> Option<usize> {
+    /// Finish this finite traversal even if it exhausts the search budget: a
+    /// complete selection must not be discarded halfway through pricing it.
+    /// Subsequent searches observe the exhausted budget and do not proceed.
+    fn cost(&mut self, extraction: &mut Extraction, model: &dyn CostModel) -> usize {
         let mut seen = HashSet::new();
         let mut pending: Vec<_> = extraction.rewrites.iter().map(|r| r.input).collect();
         let mut cost = 0usize;
         while let Some(input) = pending.pop() {
-            if *self.work == 0 {
-                return None;
-            }
-            *self.work -= 1;
+            *self.work = self.work.saturating_sub(1);
             let price = match input {
+                Input::Constant(c) => model.constant(c).max(1),
                 Input::Existing(value) => {
+                    if let Some(c) = self.body.dfg().as_scalar_const(value) {
+                        cost = cost.saturating_add(model.constant(c).max(1));
+                        continue;
+                    }
                     let ValueDef::Inst(inst) = self.body.dfg().value_def(value) else {
                         continue;
                     };
                     if !seen.insert(inst) {
                         continue;
                     }
-                    if let Some(c) = self.body.dfg().as_scalar_const(value) {
-                        model.constant(c).max(1)
-                    } else if self.graph.floating[inst] {
+                    if self.graph.floating[inst] {
                         pending.extend(
                             self.body
                                 .dfg()
@@ -569,24 +603,21 @@ impl Planner<'_> {
                     if step.refs != 1 {
                         continue;
                     }
-                    match &step.recipe {
-                        Recipe::Constant(c) => model.constant(*c).max(1),
-                        Recipe::Operation { source, args } => {
-                            pending.extend(args.iter().copied());
-                            let value = self.body.dfg().inst_results(*source)[0];
-                            model
-                                .operation(
-                                    self.body.dfg().opcode(*source),
-                                    self.body.dfg().value_type(value),
-                                )
-                                .max(1)
-                        }
-                    }
+                    let Recipe { source, args } = &step.recipe;
+
+                    pending.extend(args.iter().copied());
+                    let value = self.body.dfg().inst_results(*source)[0];
+                    model
+                        .operation(
+                            self.body.dfg().opcode(*source),
+                            self.body.dfg().value_type(value),
+                        )
+                        .max(1)
                 }
             };
             cost = cost.saturating_add(price);
         }
-        Some(cost)
+        cost
     }
 
     fn alternatives(&mut self, selection: &Selection) -> Vec<Choice> {
@@ -639,6 +670,7 @@ impl Planner<'_> {
 
     fn dominates(&mut self, value: Value, anchor: Inst) -> bool {
         match self.body.dfg().value_def(value) {
+            ValueDef::Const(_) => true,
             ValueDef::Param(block) => {
                 let use_block = self
                     .body
@@ -690,9 +722,9 @@ impl Planner<'_> {
         choices: &Choices,
         plan: &mut Plan,
         stack: &mut Vec<Frame>,
-    ) -> bool {
+    ) -> Resolve {
         if plan.inputs[root].is_some() {
-            return true;
+            return Resolve::Ready;
         }
         debug_assert!(stack.is_empty());
         stack.push(Frame::new(root, plan.mark()));
@@ -702,12 +734,12 @@ impl Planner<'_> {
                 for frame in stack.drain(..) {
                     self.active[frame.class] = false;
                 }
-                return false;
+                return Resolve::Exhausted;
             }
             *self.work -= 1;
             let class = frame.class;
-            if frame.selected.is_none() {
-                if frame.next == 0 {
+            match frame.state {
+                State::Start => {
                     if let Some(input) = self.available.inputs[class] {
                         plan.bind(class, input);
                         self.active[class] = false;
@@ -715,121 +747,105 @@ impl Planner<'_> {
                         continue;
                     }
                     if let Some(c) = self.graph.constant(class) {
-                        let existing = (0..self.candidates[class].len()).find_map(|index| {
-                            let value = self.candidates[class][index].value;
-                            (self.body.dfg().as_scalar_const(value).is_some()
-                                && self.dominates(value, anchor))
-                            .then_some(value)
-                        });
-                        let input = if let Some(value) = existing {
-                            Input::Existing(value)
-                        } else {
-                            let step = base + plan.steps.len();
-                            plan.steps.push(Recipe::Constant(c));
-                            Input::Result { step, index: 0 }
-                        };
-                        plan.bind(class, input);
+                        plan.bind(class, Input::Constant(c));
                         self.active[class] = false;
                         stack.pop();
                         continue;
                     }
-                    frame.preferred = choices
+
+                    frame.candidates.preferred = choices
                         .get(&(anchor, class))
                         .copied()
                         .or_else(|| self.preferred(class, anchor));
+                    frame.state = State::Choose;
                 }
-                // An explicit preference comes first, followed by cost-ranked
-                // alternatives. Unavailable leaves and cycles reject only this
-                // candidate, not the entire extraction.
-                let preferred = frame.preferred;
-                let value = if frame.next == 0 && preferred.is_some() {
-                    preferred
-                } else {
-                    self.candidates[class]
-                        .get(frame.next - usize::from(preferred.is_some()))
-                        .map(|candidate| candidate.value)
-                };
-                frame.next += 1;
-                let Some(value) = value else {
-                    plan.restore(frame.mark);
-                    self.active[class] = false;
-                    stack.pop();
-                    let Some(parent) = stack.last_mut() else {
-                        return false;
-                    };
-                    plan.restore(parent.mark);
-                    parent.selected = None;
-                    parent.arg = 0;
-                    continue;
-                };
-                if frame.next > 1 && preferred == Some(value) {
-                    continue;
-                }
-                if self.graph.floating_inst(self.body, value).is_none() {
-                    if self.dominates(value, anchor) {
-                        plan.bind(class, Input::Existing(value));
+                State::Choose => {
+                    let Some(value) = frame.candidates.next(&self.candidates[class]) else {
+                        // This dependency has no viable representative. Reject
+                        // the parent's candidate, restoring its checkpoint.
+                        plan.restore(frame.mark);
                         self.active[class] = false;
                         stack.pop();
+                        let Some(parent) = stack.last_mut() else {
+                            return Resolve::Unavailable;
+                        };
+                        plan.restore(parent.mark);
+                        parent.state = State::Choose;
+                        continue;
+                    };
+                    if self.graph.floating_inst(self.body, value).is_none() {
+                        if self.dominates(value, anchor) {
+                            plan.bind(class, Input::Existing(value));
+                            self.active[class] = false;
+                            stack.pop();
+                        }
+                        continue;
                     }
-                    continue;
+                    frame.state = State::Inputs { value, next: 0 };
                 }
-                frame.selected = Some(value);
-            }
-            let value = frame.selected.expect("selected floating expression");
-            let args = self.graph.args(self.body, value);
-            if let Some(&arg) = args.get(frame.arg) {
-                let arg = self.graph.find(arg);
-                if plan.inputs[arg].is_some() {
-                    frame.arg += 1;
-                } else if self.active[arg] {
-                    plan.restore(frame.mark);
-                    frame.selected = None;
-                    frame.arg = 0;
-                } else {
-                    stack.push(Frame::new(arg, plan.mark()));
-                    self.active[arg] = true;
+                State::Inputs { value, next } => {
+                    let args = self.graph.args(self.body, value);
+                    if let Some(&arg) = args.get(next) {
+                        let arg = self.graph.find(arg);
+                        if plan.inputs[arg].is_some() {
+                            frame.state = State::Inputs {
+                                value,
+                                next: next + 1,
+                            };
+                        } else if self.active[arg] {
+                            // A cyclic candidate cannot produce a finite plan.
+                            // Keep the candidate cursor and try the next one.
+                            plan.restore(frame.mark);
+                            frame.state = State::Choose;
+                        } else {
+                            stack.push(Frame::new(arg, plan.mark()));
+                            self.active[arg] = true;
+                        }
+                        continue;
+                    }
+                    let source = self
+                        .graph
+                        .floating_inst(self.body, value)
+                        .expect("floating expression");
+                    let args: SmallVec<[Input; 3]> = args
+                        .iter()
+                        .map(|&arg| plan.inputs[self.graph.find(arg)].expect("planned operand"))
+                        .collect();
+                    let results = self.body.dfg().inst_results(source);
+                    let index = results
+                        .iter()
+                        .position(|&v| v == value)
+                        .expect("result membership");
+                    let reuse = self.dominates(value, anchor)
+                        && self.body.dfg().operands(source).iter().zip(&args).all(
+                            |(&old, &new)| match new {
+                                Input::Existing(value) => value == old,
+                                Input::Constant(c) => {
+                                    self.body.dfg().as_scalar_const(old) == Some(c)
+                                }
+                                Input::Result { .. } => false,
+                            },
+                        );
+                    let input = if reuse {
+                        Input::Existing(value)
+                    } else {
+                        let step = if let Some(&step) = plan.operations.get(&source) {
+                            step
+                        } else {
+                            let step = base + plan.steps.len();
+                            plan.steps.push(Recipe { source, args });
+                            plan.operations.insert(source, step);
+                            step
+                        };
+                        Input::Result { step, index }
+                    };
+                    plan.bind(class, input);
+                    plan.selected.push((class, value));
+                    self.active[class] = false;
+                    stack.pop();
                 }
-                continue;
             }
-            let source = self
-                .graph
-                .floating_inst(self.body, value)
-                .expect("floating expression");
-            let args: SmallVec<[Input; 3]> = args
-                .iter()
-                .map(|&arg| plan.inputs[self.graph.find(arg)].expect("planned operand"))
-                .collect();
-            let results = self.body.dfg().inst_results(source);
-            let index = results
-                .iter()
-                .position(|&v| v == value)
-                .expect("result membership");
-            let reuse = self.dominates(value, anchor)
-                && self
-                    .body
-                    .dfg()
-                    .operands(source)
-                    .iter()
-                    .zip(&args)
-                    .all(|(&old, &new)| new == Input::Existing(old));
-            let input = if reuse {
-                Input::Existing(value)
-            } else {
-                let step = if let Some(&step) = plan.operations.get(&source) {
-                    step
-                } else {
-                    let step = base + plan.steps.len();
-                    plan.steps.push(Recipe::Operation { source, args });
-                    plan.operations.insert(source, step);
-                    step
-                };
-                Input::Result { step, index }
-            };
-            plan.bind(class, input);
-            plan.selected.push((class, value));
-            self.active[class] = false;
-            stack.pop();
         }
-        true
+        Resolve::Ready
     }
 }

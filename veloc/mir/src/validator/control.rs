@@ -2,9 +2,10 @@
 //! Check handles before any type projection dereferences them.
 
 use super::ValidationError;
-use veloc_collections::graph::DominatorTree;
+use crate::TypeInfo;
 use crate::{Block, FunctionRef, Module, Result, Value, ValueDef};
 use alloc::vec::Vec;
+use veloc_collections::graph::DominatorTree;
 
 // Positions are assigned only to instructions attached to a block.
 const UNSEEN: usize = usize::MAX;
@@ -73,6 +74,7 @@ impl Structure {
                 for &value in body.dfg().operands(inst) {
                     let definition = body.dfg().value_def(value);
                     let (owner, source) = match definition {
+                        ValueDef::Const(_) => continue,
                         ValueDef::Param(owner) => (owner, None),
                         ValueDef::Inst(source) => {
                             (body.layout().inst_block(source).unwrap(), Some(source))
@@ -140,6 +142,34 @@ impl Checker<'_> {
         let func = self.func;
         let body = func.body.expect("defined function");
         let dfg = &body.dfg();
+        for (value, data) in dfg.values() {
+            if let ValueDef::Const(_) = data.def {
+                self.define(value, data.def)?;
+                let constant = dfg.as_const(value).expect("literal definition");
+                if constant.ty() != data.ty {
+                    return func.fail(format!("constant {value} type mismatch"));
+                }
+                if let Some(vector) = constant.as_vector() {
+                    use crate::type_methods::VectorConstInfo;
+                    if vector.is_dense() {
+                        if !vector.ty().is_fixed() {
+                            return func.fail("dense vector constant requires a fixed type".into());
+                        }
+                        let bytes = vector.bytes().expect("dense constant");
+                        if vector.encoded_size().map(|n| n as usize) != Some(bytes.len()) {
+                            return func.fail(format!(
+                                "constant {value} byte count must match its fixed vector type"
+                            ));
+                        }
+                        if vector.ty().is_predicate() && bytes.iter().any(|&b| b > 1) {
+                            return func.fail(format!(
+                                "boolean constant lanes must be zero or one: {value}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         for block in body.layout().block_order() {
             let data = &body.dfg().blocks[block];
             for &param in &data.params {

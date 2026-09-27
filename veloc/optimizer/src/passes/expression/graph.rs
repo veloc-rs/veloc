@@ -172,9 +172,12 @@ impl Graph {
         self.classes.find(value)
     }
 
-    pub(super) fn register_value(&mut self, value: Value) {
+    pub(super) fn register_value(&mut self, f: &FuncBody, value: Value) {
         if self.classes.insert(value) {
             self.values.push(value);
+            if let Some(c) = f.dfg().as_scalar_const(value) {
+                self.set_const(f, value, c);
+            }
         }
     }
 
@@ -232,19 +235,13 @@ impl Graph {
             .iter()
             .chain(f.dfg().inst_results(inst))
         {
-            self.register_value(v);
+            self.register_value(f, v);
         }
         if !candidate(f, inst) {
             return;
         }
         self.supported[inst] = true;
         self.floating[inst] = f.dfg().inst(inst).can_speculate();
-        if let [value] = f.dfg().inst_results(inst)
-            && let Some(literal) = f.dfg().as_scalar_const(*value)
-        {
-            self.set_const(f, *value, literal);
-            return;
-        }
         let mut args = self.canonical_args(f, inst);
         args.sort_unstable();
         args.dedup();
@@ -500,9 +497,9 @@ impl Graph {
         if self.values.len() >= self.limit {
             return None;
         }
-        let inst = ir.create(|w| w.scalar_const(value), &[value.ty()]);
-        self.register_inst(ir.body(), inst);
-        ir.body().dfg().first_result(inst)
+        let result = ir.constant(value.into());
+        self.register_value(ir.body(), result);
+        Some(result)
     }
 
     pub(super) fn build(
@@ -598,8 +595,7 @@ fn candidate(f: &FuncBody, inst: Inst) -> bool {
         && results
             .iter()
             .all(|&v| ScalarConst::from_bits(f.dfg().value_type(v), 0).is_some())
-        && (results.len() == 1 && f.dfg().as_scalar_const(results[0]).is_some()
-            || crate::evaluate::can_fold(view.opcode()))
+        && crate::evaluate::can_fold(view.opcode())
         && view.memory_effect().is_none()
         && !view.is_terminator()
         && !view.opcode().transfers_ownership()

@@ -24,8 +24,8 @@ struct VectorLiteral {
 op VectorLiteral(data: VectorConst) -> Value<type(data)> {
     meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "vector-literal"; storage = VectorLiteral { payload: data };
-    verify(ctx: VerifyContext) {
-        require(!data.is_dense() || len(ctx.bytes(data)?) == data.encoded_size()?, "dense vector constant byte count must match its type");
+    verify {
+        require(!data.is_dense() || len(data.bytes()?) == data.encoded_size()?, "dense vector constant byte count must match its type");
     }
 }
 

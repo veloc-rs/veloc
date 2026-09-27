@@ -1,5 +1,6 @@
 //! Exact constants. Scalar views add guarantees, not another representation tag.
-use crate::{InstWriter, ScalarType, Type, VectorType, dfg::DataFlowGraph, inst::ConstantPoolId};
+use crate::{ScalarType, Type, VectorType};
+use alloc::sync::Arc;
 use veloc_types::TypeInfo;
 
 /// A target-independent scalar bit pattern. Pointer constants are not modeled.
@@ -163,142 +164,144 @@ impl From<bool> for ScalarConst {
     }
 }
 
-impl InstWriter<'_> {
-    pub fn scalar_const(self, value: ScalarConst) -> crate::Inst {
-        match value.ty.element() {
-            veloc_types::Scalar::Int(_) => {
-                self.iconst(Int(value))
-            }
-            veloc_types::Scalar::Float(_) => self.fconst(Float(value)),
-            veloc_types::Scalar::Bool => self.bconst(value.bits != 0),
-            veloc_types::Scalar::Ptr => unreachable!("pointer constants are not represented by ScalarConst"),
-        }
-    }
-}
-
-/// Storage forms, independent of the MIR value's scalar/vector type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Vector payloads own their immutable contents. Cloning shares dense bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ConstData {
-    Bits(u64),
-    /// Immutable little-endian lane bytes in the containing function's pool.
-    Dense(ConstantPoolId),
-    /// Repeat one scalar bit pattern, also valid for scalable vectors.
+    Dense(Arc<[u8]>),
     Splat(u64),
 }
 
-/// General constant descriptor. Dense handles belong to their originating DFG;
-/// copy the bytes into the destination pool when moving between functions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Constant {
-    ty: Type,
-    data: ConstData,
+/// Exact, self-contained literals; no function-local payload handles.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Constant {
+    Scalar(ScalarConst),
+    Vector(VectorConst),
 }
 
 impl Constant {
-    pub const fn ty(self) -> Type {
-        self.ty
+    pub const fn ty(&self) -> Type {
+        match self {
+            Self::Scalar(value) => value.ty(),
+            Self::Vector(value) => value.ty(),
+        }
     }
-    pub const fn data(self) -> ConstData {
-        self.data
+    pub fn as_scalar(&self) -> Option<ScalarConst> {
+        match self {
+            Self::Scalar(value) => Some(*value),
+            Self::Vector(_) => None,
+        }
     }
-    pub fn as_scalar(self) -> Option<ScalarConst> {
-        let ConstData::Bits(bits) = self.data else {
-            return None;
-        };
-        Some(ScalarConst {
-            ty: self.ty.as_scalar().expect("scalar constant"),
-            bits,
-        })
-    }
-    pub fn as_vector(self) -> Option<VectorConst> {
-        self.ty.as_vector().map(|_| VectorConst(self))
+    pub fn as_vector(&self) -> Option<&VectorConst> {
+        match self {
+            Self::Vector(value) => Some(value),
+            Self::Scalar(_) => None,
+        }
     }
 }
 
-/// A vector-typed constant descriptor. Construction fixes shape and storage form,
-/// but does not scan dense bytes; validate explicitly before consuming untrusted IR.
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VectorConst(Constant);
+/// Vector construction fixes the type; payload validity is checked by validation.
+/// Read through &VectorConst to avoid cloning the shared byte allocation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VectorConst {
+    ty: VectorType,
+    data: ConstData,
+}
 
 impl VectorConst {
-    pub const fn dense(ty: VectorType, id: ConstantPoolId) -> Self {
-        Self(Constant {
-            ty: ty.as_type(),
-            data: ConstData::Dense(id),
-        })
-    }
-
-    /// Derive the vector's element type from the scalar, so they cannot disagree.
-    pub fn splat(value: ScalarConst, lanes: u16, scalable: bool) -> Option<Self> {
-        let ty = value.ty.vector(lanes, scalable)?.as_type();
-        Some(Self(Constant {
+    pub fn dense(ty: VectorType, bytes: impl Into<Arc<[u8]>>) -> Self {
+        Self {
             ty,
-            data: ConstData::Splat(value.bits),
-        }))
-    }
-
-    pub const fn ty(self) -> Type {
-        self.0.ty
-    }
-    pub const fn data(self) -> ConstData {
-        self.0.data
-    }
-
-    pub fn bytes(self, dfg: &DataFlowGraph) -> Option<&[u8]> {
-        match self.data() {
-            ConstData::Dense(id) => id.get(dfg),
-            _ => None,
+            data: ConstData::Dense(bytes.into()),
         }
     }
 
-    pub fn splat_value(self) -> Option<ScalarConst> {
+    pub fn splat(value: ScalarConst, lanes: u16, scalable: bool) -> Option<Self> {
+        Some(Self {
+            ty: value.ty.vector(lanes, scalable)?,
+            data: ConstData::Splat(value.bits),
+        })
+    }
+
+    pub const fn ty(&self) -> Type {
+        self.ty.as_type()
+    }
+    pub const fn data(&self) -> &ConstData {
+        &self.data
+    }
+
+    pub fn splat_value(&self) -> Option<ScalarConst> {
         let ConstData::Splat(bits) = self.data() else {
             return None;
         };
         Some(ScalarConst {
-            ty: self
-                .ty()
-                .as_vector()
-                .expect("vector constant")
-                .element_type(),
-            bits,
+            ty: self.ty.element_type(),
+            bits: *bits,
         })
     }
 }
 
-const impl crate::type_methods::VectorConstInfo for VectorConst {
-    // Dense constants encode one byte-rounded scalar per lane, independently
-    // of the target's memory representation (including predicate packing).
-    fn encoded_size(self) -> Option<u32> {
-        if self.ty().is_scalable() { return None; }
-        let (Some(bits), Some(lanes)) = (self.ty().element_bits(), self.ty().lanes()) else { return None; };
-        bits.div_ceil(8).checked_mul(lanes)
+impl crate::type_methods::VectorConstInfo for VectorConst {
+    fn bytes(&self) -> Option<&[u8]> {
+        match &self.data {
+            ConstData::Dense(bytes) => Some(bytes),
+            ConstData::Splat(_) => None,
+        }
     }
-    fn is_dense(self) -> bool {
-        matches!(self.data(), ConstData::Dense(_))
+
+    /// Maximum unsigned integer lane, without allocating decoded lanes.
+    fn unsigned_max(&self) -> Option<u64> {
+        let element = self.ty.element_type();
+        if !element.as_type().is_integer() {
+            return None;
+        }
+        match &self.data {
+            ConstData::Splat(bits) => Some(*bits),
+            ConstData::Dense(bytes) => {
+                if bytes.len() != self.encoded_size()? as usize {
+                    return None;
+                }
+                let width = element.as_type().element_bits()? as usize / 8;
+                bytes
+                    .chunks_exact(width)
+                    .map(|lane| {
+                        let mut bits = [0; 8];
+                        bits[..width].copy_from_slice(lane);
+                        u64::from_le_bytes(bits)
+                    })
+                    .max()
+            }
+        }
+    }
+
+    fn encoded_size(&self) -> Option<u32> {
+        if self.ty.is_scalable() {
+            return None;
+        }
+        let bits = self.ty().element_bits()?;
+        bits.div_ceil(8).checked_mul(self.ty.lane_count() as u32)
+    }
+    fn is_dense(&self) -> bool {
+        matches!(&self.data, ConstData::Dense(_))
     }
 }
 
 impl From<VectorConst> for Constant {
     fn from(value: VectorConst) -> Self {
-        value.0
+        Self::Vector(value)
     }
 }
-
 impl TryFrom<Constant> for VectorConst {
     type Error = &'static str;
     fn try_from(value: Constant) -> Result<Self, Self::Error> {
-        value.as_vector().ok_or("expected a vector constant")
+        match value {
+            Constant::Vector(value) => Ok(value),
+            Constant::Scalar(_) => Err("expected a vector constant"),
+        }
     }
 }
-
 impl From<ScalarConst> for Constant {
     fn from(value: ScalarConst) -> Self {
-        Self {
-            ty: value.ty(),
-            data: ConstData::Bits(value.to_bits()),
-        }
+        Self::Scalar(value)
     }
 }
 impl From<Int> for Constant {
@@ -309,72 +312,5 @@ impl From<Int> for Constant {
 impl From<Float> for Constant {
     fn from(value: Float) -> Self {
         ScalarConst::from(value).into()
-    }
-}
-
-/// Byte-aligned literal storage avoids padding around a scalar's type tag.
-/// Conversion uses ordinary byte loads, never unaligned references or unsafe.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ScalarBits {
-    bits: [u8; 8],
-    // Storage keeps the compact code, not the eight-byte checked Type view.
-    ty: core::num::NonZeroU8,
-}
-
-impl ScalarBits {
-    pub fn new(value: crate::ScalarConst) -> Self {
-        Self {
-            bits: value.to_bits().to_le_bytes(),
-            ty: core::num::NonZeroU8::new(value.ty.code()).expect("scalar codes are nonzero"),
-        }
-    }
-
-    pub fn int(self) -> crate::Int {
-        Int(ScalarConst {
-            ty: ScalarType::from_code(self.ty.get()).expect("stored scalar type"),
-            bits: u64::from_le_bytes(self.bits),
-        })
-    }
-
-    pub fn float(self) -> crate::Float {
-        Float(ScalarConst {
-            ty: ScalarType::from_code(self.ty.get()).expect("stored scalar type"),
-            bits: u64::from_le_bytes(self.bits),
-        })
-    }
-}
-
-/// Vectors also fit inline: compact type, storage kind and exact lane bits/ID.
-/// Dense data remains in the existing constant pool; no second pool lookup.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct VectorBits {
-    payload: [u8; 8],
-    ty: [u8; 2],
-    splat: bool,
-}
-
-impl VectorBits {
-    pub fn new(value: crate::VectorConst) -> Self {
-        let (payload, splat) = match value.data() {
-            crate::ConstData::Dense(id) => (u64::from(id.0), false),
-            crate::ConstData::Splat(bits) => (bits, true),
-            crate::ConstData::Bits(_) => unreachable!("vector storage form"),
-        };
-        Self {
-            payload: payload.to_le_bytes(),
-            ty: value.ty().to_raw().to_le_bytes(),
-            splat,
-        }
-    }
-
-    pub fn value(self) -> crate::VectorConst {
-        let ty = crate::Type::from_raw(u16::from_le_bytes(self.ty)).expect("stored vector type");
-        let bits = u64::from_le_bytes(self.payload);
-        let data = if self.splat {
-            ConstData::Splat(bits)
-        } else {
-            ConstData::Dense(ConstantPoolId(bits as u32))
-        };
-        VectorConst(Constant { ty, data })
     }
 }

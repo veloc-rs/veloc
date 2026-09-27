@@ -335,30 +335,24 @@ mod tests {
     }
 
     #[test]
-    fn generated_pool_projection_reports_missing_data_without_panicking() {
+    fn constant_validation_reports_invalid_size_without_panicking() {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
-        let id = module.declare_function("missing-pool".into(), sig, Linkage::Local);
+        let id = module.declare_function("invalid-size".into(), sig, Linkage::Local);
         {
             let mut builder = module.define(id);
-            let value = builder.ins().i32x4const([0; 4]);
-            let inst = builder.func().dfg().value_inst(value).unwrap();
+            builder.ins().vconst(crate::VectorConst::dense(
+                crate::Type::I32X4.as_vector().unwrap(),
+                vec![0u8; 3],
+            ));
             builder.ins().ret(&[]);
-            builder
-                .finish()
-                .replace_inst(inst, |writer: crate::InstWriter<'_>| {
-                    writer.vconst(crate::VectorConst::dense(
-                        crate::Type::I32X4.as_vector().unwrap(),
-                        crate::inst::ConstantPoolId(u32::MAX),
-                    ))
-                });
         }
         assert!(
             module
                 .validate()
                 .unwrap_err()
                 .to_string()
-                .contains("vconst constraint")
+                .contains("byte count")
         );
     }
 }

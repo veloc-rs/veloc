@@ -158,7 +158,7 @@ fn generated_memory_builders_preserve_field_order() {
 }
 
 #[test]
-fn generated_integer_constant_builder_preserves_bit_patterns() {
+fn constant_values_preserve_bit_patterns() {
     let mut module = ModuleBuilder::new();
     let signature = module.make_signature(vec![], vec![], CallConv::SystemV);
     let function = module.declare_function("constant_bits".into(), signature, Linkage::Export);
@@ -170,16 +170,19 @@ fn generated_integer_constant_builder_preserves_bit_patterns() {
         .iconst(veloc_mir::Int::from_bits(Type::I64, bits).expect("integer constant type"));
     let negative = builder.ins().i32const(-1);
     let minimum = builder.ins().i64const(i64::MIN);
+    assert_eq!(builder.ins().i32const(-1), negative);
+    assert_eq!(builder.func().dfg().inst_count(), 0);
     let dfg = builder.func().dfg();
     for (result, expected_bits, expected_type) in [
         (raw, bits, Type::I64),
         (negative, u32::MAX as u64, Type::I32),
         (minimum, 1 << 63, Type::I64),
     ] {
-        assert!(matches!(
-            dfg.inst(dfg.value_inst(result).unwrap()),
-            InstView::Iconst { value } if value.to_bits() == expected_bits
-        ));
+        assert!(dfg.value_inst(result).is_none());
+        assert_eq!(
+            dfg.as_scalar_const(result).unwrap().to_bits(),
+            expected_bits
+        );
         assert_eq!(dfg.value_type(result), expected_type);
     }
 
@@ -217,47 +220,33 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
     let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
     let func = module.declare_function("constants".into(), sig, Linkage::Local);
     let mut builder = module.define(func);
-    let dfg = &mut DataFlowGraph::new();
     let bytes: Vec<_> = [1i32, -2, 3, 4]
         .into_iter()
         .flat_map(i32::to_le_bytes)
         .collect();
-    let make_dense = |ty: Type, bytes: Vec<u8>, dfg: &mut DataFlowGraph| {
-        VectorConst::dense(
-            ty.as_vector().unwrap(),
-            veloc_mir::inst::ConstantPoolId::insert(dfg, bytes),
-        )
-    };
-    let dense = make_dense(veloc_mir::Type::I32X4, bytes.clone(), dfg);
-    assert!(matches!(dense.data(), ConstData::Dense(id) if id.get(dfg) == Some(bytes.as_slice())));
-    assert_eq!(
-        make_dense(veloc_mir::Type::I32X4, bytes.clone(), dfg),
-        dense
+    let dense = builder.ins().dense_const(bytes.clone(), Type::I32X4);
+    assert_eq!(builder.ins().dense_const(bytes.clone(), Type::I32X4), dense);
+    let dfg = builder.func().dfg();
+    assert!(
+        matches!(dfg.as_const(dense).unwrap().as_vector().unwrap().data(), ConstData::Dense(data) if data.as_ref() == bytes.as_slice())
     );
     let splat = VectorConst::splat(ScalarConst::from(-7i32), 4, false).unwrap();
     let scalable_splat = VectorConst::splat(ScalarConst::from(-7i32), 4, true).unwrap();
     assert_eq!(splat.ty(), veloc_mir::Type::I32X4);
     assert!(VectorConst::splat(ScalarConst::from(7i32), 3, false).is_none());
     let result = builder.ins().dense_const(bytes, veloc_mir::Type::I32X4);
-    let dense = builder.func().dfg().as_const(result).unwrap();
+    let dense = builder.func().dfg().as_const(result).unwrap().clone();
     for value in [
         Constant::from(nan),
         dense.into(),
         splat.into(),
         scalable_splat.into(),
     ] {
-        let result = builder.ins().constant(value);
-        assert_eq!(builder.func().dfg().as_const(result), Some(value));
+        let result = builder.ins().constant(value.clone());
+        assert_eq!(builder.func().dfg().as_const(result), Some(&value));
         assert_eq!(builder.func().dfg().value_type(result), value.ty());
-        if value.as_vector().is_some() {
-            assert!(matches!(
-                builder
-                    .func()
-                    .dfg()
-                    .inst(builder.func().dfg().value_inst(result).unwrap()),
-                InstView::Vconst { .. }
-            ));
-        }
+        assert!(builder.func().dfg().value_inst(result).is_none());
+        assert_eq!(builder.ins().constant(value), result);
     }
     builder.ins().ret(&[]);
     builder.seal_all_blocks();
@@ -293,7 +282,7 @@ fn vector_constant_construction_defers_data_checks_to_validation() {
         let result = builder.ins().dense_const(bytes, ty);
         let value = builder.func().dfg().as_const(result).unwrap();
         assert_eq!(builder.func().dfg().value_type(result), ty);
-        assert_eq!(builder.func().dfg().as_const(result), Some(value.into()));
+        assert_eq!(builder.func().dfg().as_const(result), Some(value));
         builder.ins().ret(&[]);
         builder.seal_all_blocks();
         match expected {

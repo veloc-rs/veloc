@@ -477,9 +477,6 @@ fn binding(source: &str, node: Node) -> Result<Binding, Error> {
             .map(|node| binding(source, node))
             .collect::<Result<Vec<_>, _>>()
             .map(Binding::Array),
-        Kind::Call(kind, mut args) if kind == "pool" && args.len() == 1 => {
-            Ok(Binding::Pool(name(source, args.remove(0))?))
-        }
         Kind::Call(kind, mut args) if kind == "table" && args.len() == 2 => {
             let cases = name(source, args.remove(0))?;
             let default = name(source, args.remove(0))?;
@@ -488,7 +485,7 @@ fn binding(source: &str, node: Node) -> Result<Binding, Error> {
         _ => Err(Error::at(
             source,
             node.offset,
-            "expected parameter, array, pool(parameter) or table(cases, default)",
+            "expected parameter, array or table(cases, default)",
         )),
     }
 }
@@ -566,16 +563,6 @@ pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result
                         ParamKind::Successor => field.policy.references.is_edge(),
                         ParamKind::Successors => false,
                         ParamKind::Property(prop) => ty == prop,
-                    },
-                    &field.name,
-                )?;
-            }
-            (Binding::Pool(arg), FieldType::Named(ty)) => {
-                use_param(
-                    arg,
-                    &|kind| match kind {
-                        ParamKind::Property(prop) => ty == "ConstantPoolId" && prop == "Bytes",
-                        _ => false,
                     },
                     &field.name,
                 )?;

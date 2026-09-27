@@ -5,7 +5,7 @@ use veloc_mir::{
 };
 
 #[test]
-fn generated_pool_builders_use_logical_parameters() {
+fn shuffle_uses_constant_operand() {
     let mut module = ModuleBuilder::new();
     let sig = module.make_signature(
         vec![Type::PTR, veloc_mir::Type::I32X4],
@@ -18,7 +18,8 @@ fn generated_pool_builders_use_logical_parameters() {
         let ptr = builder.func().params()[0];
         let indices = builder.func().params()[1];
         let constant = builder.ins().i32x4const([0; 4]);
-        let shuffled = builder.ins().shuffle(constant, indices, vec![0, 2, 4, 6]);
+        let mask = builder.ins().i32x4const([0, 2, 4, 6]);
+        let shuffled = builder.ins().shuffle(constant, indices, mask, Type::I32X4);
         builder.ins().scatter(
             ptr,
             indices,

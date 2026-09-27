@@ -467,16 +467,18 @@ pub(super) struct OperandParser<'a> {
 }
 
 impl OperandParser<'_> {
-    pub(super) fn dense_constant(
-        &mut self,
-        ty: crate::VectorType,
-        bytes: Vec<u8>,
-    ) -> crate::VectorConst {
-        self.func.edit().dense_constant(ty, bytes)
-    }
-
     fn instruction(&mut self, input: &mut Cursor<'_>, block: Block) -> ParseResult<()> {
         let results = self.parse_results(input)?;
+        if input.is("const") {
+            use super::atom::AtomCodec;
+            input.keyword("const")?;
+            let [(value, ty)] = results.as_slice() else {
+                return Err(input.error("constant declaration requires one typed value"));
+            };
+            let constant = crate::Constant::parse(self, input, Some(*ty))?;
+            self.func.edit().bind_constant(*value, constant);
+            return Ok(());
+        }
         let (opcode, flags) = parse_instruction_header(input)?;
         let inst = self.parse(opcode, flags, input, results.first().map(|(_, ty)| *ty))?;
         self.func.edit().finish_parsed_inst(block, inst, &results);
@@ -968,10 +970,10 @@ mod tests {
     fn parse_errors_preserve_locations_separately_from_context() {
         for (source, line, column, message) in [
             (
-                "local function bad()->i32\nblock0():\n  v0:i32=iconst nope",
+                "local function bad()->i32\nblock0():\n  v0:i32=const nope",
                 3,
-                17,
-                "operand `value`: invalid integer constant",
+                16,
+                "invalid integer constant",
             ),
             (
                 "local function bad()->void\nblock0():\n  jump block7()",

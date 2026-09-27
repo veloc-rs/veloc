@@ -10,7 +10,7 @@ type Signature = rust("veloc_types::Signature") {
 
 type VerifyContext = rust("crate::host::VerifyContext") {
     trait = rust("crate::type_methods::VerifyContextInfo");
-    fn bytes(&self, value: VectorConst) -> optional(sequence(u8));
+    fn vector_constant(&self, value: Value) -> optional(&VectorConst);
     fn function_signature(&self, func: FuncId) -> optional(&Signature);
     fn current_signature(&self) -> optional(&Signature);
     fn signature(&self, sig: SigId) -> optional(&Signature);

@@ -12,10 +12,6 @@ pub use opcode::*;
 pub struct Inst(pub u32);
 entity_impl!(Inst, "inst");
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ConstantPoolId(pub u32);
-entity_impl!(ConstantPoolId, "const");
-
 mod storage;
 pub use storage::{Arguments, Successor, SuccessorMut, Successors};
 pub(crate) use storage::{FieldPool, StoredInst};

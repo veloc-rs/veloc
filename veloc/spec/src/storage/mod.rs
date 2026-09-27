@@ -561,10 +561,6 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
         "Unary" => (&[("opcode", "Opcode"), ("arg", "Value")], None),
         "Binary" => (&[("opcode", "Opcode"), ("args", "values(2)")], None),
         "Ternary" => (&[("opcode", "Opcode"), ("args", "values(3)")], None),
-        "Iconst" => (&[("value", "Int")], Some("Iconst")),
-        "Fconst" => (&[("value", "Float")], Some("Fconst")),
-        "Bconst" => (&[("value", "bool")], Some("Bconst")),
-        "Vconst" => (&[("value", "VectorConst")], Some("Vconst")),
         "Load" => (
             &[("ptr", "Value"), ("offset", "u32"), ("flags", "MemFlags")],
             Some("Load"),
@@ -644,10 +640,6 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
         "VectorScatter" => (
             &[("args", "values(3)"), ("ext", "VectorMemOptions")],
             Some("Scatter"),
-        ),
-        "Shuffle" => (
-            &[("args", "values(2)"), ("mask", "ConstantPoolId")],
-            Some("Shuffle"),
         ),
         "Nop" | "Unreachable" => (&[], Some(layout.name.as_str())),
         "VectorOpWithExt" => (

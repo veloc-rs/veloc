@@ -189,24 +189,19 @@ pub struct CompiledFunction {
     pub(crate) roots: alloc::collections::BTreeMap<usize, Vec<Reg>>,
 }
 
-struct ValueMapper<'a> {
+struct ValueMapper {
     map: SecondaryMap<Value, Reg>,
     next_register: u16,
     move_temp: Option<Reg>,
-    fused_values: &'a std::collections::HashSet<Value>,
 }
 
-impl<'a> ValueMapper<'a> {
-    fn new(
-        func: &FuncBody,
-        intervals: &SecondaryMap<Value, LiveInterval>,
-        fused_values: &'a std::collections::HashSet<Value>,
-    ) -> Self {
+impl ValueMapper {
+    fn new(func: &FuncBody, intervals: &SecondaryMap<Value, LiveInterval>) -> Self {
         let mut values: Vec<Value> = func
             .dfg()
             .values()
             .keys()
-            .filter(|value| !fused_values.contains(value) && !intervals[*value].ranges.is_empty())
+            .filter(|value| !intervals[*value].ranges.is_empty())
             .collect();
         values.sort_by_key(|value| intervals[*value].start());
 
@@ -246,7 +241,6 @@ impl<'a> ValueMapper<'a> {
             map,
             next_register,
             move_temp: None,
-            fused_values,
         }
     }
 
@@ -256,9 +250,6 @@ impl<'a> ValueMapper<'a> {
             return reg;
         }
 
-        if self.fused_values.contains(&val) {
-            panic!("Value {:?} is fused as constant and has no register", val);
-        }
         panic!("Value {:?} has no register mapping", val);
     }
 
@@ -298,6 +289,9 @@ fn can_fuse_operand(func: &FuncBody, user_inst: Inst, val: Value) -> bool {
 
     match idata {
         InstView::Binary { opcode, args } => {
+            if args[0] == args[1] {
+                return false;
+            }
             let res = func.dfg().first_result(user_inst).unwrap();
             let ty = func.dfg().value_type(res);
             // Only I32 and I64 binary operations currently support immediate operands in bytecode
@@ -336,48 +330,14 @@ fn can_fuse_operand(func: &FuncBody, user_inst: Inst, val: Value) -> bool {
     }
 }
 
-/// Check if a value is already zero-extended to at least the given bit width.
-/// Identify constants that can be fully fused into their user instructions and thus do not need a register.
-fn identify_fused_values(func: &FuncBody, rpo: &[Block]) -> std::collections::HashSet<Value> {
-    let mut fused_values = std::collections::HashSet::new();
-    let mut insts_with_fused_op = std::collections::HashSet::new();
-
-    for &block in rpo {
-        for inst in func.layout().block_insts(block) {
-            let idata = &func.dfg().inst(inst);
-            if matches!(idata, InstView::Iconst { .. } | InstView::Bconst { .. }) {
-                let res = func.dfg().first_result(inst).unwrap();
-                let users = || func.dfg().uses(res).map(|site| site.inst());
-
-                // A constant can be fused if all its uses support fusion
-                // and haven't fused another operand yet.
-                let mut all_fusable = true;
-                for user_inst in users() {
-                    if !can_fuse_operand(func, user_inst, res)
-                        || insts_with_fused_op.contains(&user_inst)
-                    {
-                        all_fusable = false;
-                        break;
-                    }
-                }
-                if all_fusable {
-                    for user_inst in users() {
-                        insts_with_fused_op.insert(user_inst);
-                    }
-                    fused_values.insert(res);
-                }
-            }
-        }
-    }
-    fused_values
-}
-
 struct Compiler<'a> {
     callable_values: Vec<Value>,
     liveness: &'a veloc_analyzer::Liveness,
     roots: alloc::collections::BTreeMap<usize, Vec<Reg>>,
     func: &'a FuncBody,
-    mapper: ValueMapper<'a>,
+    mapper: ValueMapper,
+    fused: Option<Value>,
+    literal_regs: Vec<Reg>,
     code: Vec<CodeWord>,
     data_section: DataSection,
     stack: super::stack::StackLayout,
@@ -391,7 +351,7 @@ struct Compiler<'a> {
 impl<'a> Compiler<'a> {
     fn new(
         func: &'a FuncBody,
-        mapper: ValueMapper<'a>,
+        mapper: ValueMapper,
         liveness: &'a veloc_analyzer::Liveness,
     ) -> Self {
         let stack = super::stack::stack_layout(func).expect("checked stack layout");
@@ -408,6 +368,8 @@ impl<'a> Compiler<'a> {
             roots: alloc::collections::BTreeMap::new(),
             func,
             mapper,
+            fused: None,
+            literal_regs: Vec::new(),
             code: Vec::new(),
             data_section: DataSection::new(),
             stack,
@@ -454,8 +416,8 @@ impl<'a> Compiler<'a> {
         let mut bin = |imm_f: &dyn Fn(&mut Vec<CodeWord>, Reg, Reg, i64),
                        reg_f: &dyn Fn(&mut Vec<CodeWord>, Reg, Reg, Reg),
                        commutative: bool| {
-            let lhs_fused = self.mapper.fused_values.contains(&args[0]);
-            let rhs_fused = self.mapper.fused_values.contains(&args[1]);
+            let lhs_fused = self.fused == Some(args[0]);
+            let rhs_fused = self.fused == Some(args[1]);
 
             if rhs_fused {
                 let imm = self
@@ -1216,9 +1178,8 @@ pub(crate) fn compile_function(
     let rpo = func.cfg().compute_rpo(entry);
 
     let liveness = analyze_liveness(func);
-    let fused_values = identify_fused_values(func, &rpo);
 
-    let mapper = ValueMapper::new(func, &liveness.intervals, &fused_values);
+    let mapper = ValueMapper::new(func, &liveness.intervals);
     let mut compiler = Compiler::new(func, mapper, &liveness);
 
     compiler.apply_rpo(&rpo);
@@ -1314,6 +1275,44 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_inst(&mut self, inst: Inst) {
+        let dfg = self.func.dfg();
+        // Fuse per use, not per literal: a constant used by a call may still
+        // be an immediate in arithmetic. Scratch slots live for this op only.
+        self.fused = dfg
+            .operands(inst)
+            .iter()
+            .rev()
+            .copied()
+            .find(|&v| can_fuse_operand(self.func, inst, v));
+        let mut loaded = SmallVec::<[Value; 4]>::new();
+        for &value in dfg.operands(inst) {
+            if self.fused == Some(value) || loaded.contains(&value) {
+                continue;
+            }
+            let Some(c) = dfg.as_scalar_const(value) else {
+                continue;
+            };
+            let index = loaded.len();
+            if index == self.literal_regs.len() {
+                let reg = Reg(self.mapper.next_register);
+                self.mapper.next_register = self
+                    .mapper
+                    .next_register
+                    .checked_add(1)
+                    .expect("interpreter register space exhausted");
+                self.literal_regs.push(reg);
+            }
+            let reg = self.literal_regs[index];
+            self.mapper.map[value] = reg;
+            if let Some(value) = c.as_bool() {
+                emit::Bconst(&mut self.code, reg, value);
+            } else if c.as_float().is_some() {
+                emit_auto::Fconst(&mut self.code, reg, c.to_bits());
+            } else {
+                emit_auto::Iconst(&mut self.code, reg, c.to_bits());
+            }
+            loaded.push(value);
+        }
         let idata = &self.func.dfg().inst(inst);
         let site = self.lower_callable(inst, idata);
 
@@ -1342,28 +1341,6 @@ impl<'a> Compiler<'a> {
         }
 
         match idata {
-            InstView::Iconst { value } => {
-                let res = self.func.dfg().first_result(inst).unwrap();
-                if !self.mapper.fused_values.contains(&res) {
-                    let dst = self.mapper.reg(res);
-                    emit_auto::Iconst(&mut self.code, dst, value.to_bits());
-                }
-            }
-            InstView::Fconst { value } => {
-                let res = self.func.dfg().first_result(inst).unwrap();
-                let dst = self.mapper.reg(res);
-                emit_auto::Fconst(&mut self.code, dst, value.to_bits());
-            }
-            InstView::Vconst { .. } => {
-                unreachable!("vector constants are rejected before bytecode compilation")
-            }
-            InstView::Bconst { value } => {
-                let res = self.func.dfg().first_result(inst).unwrap();
-                if !self.mapper.fused_values.contains(&res) {
-                    let dst = self.mapper.reg(res);
-                    emit::Bconst(&mut self.code, dst, *value);
-                }
-            }
             InstView::Binary { opcode, args } => self.emit_binary(inst, *opcode, args),
             InstView::IntCompare { kind, args, .. } => self.emit_icmp(inst, *kind, args),
             InstView::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args),

@@ -31,6 +31,7 @@ pub use intrinsic::{Intrinsic, ids as intrinsic_ids};
 pub use module::{Global, Linkage, Module};
 pub use text::{ModuleParser, ParseError};
 pub use types::{
-    Block, BlockCall, CallConv, CallableKind, FuncId, ModuleId, ScalarType, SigId, Signature, Type,
-    TypeBits, TypeInfo, TypeSize, Value, ValueDef, ValueList, Variable, VectorType,
+    Block, BlockCall, CallConv, CallableKind, ConstId, FuncId, ModuleId, ScalarType, SigId,
+    Signature, Type, TypeBits, TypeInfo, TypeSize, Value, ValueDef, ValueList, Variable,
+    VectorType,
 };

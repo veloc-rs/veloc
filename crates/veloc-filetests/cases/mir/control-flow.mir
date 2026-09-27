@@ -14,7 +14,8 @@ block1():
 local function bad() -> i32
 block0():
   v0: i32 = iadd v1, v1
-  v1: i32 = iconst 1
+  v1: i32 = ineg v9
+  v9: i32 = const -1
   return v0
 
 // ----- self-use
@@ -32,7 +33,8 @@ local function bad(bool) -> i32
 block0(v0: bool):
   br v0, block1(), block2()
 block1():
-  v1: i32 = iconst 1
+  v1: i32 = ineg v9
+  v9: i32 = const -1
   return v1
 block2():
   return v1
@@ -44,7 +46,8 @@ local function bad() -> i32
 block0():
   return v0
 block1():
-  v0: i32 = iconst 1
+  v0: i32 = ineg v9
+  v9: i32 = const -1
   return v0
 
 // ----- parallel-edges-have-distinct-arguments
@@ -59,14 +62,15 @@ block1(v3: i32):
 // ----- dominance-does-not-follow-text-order
 // run: roundtrip
 // check: return v0
-// check: v0: i32 = iconst 7
+// check: v0: i32 = ineg v9
 local function good() -> i32
 block0():
   jump block2()
 block1():
   return v0
 block2():
-  v0: i32 = iconst 7
+  v0: i32 = ineg v9
+  v9: i32 = const -7
   jump block1()
 
 // ----- loop-carried-block-parameter
@@ -96,7 +100,8 @@ local function bad(bool) -> i32
 block0(v0: bool):
   br v0, block1(), block2()
 block1():
-  v1: i32 = iconst 1
+  v1: i32 = ineg v9
+  v9: i32 = const -1
   jump block2()
 block2():
   v2: i32 = iadd v1, v1

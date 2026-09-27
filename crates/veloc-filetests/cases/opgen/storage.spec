@@ -249,7 +249,7 @@ op Write() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "wri
 
 // ----- packing/pool-bindings-are-typed-and-consume-the-complete-struct-1
 // run: opgen-error
-// check: expected parameter, array, pool(parameter) or table(cases, default)
+// check: expected parameter, array or table(cases, default)
 struct PtrIndexImm {
     offset: i32,
     scale: u32,
@@ -345,7 +345,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: Value<Type::PTR>, index: Value<Type::I32>, imm: ConstantPoolId) -> (result: Value<Type::PTR>) {
+op Indexed(ptr: Value<Type::PTR>, index: Value<Type::I32>, imm: Bytes) -> (result: Value<Type::PTR>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "indexed"; storage = Indexed { ptr: ptr, index: index, imm_id: imm };
 }
@@ -450,7 +450,7 @@ signature = function(callee); }
 
 // ----- packing/tables-require-distinct-case-and-default-roles-1
 // run: opgen-error
-// check: expected parameter, array, pool(parameter) or table(cases, default)
+// check: expected parameter, array or table(cases, default)
 struct Table {
     index: Value,
     table: JumpTable,

@@ -191,7 +191,6 @@ fn emit_body(
     let error = |text: &str| format!("self.constraint_error(_inst, {text:?})");
     let projections = crate::model::access::projections(
         op,
-        "_dfg",
         |name| {
             format!(
                 "*_f{}",

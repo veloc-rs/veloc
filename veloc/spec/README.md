@@ -867,8 +867,8 @@ The mapping connects logical parameters to generated construction/view fields.
 Every declared field is mapped; fixed groups use `[lhs, rhs]`. The generated
 builder supplies any dynamic opcode. Variadic groups use `ValueList` in the
 schema, but become ordinary slices in views, never a mutable Value-list pool.
-Only byte properties use `pool(bytes)`; structs such as `PtrIndexImm` and
-`VectorMemOptions` bind directly. Branch tables use `table(cases, default)`,
+Properties, including byte sequences and structs such as `PtrIndexImm` and
+`VectorMemOptions`, bind directly. Branch tables use `table(cases, default)`,
 with the default destination last.
 
 Both storage strategies use explicit `storage: Layout { ... }` mappings.
@@ -1137,21 +1137,39 @@ Parameters take their names and order from the logical operation signature;
 physical array field names no longer invent argument names. The storage mapping
 constructs the compact instruction. A caller-selected result `ty` is always
 last. For example, the standard definitions produce
-`iconst(value: u64, ty: Type)` and
 `load(ptr: Value, offset: u32, flags: MemFlags, ty: Type)`. Zero-result operations
 return nothing, inferred single results return `Value`, and supported inferred
 two-result operations return a pair. Construction comes directly from the field
 mapping, independently of the text projection.
 
 Pool-backed and fixed-length-list operations use the same generated builders:
-`vconst(bytes: Vec<u8>, ty: Type)`, `ptr_index(ptr, index, imm: PtrIndexImm)` and
-`gather(ptr, index, mem: VectorMemOptions, ty: Type)`. Packing interns byte properties
-through `ConstantPoolId::insert`; struct properties are stored inline. Contextual helpers
+`ptr_index(ptr, index, imm: PtrIndexImm)` and
+`gather(ptr, index, mem: VectorMemOptions, ty: Type)`. Packing uses the declared field storage; there is no special byte-pool mapping. Contextual helpers
 remain for variadic groups, CFG destinations and signature-selected results.
 They provide higher-level slices and blocks while installed operands occupy one
 flat range. Generated builders compute result types without validating the type
 contract; contextual builders resolve only the information needed for results.
 Full validation remains an explicit phase.
+
+## Literal values
+
+MIR constants are immutable, function-local values, not opcodes or instructions.
+`FuncEditor::constant(Constant)` interns a typed literal without an insertion
+point. Cursor conveniences (`i32const`, `f64const`, etc.) use the same interner;
+they do not emit an instruction. Operands and use-def links still use `Value`.
+Exact scalar bits distinguish signed zero and NaN payloads. Vector literals use
+splat descriptors or interned dense bytes.
+
+Text declares literals as `v1: i32 = const 42`. Such declarations have function
+scope and do not occupy a position in a block. The printer groups used literals
+after the entry header; the parser also permits forward references. Ordinary
+operation definitions still require SSA dominance. Literal payload validation
+belongs to MIR value validation, rather than an instruction's OpSpec contract.
+
+Equality rules match constant facts directly. Extraction returns literal values
+without creating scheduled copies. Lowering chooses block-local materializations;
+instruction selection may fold them into immediates, and register allocation may
+rematerialize them. One semantic literal does not imply one physical register.
 
 ## Bidirectional text projections
 
@@ -1278,10 +1296,9 @@ decimal text. Associated `Owned` and `View<'a>` types let parsing produce a vect
 and printing borrow a slice. Contextual codecs reuse the token cursor and symbol
 resolution algorithms; this does not require a trait for every syntax helper.
 
-Only immutable byte constants are interned. Generated `pool(...)` mappings call
-`ConstantPoolId::insert` and `get` directly; there is no generic pool trait or
-parallel set of DFG getters/interners. Byte constants are stored as shared `Arc<[u8]>` buffers: the
-pool and deduplication index share one payload, while reads borrow `[u8]`.
+Constants own their payloads and are interned by type and content. Dense vector
+constants store shared `Arc<[u8]>` buffers; readers borrow the constant and its
+bytes directly. There is no separate byte ID, byte interner, or `pool(...)` mapping.
 Operand groups and successor arguments use the unified operand storage instead.
 The atom codecs use static dispatch without a registry or trait objects. Rust checks the implementations and generated calls; round-trip tests
 remain necessary to check that the two directions agree semantically.

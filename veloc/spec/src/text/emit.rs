@@ -336,7 +336,6 @@ pub(super) fn print(
             }
             for (name, expr) in crate::model::access::projections(
                 op,
-                "self.dfg",
                 |name| {
                     let index = format.fields.iter().position(|f| f.name == name).unwrap();
                     format!("*_s{index}")
@@ -349,7 +348,6 @@ pub(super) fn print(
         Host::Operands(_) => {
             for (name, expr) in crate::model::access::projections(
                 op,
-                "data",
                 |name| {
                     op.operands()
                         .members

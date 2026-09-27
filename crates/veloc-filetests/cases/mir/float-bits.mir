@@ -1,41 +1,41 @@
 // ----- f32-0x7fa12345
 // run: roundtrip
-// check: : f32 = fconst 0x7fa12345
+// check: : f32 = const 0x7fa12345
 local function bits() -> f32
 block0():
-  v0: f32 = fconst 0x7fa12345
+  v0: f32 = const 0x7fa12345
   return v0
 
 // ----- f32-0xffc01234
 // run: roundtrip
-// check: : f32 = fconst 0xffc01234
+// check: : f32 = const 0xffc01234
 local function bits() -> f32
 block0():
-  v0: f32 = fconst 0xffc01234
+  v0: f32 = const 0xffc01234
   return v0
 
 // ----- f64-0x7ff0000000000001
 // run: roundtrip
-// check: : f64 = fconst 0x7ff0000000000001
+// check: : f64 = const 0x7ff0000000000001
 local function bits() -> f64
 block0():
-  v0: f64 = fconst 0x7ff0000000000001
+  v0: f64 = const 0x7ff0000000000001
   return v0
 
 // ----- f32-0x80000000
 // run: roundtrip
-// check: : f32 = fconst 0x80000000
+// check: : f32 = const 0x80000000
 local function bits() -> f32
 block0():
-  v0: f32 = fconst 0x80000000
+  v0: f32 = const 0x80000000
   return v0
 
 // ----- f32-full-width
 // run: roundtrip
-// check: v0: f32 = fconst 0xffffffff
+// check: v0: f32 = const 0xffffffff
 local function bits() -> f32
 block0():
-  v0: f32 = fconst 0xffffffff
+  v0: f32 = const 0xffffffff
   return v0
 
 // ----- f32-overflow-is-a-syntax-error
@@ -43,33 +43,33 @@ block0():
 // check: f32 bit pattern does not fit in 32 bits
 local function bits() -> f32
 block0():
-  v0: f32 = fconst 0x100000000
+  v0: f32 = const 0x100000000
   return v0
 
 // ----- f64-allows-upper-bits
 // run: roundtrip
-// check: v0: f64 = fconst 0x0000000100000000
-// check: v1: f64 = fconst 0xffffffffffffffff
+// check: v0: f64 = const 0x0000000100000000
+// check: v1: f64 = const 0xffffffffffffffff
 local function bits() -> (f64, f64)
 block0():
-  v0: f64 = fconst 0x100000000
-  v1: f64 = fconst 0xffffffffffffffff
+  v0: f64 = const 0x100000000
+  v1: f64 = const 0xffffffffffffffff
   return v0, v1
 
-// ----- non-float-result-cannot-determine-precision
-// run: parse-error
-// check: floating constant requires an f32 or f64 result type
+// ----- literal-type-determines-interpretation
+// run: roundtrip
+// check: v0: i32 = const 0
 local function bits() -> i32
 block0():
-  v0: i32 = fconst 0x0
+  v0: i32 = const 0x0
   return v0
 
 // ----- missing-result-cannot-determine-precision
 // run: parse-error
-// check: floating constant requires an f32 or f64 result type
+// check: constant declaration requires one typed value
 local function bits() -> void
 block0():
-  fconst 0x0
+  const 0x0
   return
 
 // ----- non-hex-float-is-a-syntax-error
@@ -77,7 +77,7 @@ block0():
 // check: floating constants use an exact hexadecimal bit pattern
 local function bits() -> f32
 block0():
-  v0: f32 = fconst 1.0
+  v0: f32 = const 1.0
   return v0
 
 // ----- invalid-hex-is-a-syntax-error
@@ -85,7 +85,7 @@ block0():
 // check: invalid floating bit pattern
 local function bits() -> f64
 block0():
-  v0: f64 = fconst 0xgg
+  v0: f64 = const 0xgg
   return v0
 
 // ----- u64-overflow-is-a-syntax-error
@@ -93,5 +93,5 @@ block0():
 // check: invalid floating bit pattern
 local function bits() -> f64
 block0():
-  v0: f64 = fconst 0x10000000000000000
+  v0: f64 = const 0x10000000000000000
   return v0

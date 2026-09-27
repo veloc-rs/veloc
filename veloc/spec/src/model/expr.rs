@@ -1695,7 +1695,11 @@ impl Checker<'_> {
             }
             Kind::Call(name, args) if name == "type" && args.len() == 1 => {
                 let value = self.expr(&args[0], None, env, signature)?;
-                if !matches!(&value.ty, Ty::Named(n) if matches!(n.as_str(), "Int" | "Float" | "VectorConst"))
+                let ty = match &value.ty {
+                    Ty::Ref(inner) => inner.as_ref(),
+                    ty => ty,
+                };
+                if !matches!(ty, Ty::Named(n) if matches!(n.as_str(), "Int" | "Float" | "VectorConst"))
                 {
                     // SSA references and typed constants have an IR type.
                     if !matches!(value.ty, Ty::Value(_)) {
@@ -2048,7 +2052,10 @@ impl<'a> Emitter<'a> {
                 {
                     return ty.clone();
                 }
-                let sort = &value.ty;
+                let sort = match &value.ty {
+                    Ty::Ref(inner) => inner.as_ref(),
+                    ty => ty,
+                };
                 let value = self.term(value);
                 match query {
                     Query::TypeOf => {

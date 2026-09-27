@@ -1,57 +1,10 @@
 //! Physical storage and borrowed successor groups. No nested SSA-value pools.
-use super::{ConstantPoolId, InstFields, PayloadPool};
-use alloc::sync::Arc;
-use core::{borrow::Borrow, hash::Hash};
-use cranelift_entity::{EntityRef, PrimaryMap};
-use hashbrown::HashMap;
+use super::{InstFields, PayloadPool};
 
-/// Owns out-of-line data; SSA references remain in the DFG operand store.
+/// Out-of-line instruction properties; shared bytes belong to the DFG.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FieldPool {
     pub(super) payloads: PayloadPool,
-    constants: InternPool<ConstantPoolId, Arc<[u8]>>,
-}
-
-/// Immutable, shared entries. IDs remain valid for the lifetime of the pool.
-/// No mutation or per-instruction removal is exposed.
-#[derive(Debug, Clone)]
-struct InternPool<K: EntityRef, T> {
-    values: PrimaryMap<K, T>,
-    index: HashMap<T, K>,
-}
-impl<K: EntityRef, T> Default for InternPool<K, T> {
-    fn default() -> Self {
-        Self {
-            values: PrimaryMap::new(),
-            index: HashMap::new(),
-        }
-    }
-}
-impl<K: EntityRef, T: Clone + Eq + Hash> InternPool<K, T> {
-    fn intern<Q: ?Sized + Eq + Hash>(&mut self, value: &Q, make: impl FnOnce() -> T) -> K
-    where
-        T: Borrow<Q>,
-    {
-        if let Some(&id) = self.index.get(value) {
-            return id;
-        }
-        let value = make();
-        let id = self.values.push(value.clone());
-        self.index.insert(value, id);
-        id
-    }
-    fn get(&self, id: K) -> Option<&T> {
-        self.values.get(id)
-    }
-}
-
-impl FieldPool {
-    pub(crate) fn intern(&mut self, bytes: &[u8]) -> ConstantPoolId {
-        self.constants.intern(bytes, || Arc::from(bytes))
-    }
-    pub(crate) fn constant(&self, id: ConstantPoolId) -> Option<&[u8]> {
-        self.constants.get(id).map(AsRef::as_ref)
-    }
 }
 
 use crate::{Block, BlockCall, Value};
@@ -63,8 +16,6 @@ pub(crate) struct StoredInst {
     pub operands: crate::dfg::OperandRange,
     pub fields: InstFields,
 }
-
-pub(crate) use crate::constant::{ScalarBits, VectorBits};
 
 pub(crate) use veloc_collections::{Pool, PoolId as Id};
 

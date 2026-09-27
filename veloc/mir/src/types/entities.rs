@@ -27,7 +27,13 @@ pub enum ValueDef {
     Inst(crate::Inst),
     /// Value is a block parameter.
     Param(Block),
+    /// An immutable literal, available independently of control flow.
+    Const(ConstId),
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConstId(pub(crate) u32);
+entity_impl!(ConstId, "const");
 
 /// A reference to a basic block.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

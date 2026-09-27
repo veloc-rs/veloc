@@ -105,10 +105,6 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
             _ if field.policy.references.is_edges() => {
                 (ParamKind::Successors, Binding::Name(field.name.clone()))
             }
-            "ConstantPoolId" => (
-                ParamKind::Property("Bytes".into()),
-                Binding::Pool(field.name.clone()),
-            ),
             _ => (
                 ParamKind::Property(ty.clone()),
                 Binding::Name(field.name.clone()),
@@ -293,7 +289,7 @@ pub(crate) fn builder(
         }
     };
     format!(
-        "    /// Build `{}` without validating its type contract.\n    pub fn {name}({params}){ret} {{\n        let (data, types) = ({constructor}, [{result_types}]);\n        {body}\n    }}\n",
+        "    /// Build `{}` without validating its type contract.\n    pub fn {name}({params}){ret} {{\n        let types = [{result_types}];\n        let data = {constructor};\n        {body}\n    }}\n",
         op.mnemonic
     )
 }

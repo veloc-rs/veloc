@@ -578,7 +578,6 @@ fn construction_does_not_validate_type_contracts() {
         ("binding", "Pattern { results: false, index: 1"),
         ("typeset", "Pattern { results: false, index: 0"),
         ("explicit", "Pattern { results: true, index: 0"),
-        ("float-type", "result 0 must have the type of `value`"),
         ("relation", "result must have more bits"),
         ("fixed", "Pattern { results: false, index: 0"),
         ("raw-results", "Pattern { results: true, index: 0"),
@@ -613,12 +612,6 @@ fn construction_does_not_validate_type_contracts() {
             "explicit" => {
                 let result = ins.output(Type::F32);
                 assert_eq!(ins.value_type(result), Type::F32);
-            }
-            "float-type" => {
-                let data = |writer: veloc_mir::InstWriter<'_>| {
-                    writer.fconst(veloc_mir::Float::from_f64_bits(0))
-                };
-                ins.insert(data, &[Type::F32]);
             }
             "relation" => {
                 let result = ins.sized(i);
@@ -676,7 +669,7 @@ fn construction_does_not_validate_type_contracts() {
         assert!(error.contains(expected), "{case}: {error}");
         // A Float's precision is supplied by its result annotation in text;
         // inconsistent typed properties are tested through raw construction.
-        if !case.starts_with("raw-") && case != "float-type" {
+        if !case.starts_with("raw-") {
             // The textual path constructs the same invalid IR, and only the
             // explicit validator rejects it there as well.
             let text = module.build().to_string();

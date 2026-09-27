@@ -137,7 +137,6 @@ impl Op {
 pub(crate) enum Binding {
     Name(String),
     Array(Vec<Binding>),
-    Pool(String),
     Table { cases: String, default: String },
 }
 

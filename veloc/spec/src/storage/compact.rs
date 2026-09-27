@@ -28,7 +28,6 @@ pub(crate) fn construction(
                 }).collect::<Vec<_>>();
                 format!("[{}]", items.join(", "))
             }
-            Binding::Pool(name) => format!("{}::insert(writer.dfg, {})", field.rust, local(name)),
             Binding::Table { cases, default } => format!(
                 "({}).iter().map(crate::BlockCall::as_view).chain(core::iter::once(({}).as_view()))",
                 local(cases), local(default)
@@ -47,10 +46,8 @@ fn size(ty: &str) -> Option<usize> {
     Some(match ty {
         "Opcode" | "IntCC" | "FloatCC" | "bool" | "u8" => 1,
         "MemFlags" | "Intrinsic" => 2,
-        "u32" | "i32" | "FuncId" | "SigId" | "ConstantPoolId" => 4,
+        "u32" | "i32" | "FuncId" | "SigId" => 4,
         "u64" => 8,
-        "Int" | "Float" => 9,
-        "VectorConst" => 11,
         _ => return None,
     })
 }
@@ -80,11 +77,7 @@ fn field_type(layout: &Layout, records: &[RecordDef], i: usize) -> Option<String
     if omitted(layout, records, i) {
         return (f.policy.references.is_edge()).then(|| "crate::Block".into());
     }
-    if f.ty.named("Int") || f.ty.named("Float") {
-        Some("storage::ScalarBits".into())
-    } else if f.ty.named("VectorConst") {
-        Some("storage::VectorBits".into())
-    } else if f.ty.named("u64") {
+    if f.ty.named("u64") {
         Some("[u8; 8]".into())
     } else {
         stored_type(f, records)
@@ -165,10 +158,6 @@ pub(super) fn encode(
         let value = local(i);
         let value = if !hot {
             value
-        } else if f.ty.named("Int") || f.ty.named("Float") {
-            format!("storage::ScalarBits::new({value}.into())")
-        } else if f.ty.named("VectorConst") {
-            format!("storage::VectorBits::new({value})")
         } else if f.ty.named("u64") {
             format!("{value}.to_le_bytes()")
         } else if omitted(layout, records, i) {
@@ -372,13 +361,7 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
     for layout in &hot {
         writeln!(out, "{} => {{", pattern(layout, records, true, "Self")).unwrap();
         for (i, f) in layout.fields.iter().enumerate() {
-            let expr = if f.ty.named("Int") {
-                format!("_f{i}.int()")
-            } else if f.ty.named("Float") {
-                format!("_f{i}.float()")
-            } else if f.ty.named("VectorConst") {
-                format!("_f{i}.value()")
-            } else if f.ty.named("u64") {
+            let expr = if f.ty.named("u64") {
                 format!("u64::from_le_bytes(*_f{i})")
             } else {
                 match f.access() {
@@ -434,15 +417,6 @@ pub(crate) fn inputs(
                     };
                     inputs.insert(name.clone(), Access::Index(Box::new(value.clone()), index));
                 }
-            }
-            Binding::Pool(name) => {
-                inputs.insert(
-                    name.clone(),
-                    Access::Pool {
-                        ty: field.rust.clone(),
-                        key: Box::new(value),
-                    },
-                );
             }
             Binding::Table { cases, default } => {
                 inputs.insert(cases.clone(), Access::SplitLast(Box::new(value.clone()), 1));

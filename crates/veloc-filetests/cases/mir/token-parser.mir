@@ -41,12 +41,12 @@ block0(v0:ptr,v1:i32,v2:mask<scalable 4>):
 // ----- global-and-declaration-like-value-names
 // run: roundtrip
 // check: global counter: i32 (local)
-// check: ssvalue.v0: i32 = iconst 1
+// check: ssvalue.v0: i32 = const 1
 // check: blockvalue.v1: i32 = iadd ssvalue.v0, ssvalue.v0
 global counter:i32(local)
 local function names()->i32
 block0():
-  ssvalue: i32 = iconst 1
+  ssvalue: i32 = const 1
   blockvalue: i32 = iadd ssvalue,ssvalue
   return blockvalue
 
@@ -137,7 +137,7 @@ local function bad(i32<4])->void
 // check: unknown opcode suffix `i32`
 local function bad()->i32
 block0():
-  v0: i32 = iconst.i32 1
+  v0: i32 = const.i32 1
   return v0
 
 // ----- missing-arrow-in-nested-signature
@@ -185,4 +185,4 @@ block0():
 // check: invalid integer constant
 local function bad()->i32
 block0():
-  值: i32 = iconst nope
+  值: i32 = const nope

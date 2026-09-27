@@ -27,8 +27,8 @@ impl<'a> VerifyContext<'a> {
     }
 }
 impl VerifyContextInfo for VerifyContext<'_> {
-    fn bytes(&self, value: VectorConst) -> Option<&[u8]> {
-        value.bytes(self.function.body?.dfg())
+    fn vector_constant(&self, value: crate::Value) -> Option<&VectorConst> {
+        self.function.body?.dfg().as_const(value)?.as_vector()
     }
     fn function_signature(&self, func: crate::FuncId) -> Option<&veloc_types::Signature> {
         self.signature(self.module.decls.get(func)?.signature)

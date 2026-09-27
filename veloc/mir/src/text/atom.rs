@@ -5,10 +5,11 @@
 use super::lexer::{Cursor, Kind};
 use super::parser::{self, OperandParser, ParseError};
 use super::printer::InstPrinter;
+use crate::TypeInfo;
 use crate::type_methods::VectorConstInfo;
 use crate::{
-    BlockCall, Float, FloatCC, FuncId, Int, IntCC, Intrinsic, ScalarConst, SigId, Type,
-    Value, VectorConst,
+    BlockCall, Float, FloatCC, FuncId, Int, IntCC, Intrinsic, ScalarConst, SigId, Type, Value,
+    VectorConst,
 };
 use alloc::vec::Vec;
 use core::{fmt, marker::PhantomData, str::FromStr};
@@ -36,6 +37,52 @@ pub(super) struct Bytes;
 pub(super) struct Values;
 pub(super) struct Successors;
 pub(super) struct FunctionName;
+
+impl AtomCodec for crate::Constant {
+    type Owned = Self;
+    type View<'a> = Self;
+
+    fn parse(
+        cx: &mut OperandParser<'_>,
+        input: &mut Cursor<'_>,
+        ty: Option<Type>,
+    ) -> Result<Self, ParseError> {
+        let ty = ty.ok_or_else(|| input.error("constant requires a type"))?;
+        if ty.is_vector() {
+            return VectorConst::parse(cx, input, Some(ty)).map(Into::into);
+        }
+        if ty.is_integer() {
+            return Int::parse(cx, input, Some(ty)).map(Into::into);
+        }
+        if ty.is_float() {
+            return Float::parse(cx, input, Some(ty)).map(Into::into);
+        }
+        if ty == Type::BOOL {
+            return bool::parse(cx, input, Some(ty)).map(|v| ScalarConst::from(v).into());
+        }
+        Err(input.error("unsupported literal type"))
+    }
+
+    fn print(
+        cx: &InstPrinter<'_>,
+        out: &mut dyn fmt::Write,
+        value: &Self,
+        _: Option<Type>,
+    ) -> fmt::Result {
+        let ty = Some(value.ty());
+        if let Some(v) = value.as_vector() {
+            return VectorConst::print(cx, out, v, ty);
+        }
+        let v = value.as_scalar().ok_or(fmt::Error)?;
+        if let Some(v) = v.as_int() {
+            return Int::print(cx, out, &v, ty);
+        }
+        if let Some(v) = v.as_float() {
+            return Float::print(cx, out, &v, ty);
+        }
+        bool::print(cx, out, &v.as_bool().ok_or(fmt::Error)?, ty)
+    }
+}
 
 impl<T: FromStr + fmt::Display> AtomCodec for Decimal<T> {
     type Owned = T;
@@ -184,16 +231,14 @@ impl AtomCodec for VectorConst {
             .ok_or_else(|| input.error("vector constant requires a vector result type"))?;
         if !input.peek_is(0, "splat") {
             let bytes = Bytes::parse(cx, input, None)?;
-            return Ok(cx.dense_constant(vector, bytes));
+            return Ok(VectorConst::dense(vector, bytes));
         }
         input.keyword("splat")?;
         input.expect(Kind::LParen)?;
         let element = vector.element_type();
         let ty = Some(element.as_type());
         let lane: ScalarConst = match element.element() {
-            veloc_types::Scalar::Int(_) => {
-                Int::parse(cx, input, ty)?.into()
-            }
+            veloc_types::Scalar::Int(_) => Int::parse(cx, input, ty)?.into(),
             veloc_types::Scalar::Float(_) => Float::parse(cx, input, ty)?.into(),
             veloc_types::Scalar::Bool => bool::parse(cx, input, ty)?.into(),
             veloc_types::Scalar::Ptr => unreachable!("pointer vector types are not representable"),
@@ -213,7 +258,7 @@ impl AtomCodec for VectorConst {
             return Err(fmt::Error);
         }
         if value.is_dense() {
-            return Bytes::print(cx, out, value.bytes(cx.dfg).ok_or(fmt::Error)?, None);
+            return Bytes::print(cx, out, value.bytes().ok_or(fmt::Error)?, None);
         }
         let scalar = value.splat_value().expect("splat constant");
         out.write_str("splat(")?;

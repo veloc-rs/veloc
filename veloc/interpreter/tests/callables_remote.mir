@@ -7,7 +7,7 @@ import function make() -> owned<(i32) -> i32>
 local function run() -> i32
 block0():
   v0: owned<(i32) -> i32> = call make() : () -> owned<(i32) -> i32>
-  v1: i32 = iconst 2
+  v1: i32 = const 2
   v2: i32 = call-value v0(v1)
   v3: i32 = iadd v2, v1
   return v3
@@ -15,7 +15,7 @@ block0():
 local function run_tail() -> i32
 block0():
   v0: owned<(i32) -> i32> = call make() : () -> owned<(i32) -> i32>
-  v1: i32 = iconst 2
+  v1: i32 = const 2
   tail-call-value v0(v1)
 
 local function drop_remote() -> void

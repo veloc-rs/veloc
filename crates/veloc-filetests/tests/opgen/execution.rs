@@ -21,7 +21,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {{
 #[test]
 fn generated_rust_executes_checked_arithmetic_and_short_circuit_loops() {
     // Compile the actual emitted Rust, not a second interpreter for the AST.
-    // Small host adapters make accidental eager pool reads observable as panics.
     let mut code = String::from(
         r#"
 #![allow(dead_code)]
@@ -30,16 +29,7 @@ type Module = ();
 type Inst = usize;
 type Type = ();
 type Result<T> = std::result::Result<T, String>;
-mod inst { #[derive(Clone, Copy)] pub struct ConstantPoolId(pub usize); }
-mod dfg {
-    pub type DataFlowGraph = Vec<Vec<u8>>;
-    impl crate::inst::ConstantPoolId {
-        pub fn get(self, data: &[Vec<u8>]) -> Option<&Vec<u8>> {
-            assert_ne!(self.0, 99, "unreachable property was read");
-            data.get(self.0)
-        }
-    }
-}
+mod dfg { pub type DataFlowGraph = (); }
 "#,
     );
     for (index, (predicate, expected)) in [
@@ -73,7 +63,7 @@ mod numeric_{index} {{
     #[test] fn execute() {{
         let f = Function;
         for ((bits, yes), expected) in [(3, false), (3, true), (u64::MAX, false), (u64::MAX, true)].into_iter().zip({expected:?}) {{
-            assert_eq!(f.validate_constraints(&Vec::new(), &(), 0, &ViewData::Custom {{ bits, yes }}, &[], &[]).is_ok(), expected);
+            assert_eq!(f.validate_constraints(&(), &(), 0, &ViewData::Custom {{ bits, yes }}, &[], &[]).is_ok(), expected);
         }}
     }}
 }}
@@ -108,10 +98,11 @@ mod numeric_{index} {{
 fn Above(items: array(u32, 2), limit: i128) -> bool {{
     value = all(items, |item| i128(item) > limit)
 ; }}
-struct Buffers {{ first: ConstantPoolId, second: ConstantPoolId }}
+type Bytes = rust("crate::Bytes") {{ view = borrowed; }}
+struct Buffers {{ first: Bytes, second: Bytes }}
 op Example(data: Bytes, other: Bytes) -> Value<Vector> {{
     meta = OpInfo {{ memory: MemoryEffect::NONE }};
-    mnemonic = "example"; storage = Buffers {{ first: pool(data), second: pool(other) }};
+    mnemonic = "example"; storage = Buffers {{ first: data, second: other }};
     text = "{{data:bytes}}, {{other:bytes}}";
     verify {{
         {predicate};
@@ -125,21 +116,19 @@ op Example(data: Bytes, other: Bytes) -> Value<Vector> {{
 mod sequences_{index} {{
     use super::*;
     enum Opcode {{ Example }}
-    type InstView<'a> = ViewData;
-    enum ViewData {{ Buffers {{ first: inst::ConstantPoolId, second: inst::ConstantPoolId }} }}
-    impl ViewData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
+    type InstView<'a> = ViewData<'a>;
+    enum ViewData<'a> {{ Buffers {{ first: &'a [u8], second: &'a [u8] }} }}
+    impl ViewData<'_> {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
     struct Function;
     impl Function {{ fn constraint_error(&self, _: Inst, message: &str) -> String {{ message.into() }} }}
     {validation}
     #[test] fn execute() {{
-        let data = ViewData::Buffers {{ first: inst::ConstantPoolId(0), second: inst::ConstantPoolId(99) }};
+        let data = ViewData::Buffers {{ first: &[0, 1], second: &[] }};
         let f = Function;
-        let buffers = vec![vec![0, 1]];
+        let buffers = ();
         assert_eq!(f.validate_constraints(&buffers, &(), 0, &data, &[], &[]).is_ok(), {valid});
-        let empty = vec![vec![]];
-        assert!(f.validate_constraints(&empty, &(), 0, &data, &[], &[]).is_ok());
-        let missing = vec![];
-        assert!(f.validate_constraints(&missing, &(), 0, &data, &[], &[]).is_err());
+        let empty = ViewData::Buffers {{ first: &[], second: &[] }};
+        assert!(f.validate_constraints(&buffers, &(), 0, &empty, &[], &[]).is_ok());
     }}
 }}
 "#));

@@ -6,7 +6,8 @@ use cranelift_entity::{PrimaryMap, SecondaryMap};
 use hashbrown::HashMap;
 
 mod operands;
-mod pool;
+#[cfg(test)]
+mod tests;
 pub(crate) use operands::OperandRange;
 pub use operands::{Use, Uses};
 
@@ -21,6 +22,8 @@ pub struct DataFlowGraph {
     pub(crate) instructions: PrimaryMap<Inst, StoredInst>,
     pub(crate) fields: FieldPool,
     pub(crate) values: PrimaryMap<Value, ValueData>,
+    constants: PrimaryMap<crate::ConstId, Constant>,
+    literals: HashMap<Constant, Value>,
     // Debug names are sparse metadata, not one String header per preceding value.
     value_names: HashMap<Value, Box<str>>,
     inst_results: SecondaryMap<Inst, ValueList>,
@@ -43,6 +46,8 @@ impl DataFlowGraph {
             instructions: PrimaryMap::new(),
             fields: FieldPool::default(),
             values: PrimaryMap::new(),
+            constants: PrimaryMap::new(),
+            literals: HashMap::new(),
             value_names: HashMap::new(),
             inst_results: SecondaryMap::new(),
             value_list_pool: ValueListPool::new(),
@@ -189,6 +194,10 @@ impl DataFlowGraph {
     /// Construction/parser escape hatch. Normal transformations must preserve
     /// the instruction contract and use a typed editor operation instead.
     pub(crate) fn set_value_type(&mut self, value: Value, ty: Type) {
+        assert!(
+            !matches!(self.value_def(value), ValueDef::Const(_)),
+            "literal types are immutable"
+        );
         self.values[value].ty = ty;
     }
 
@@ -199,43 +208,51 @@ impl DataFlowGraph {
     pub fn value_inst(&self, val: Value) -> Option<Inst> {
         match self.value_def(val) {
             ValueDef::Inst(inst) => Some(inst),
-            ValueDef::Param(_) => None,
+            ValueDef::Param(_) | ValueDef::Const(_) => None,
         }
     }
 
     /// Read a scalar literal without traversing expression graphs.
     pub fn as_scalar_const(&self, val: Value) -> Option<crate::ScalarConst> {
-        let inst = self.value_inst(val)?;
-        let value = match self.inst(inst) {
-            InstView::Iconst { value } => value.into(),
-            InstView::Fconst { value } => value.into(),
-            InstView::Bconst { value } => crate::ScalarConst::from(value),
-            _ => return None,
-        };
-        (self.value_type(val) == value.ty()).then_some(value)
+        self.as_const(val)?.as_scalar()
     }
 
-    pub fn as_const(&self, val: Value) -> Option<Constant> {
-        if let Some(value) = self.as_scalar_const(val) {
-            return Some(value.into());
+    pub fn as_const(&self, val: Value) -> Option<&Constant> {
+        let ValueDef::Const(id) = self.value_def(val) else {
+            return None;
+        };
+        Some(&self.constants[id])
+    }
+
+    pub(crate) fn constant(&mut self, constant: Constant) -> Value {
+        if let Some(&value) = self.literals.get(&constant) {
+            return value;
         }
-        let ty = self.value_type(val);
-        match self.inst(self.value_inst(val)?) {
-            InstView::Vconst { value } => (value.ty() == ty).then(|| value.into()),
-            InstView::Unary {
-                opcode: crate::Opcode::Splat,
-                arg,
-            } => {
-                let vector = ty.as_vector()?;
-                let scalar = self.as_scalar_const(arg)?;
-                if scalar.ty() != vector.element_type().as_type() {
-                    return None;
-                }
-                crate::VectorConst::splat(scalar, vector.lane_count(), vector.is_scalable())
-                    .map(Into::into)
-            }
-            _ => None,
-        }
+        let id = self.constants.push(constant.clone());
+        let value = self.values.push(ValueData {
+            ty: constant.ty(),
+            def: ValueDef::Const(id),
+        });
+        self.literals.insert(constant, value);
+        value
+    }
+
+    /// Resolve a textual definition in its reserved slot, including forward uses.
+    pub(crate) fn bind_constant(&mut self, value: Value, constant: Constant) {
+        let ty = constant.ty();
+        let id = if let Some(&other) = self.literals.get(&constant) {
+            let ValueDef::Const(id) = self.value_def(other) else {
+                unreachable!()
+            };
+            id
+        } else {
+            self.literals.insert(constant.clone(), value);
+            self.constants.push(constant)
+        };
+        self.values[value] = ValueData {
+            ty,
+            def: ValueDef::Const(id),
+        };
     }
 
     fn clear_inst(&mut self, inst: Inst) {

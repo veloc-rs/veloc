@@ -40,6 +40,15 @@ impl<'a> FuncEditor<'a> {
         self.body
     }
 
+    /// Intern a position-independent literal. Dense bytes must belong to this body.
+    pub fn constant(&mut self, value: crate::Constant) -> Value {
+        self.body.dfg.constant(value)
+    }
+
+    pub(crate) fn bind_constant(&mut self, value: Value, constant: crate::Constant) {
+        self.body.dfg.bind_constant(value, constant);
+    }
+
     pub fn at_end<'ctx>(
         self,
         block: Block,
@@ -139,9 +148,8 @@ impl<'a> FuncEditor<'a> {
     }
 
     /// Intern vector bytes without validation; the validator checks their layout.
-    pub fn dense_constant(&mut self, ty: crate::VectorType, bytes: Vec<u8>) -> crate::VectorConst {
-        let id = crate::inst::ConstantPoolId::insert(&mut self.body.dfg, bytes);
-        crate::VectorConst::dense(ty, id)
+    pub fn dense_constant(&mut self, ty: crate::VectorType, bytes: Vec<u8>) -> Value {
+        self.constant(crate::VectorConst::dense(ty, bytes).into())
     }
 
     pub fn set_value_type(&mut self, value: Value, ty: Type) {
@@ -460,9 +468,7 @@ impl<'ctx, 'body> InstCursor<'ctx, 'body> {
     }
 
     pub fn dense_const(&mut self, bytes: Vec<u8>, ty: Type) -> Value {
-        let value = self
-            .editor
-            .dense_constant(ty.as_vector().expect("vector constant type"), bytes);
-        self.vconst(value)
+        self.editor
+            .dense_constant(ty.as_vector().expect("vector constant type"), bytes)
     }
 }

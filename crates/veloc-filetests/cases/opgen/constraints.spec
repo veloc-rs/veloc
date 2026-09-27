@@ -226,26 +226,28 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
     }
 }
 
-// ----- constraints/pool-properties-and-lexical-binders-are-generic-1
+// ----- constraints/byte-properties-and-lexical-binders-are-generic-1
 // run: opgen-error
 // check: projection type mismatch: expected Named("bool"), found Named("i128")
-struct Custom { pool_id: ConstantPoolId }
+type Bytes = rust("crate::Bytes") { view = borrowed; }
+struct Custom { data: Bytes }
 op Example(data: Bytes) -> (result: Value<Vector>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
-    mnemonic = "example"; storage = Custom { pool_id: pool(data) };
+    mnemonic = "example"; storage = Custom { data };
     text = "{data:bytes}";
     verify {
         len(data) == result.lanes()?; all(data, |i| i);
     }
 }
 
-// ----- constraints/pool-properties-and-lexical-binders-are-generic-2
+// ----- constraints/byte-properties-and-lexical-binders-are-generic-2
 // run: opgen-error
 // check: unknown expression name or operation: result
-struct Custom { pool_id: ConstantPoolId }
+type Bytes = rust("crate::Bytes") { view = borrowed; }
+struct Custom { data: Bytes }
 op Example(data: Bytes) -> () {
     meta = OpInfo { memory: MemoryEffect::NONE };
-    mnemonic = "example"; storage = Custom { pool_id: pool(data) };
+    mnemonic = "example"; storage = Custom { data };
     text = "{data:bytes}";
     verify {
         len(data) == result.lanes()?; all(data, |i| i < 2 * result.lanes()?);

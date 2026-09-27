@@ -32,18 +32,6 @@ struct Binary {
 struct Ternary {
     args: values(3),
 }
-struct Iconst {
-    value: Int,
-}
-struct Fconst {
-    value: Float,
-}
-struct Bconst {
-    value: bool,
-}
-struct Vconst {
-    value: VectorConst,
-}
 struct Load {
     ptr: Value,
     offset: u32,
@@ -145,10 +133,6 @@ struct VectorGather {
 struct VectorScatter {
     args: values(3),
     ext: VectorMemOptions,
-}
-struct Shuffle {
-    args: values(2),
-    mask: ConstantPoolId,
 }
 struct Unreachable {
 

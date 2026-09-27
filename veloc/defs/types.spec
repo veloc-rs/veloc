@@ -25,14 +25,16 @@ type Float = rust("crate::Float") {
     fn ty(self) -> Type { value = type(self); }
 }
 type VectorConst = rust("crate::VectorConst") {
+    view = borrowed;
     trait = rust("crate::type_methods::VectorConstInfo");
-    fn ty(self) -> Type { value = type(self); }
-    const fn is_dense(self) -> bool;
-    const fn encoded_size(self) -> optional(u32);
+    fn ty(&self) -> Type { value = type(self); }
+    fn is_dense(&self) -> bool;
+    fn encoded_size(&self) -> optional(u32);
+    fn bytes(&self) -> optional(sequence(u8));
+    fn unsigned_max(&self) -> optional(u64);
 }
 type FuncId = rust("crate::FuncId");
 type Intrinsic = rust("crate::Intrinsic");
-type ConstantPoolId = rust("crate::inst::ConstantPoolId");
 type SymbolId = rust("crate::SymbolId");
 
 // Shared effect interfaces are imported from the Rust owner.

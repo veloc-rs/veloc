@@ -346,18 +346,25 @@ impl<'ctx, 'body> InstCursor<'ctx, 'body> {
         self.fconst(val.into())
     }
 
-    /// Materialize a constant in this function. Dense handles must belong to it.
+    pub fn iconst(&mut self, value: crate::Int) -> Value {
+        self.constant(value.into())
+    }
+
+    pub fn fconst(&mut self, value: crate::Float) -> Value {
+        self.constant(value.into())
+    }
+
+    pub fn bconst(&mut self, value: bool) -> Value {
+        self.constant(crate::ScalarConst::from(value).into())
+    }
+
+    pub fn vconst(&mut self, value: crate::VectorConst) -> Value {
+        self.constant(value.into())
+    }
+
+    /// Intern a constant; no instruction is inserted at this cursor.
     pub fn constant(&mut self, value: crate::Constant) -> Value {
-        let ty = value.ty();
-        let data = |writer: InstWriter<'_>| {
-            if let Some(value) = value.as_scalar() {
-                writer.scalar_const(value)
-            } else {
-                writer.vconst(value.as_vector().expect("supported constant form"))
-            }
-        };
-        let [result] = self.emit(data, [ty]);
-        result
+        self.editor.constant(value)
     }
 
     pub fn i8x16const(&mut self, values: [i8; 16]) -> Value {

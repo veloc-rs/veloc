@@ -19,6 +19,7 @@ type I16X8 = vector(I16, 8);
 type Type = rust("veloc_types::Type") {
     trait = rust("veloc_types::traits::TypeInfo");
     const fn signature(self) -> optional(SigId);
+    const fn element_type(self) -> optional(Type);
     const fn element_bits(self) -> optional(u32);
     const fn bit_size(self) -> optional(TypeBits);
     const fn lanes(self) -> optional(u32);

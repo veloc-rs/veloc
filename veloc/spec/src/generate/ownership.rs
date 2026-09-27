@@ -30,7 +30,6 @@ pub(crate) fn generate(defs: &Definitions) -> String {
                 .join(", ");
             let projections: BTreeMap<_, _> = crate::model::access::projections(
                 op,
-                "dfg",
                 |name| {
                     format!(
                         "*_f{}",

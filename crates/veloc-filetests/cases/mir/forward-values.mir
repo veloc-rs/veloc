@@ -12,9 +12,9 @@ block1():
 block2():
   br-table v1, [], block4()
 block3():
-  v0: bool = bconst true
-  v1: i32 = iconst 0
-  v2: i64 = iconst 0
+  v0: bool = const true
+  v1: i32 = const 0
+  v2: i64 = const 0
   v3: ptr = inttoptr v2
   jump block1()
 block4():

@@ -447,6 +447,17 @@ const impl TypeInfo for Type {
     }
 
     #[inline]
+    fn element_type(self) -> Option<Type> {
+        if let Some(vector) = self.as_vector() {
+            Some(vector.element_type().as_type())
+        } else if self.as_scalar().is_some() {
+            Some(self)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
     fn element_bits(self) -> Option<u32> {
         match self.element() {
             Some(element) => element.element_bits(),

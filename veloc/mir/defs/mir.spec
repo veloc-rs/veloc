@@ -112,35 +112,6 @@ op ClosureDrop(move callee: Value<Callable>) -> () {
     }
 }
 
-op Iconst(value: Int) -> Value<type(value)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
-    mnemonic = "iconst";
-    storage = Iconst { value };
-}
-
-op Fconst(value: Float) -> Value<type(value)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
-    mnemonic = "fconst";
-    storage = Fconst { value };
-}
-
-op Bconst(value: bool) -> Value<Type::BOOL> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
-    mnemonic = "bconst";
-    storage = Bconst { value };
-}
-
-op Vconst(value: VectorConst) -> Value<type(value)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
-    mnemonic = "vconst";
-    storage = Vconst { value };
-    verify(ctx: VerifyContext) {
-        require(!value.is_dense() || value.ty().is_fixed(), "dense vector constant requires a fixed type");
-        require(!value.is_dense() || len(ctx.bytes(value)?) == value.encoded_size()?, "dense vector constant byte count must match its type");
-        require(!value.is_dense() || !value.ty().is_predicate() || all(ctx.bytes(value)?, |byte| byte <= 1), "boolean constant lanes must be zero or one");
-    }
-}
-
 op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
     meta = OpInfo {};
     mnemonic = "iadd";
@@ -722,16 +693,17 @@ op Splat<T: Scalar>(arg: Value<T>) -> Value<vector(T)> {
     storage = Unary { arg };
 }
 
-op Shuffle<T: Vector>(lhs: Value<T>, rhs: Value<T>, mask: Bytes) -> Value<T> {
+op Shuffle<T: Vector, M: Integer & Vector, R: Vector>(lhs: Value<T>, rhs: Value<T>, mask: Value<M>) -> Value<R> {
     meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "shuffle";
-    storage = Shuffle { args: [lhs, rhs], mask: pool(mask) };
-    text = "{lhs}, {rhs}, mask={mask:bytes}";
+    storage = Ternary { args: [lhs, rhs, mask] };
 
-    verify {
-        require(lhs.ty().is_fixed(), "shuffle requires a fixed-width vector");
-        require(len(mask) == lhs.ty().lanes()?, "shuffle mask length must match its lane count");
-        require(all(mask, |i| i < 2 * lhs.ty().lanes()?), "shuffle selector is out of range");
+    verify(ctx: VerifyContext) {
+        require(T.is_fixed() && M.is_fixed() && R.is_fixed(), "shuffle requires fixed-width vectors");
+        require(T.element_type()? == R.element_type()?, "shuffle input and result element types must match");
+        require(M.lanes()? == R.lanes()?, "shuffle mask length must match its result lane count");
+        let indices = ctx.vector_constant(mask)?;
+        require(indices.unsigned_max()? < 2 * u64(lhs.ty().lanes()?), "shuffle selector is out of range");
     }
 }
 

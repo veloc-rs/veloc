@@ -24,6 +24,7 @@ struct FuncTranslator<'a> {
     mmodule: &'a mut MachineModule,
     mfunc: MachineFunction,
     value_map: PrimaryMap<Value, Reg>,
+    literal_blocks: cranelift_entity::SecondaryMap<Value, Option<BlockId>>,
     block_map: cranelift_entity::SecondaryMap<veloc_mir::Block, Option<BlockId>>,
 }
 
@@ -105,6 +106,7 @@ impl<'a> FuncTranslator<'a> {
                 value_count + func.params().len(),
             ),
             value_map: PrimaryMap::with_capacity(value_count),
+            literal_blocks: cranelift_entity::SecondaryMap::new(),
             block_map: cranelift_entity::SecondaryMap::with_capacity(block_count),
         }
     }
@@ -113,7 +115,11 @@ impl<'a> FuncTranslator<'a> {
         let func = self.func;
         // Allocate value identities before translating forward references.
         for (val, data) in func.dfg().values() {
-            let vreg = self.mfunc.editor().alloc_vreg(data.ty);
+            let vreg = if matches!(data.def, veloc_mir::ValueDef::Const(_)) {
+                Reg::default() // Replaced by a block-local materialization before use.
+            } else {
+                self.mfunc.editor().alloc_vreg(data.ty)
+            };
             let mapped = self.value_map.push(vreg);
             debug_assert_eq!(mapped, val);
         }
@@ -160,6 +166,36 @@ impl<'a> FuncTranslator<'a> {
                 }
             }
             for inst in func.layout().block_insts(block_id) {
+                for &value in func.dfg().operands(inst) {
+                    if let Some(constant) = func.dfg().as_const(value)
+                        && self.literal_blocks[value] != Some(mblock)
+                    {
+                        let scalar = constant.as_scalar().ok_or_else(|| {
+                            Error::translate("vector constant lowering is not supported")
+                        })?;
+                        let dst = self.mfunc.editor().alloc_vreg(constant.ty());
+                        if scalar.as_float().is_some() {
+                            let bits_ty = if constant.ty() == veloc_mir::Type::F32 {
+                                veloc_mir::Type::I32
+                            } else {
+                                veloc_mir::Type::I64
+                            };
+                            let bits = self.mfunc.editor().alloc_vreg(bits_ty);
+                            self.mfunc
+                                .editor()
+                                .at_end(mblock)
+                                .constant(bits, scalar.to_bits() as i64);
+                            self.mfunc.editor().at_end(mblock).bitcast(dst, bits);
+                        } else {
+                            let imm = scalar
+                                .as_int()
+                                .map_or(scalar.to_bits() as i64, |v| v.signed());
+                            self.mfunc.editor().at_end(mblock).constant(dst, imm);
+                        }
+                        self.value_map[value] = dst;
+                        self.literal_blocks[value] = Some(mblock);
+                    }
+                }
                 self.translate_instruction(inst, mblock)?;
             }
         }
@@ -338,42 +374,6 @@ impl<'a> FuncTranslator<'a> {
                     .at_end(mblock)
                     .with_memory(access)
                     .store(val, base, *offset as i64))
-            }
-
-            InstView::Iconst { value: imm } => Ok(self
-                .mfunc
-                .editor()
-                .at_end(mblock)
-                .constant(result(), imm.signed())),
-
-            InstView::Bconst { value } => Ok(self
-                .mfunc
-                .editor()
-                .at_end(mblock)
-                .constant(result(), i64::from(*value))),
-
-            InstView::Fconst { value } => {
-                let dst = result();
-                let dst_ty = self.mfunc.vreg_data(dst).ty;
-
-                let (bits_ty, bits_imm) = if dst_ty == veloc_mir::Type::F32 {
-                    (veloc_mir::Type::I32, value.to_bits() as u32 as i64)
-                } else if dst_ty == veloc_mir::Type::F64 {
-                    (veloc_mir::Type::I64, value.to_bits() as i64)
-                } else {
-                    return Err(Error::translate(format!(
-                        "Unsupported float constant type: {:?}",
-                        dst_ty
-                    )));
-                };
-
-                let bits_reg = self.mfunc.editor().alloc_vreg(bits_ty);
-                self.mfunc
-                    .editor()
-                    .at_end(mblock)
-                    .constant(bits_reg, bits_imm);
-
-                Ok(self.mfunc.editor().at_end(mblock).bitcast(dst, bits_reg))
             }
 
             InstView::Jump { dest } => {

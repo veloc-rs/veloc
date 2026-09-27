@@ -553,26 +553,26 @@ fn compile_function<'a>(
     }
 
     let mut returned = false;
+    let mut literal_blocks = vec![None; dfg.values().len()];
     for &block in &blocks {
         asm.bind(labels[block.0 as usize].expect("placed block has label"))?;
         for inst in body.layout().block_insts(block) {
+            // Literal identity does not imply a definition or a stack write in MIR.
+            // This baseline backend initializes its home once in each use block.
+            for &value in dfg.operands(inst) {
+                if let Some(c) = dfg.as_const(value)
+                    && literal_blocks[value.0 as usize] != Some(block)
+                {
+                    let c = c
+                        .as_scalar()
+                        .ok_or_else(|| unsupported("vector constant"))?;
+                    asm.emit(&MOV_RAX_IMM, &[Patch::U64(c.to_bits())])?;
+                    emit_one(&mut asm, &STORE_RAX, slot(value)?)?;
+                    literal_blocks[value.0 as usize] = Some(block);
+                }
+            }
             let results_of_inst = dfg.inst_results(inst);
             match dfg.inst(inst) {
-                InstView::Iconst { value } => {
-                    let [result] = results_of_inst else {
-                        return Err(unsupported("integer constant arity"));
-                    };
-                    memory_width(dfg.value_type(*result))?;
-                    asm.emit(&MOV_RAX_IMM, &[Patch::U64(value.to_bits())])?;
-                    emit_one(&mut asm, &STORE_RAX, slot(*result)?)?;
-                }
-                InstView::Bconst { value } => {
-                    let [result] = results_of_inst else {
-                        return Err(unsupported("boolean constant arity"));
-                    };
-                    asm.emit(&MOV_RAX_IMM, &[Patch::U64(u64::from(value))])?;
-                    emit_one(&mut asm, &STORE_RAX, slot(*result)?)?;
-                }
                 InstView::Alloca { .. } => {
                     let [result] = results_of_inst else {
                         return Err(unsupported("alloca result arity"));
@@ -580,17 +580,6 @@ fn compile_function<'a>(
                     let offset =
                         objects[result.0 as usize].expect("placed alloca has stack object");
                     emit_one(&mut asm, &ADDR_RBP, offset)?;
-                    emit_one(&mut asm, &STORE_RAX, slot(*result)?)?;
-                }
-                InstView::Fconst { value } => {
-                    let [result] = results_of_inst else {
-                        return Err(unsupported("float constant arity"));
-                    };
-                    match dfg.value_type(*result) {
-                        Type::F32 | Type::F64 => {}
-                        ty => return Err(unsupported(format!("float constant type {ty}"))),
-                    }
-                    asm.emit(&MOV_RAX_IMM, &[Patch::U64(value.to_bits())])?;
                     emit_one(&mut asm, &STORE_RAX, slot(*result)?)?;
                 }
                 InstView::Load { ptr, offset, .. } => {

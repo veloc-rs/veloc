@@ -152,7 +152,7 @@ impl<'a> EqualitySession<'a> {
         let mut anchors = Vec::new();
         for block in f.cfg().compute_rpo(f.entry_block()) {
             for &param in f.dfg().block_params(block) {
-                graph.register_value(param);
+                graph.register_value(f, param);
             }
             for inst in f.layout().block_insts(block) {
                 graph.register_inst(f, inst);
@@ -308,12 +308,12 @@ mod tests {
                 r#"
 local function cross(i64, ptr) -> i64
 block0(v0: i64, v1: ptr):
-  v2: i64 = iconst 3
+  v2: i64 = const 3
   v3: i64 = iadd v0, v2
   jump block1()
 block1():
   v4: i64 = load.volatile v1, offset=0
-  v5: i64 = iconst 4
+  v5: i64 = const 4
   v6: i64 = iadd v3, v5
   v7: i64 = iadd v6, v4
   return v7
@@ -339,10 +339,10 @@ block1():
         assert_eq!(f.layout().inst_block(load), load_block);
         assert_eq!(f.dfg().inst(load).opcode(), Op::Load);
         let constants: Vec<_> = f
-            .layout()
-            .block_order()
-            .flat_map(|b| f.layout().block_insts(b))
-            .filter_map(|i| f.dfg().first_result(i))
+            .dfg()
+            .values()
+            .keys()
+            .filter(|&v| f.dfg().uses(v).next().is_some())
             .filter_map(|v| f.dfg().as_scalar_const(v))
             .map(|c| c.to_bits())
             .collect();
@@ -358,8 +358,8 @@ block1():
             let y = Value(1);
             let mut graph = Graph::new();
             graph.limit = Budget::DEFAULT.graph_nodes;
-            graph.register_value(x);
-            graph.register_value(y);
+            graph.register_value(&body, x);
+            graph.register_value(&body, y);
             let mut ir = body.expressions();
             let sum = graph.build(&mut ir, Op::IAdd, &[x, y], ty).unwrap();
             let cancel = graph.build(&mut ir, Op::ISub, &[sum, x], ty).unwrap();
@@ -422,7 +422,7 @@ block2():
                     r#"
 local function identity(i64) -> i64
 block0(v0: i64):
-  v1: i64 = iconst 0
+  v1: i64 = const 0
   v2: i64 = iadd v0, v1
   return v2
 "#,
@@ -462,8 +462,8 @@ block0(v0: i64):
                 r#"
 local function shared(i64, ptr) -> i64
 block0(v0: i64, v1: ptr):
-  v2: i64 = iconst 6
-  v3: i64 = iconst 9
+  v2: i64 = const 6
+  v3: i64 = const 9
   v4: i64 = imul v0, v2
   store v4, v1, offset=0
   v5: i64 = imul v0, v3

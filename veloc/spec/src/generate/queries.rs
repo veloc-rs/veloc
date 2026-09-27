@@ -38,7 +38,6 @@ pub(crate) fn generate(defs: &Definitions, host: Host<'_>) -> String {
                         .join(", ");
                     let locals = crate::model::access::projections(
                         op,
-                        "dfg",
                         |name| {
                             format!(
                                 "*_f{}",

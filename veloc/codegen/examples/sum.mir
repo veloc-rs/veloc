@@ -1,7 +1,7 @@
 export function sum(i64) -> i64
 block0(v0: i64):
-  v1: i64 = iconst 0
-  v2: i64 = iconst 1
+  v1: i64 = const 0
+  v2: i64 = const 1
   jump block1(v0, v1)
 block1(v3: i64, v4: i64):
   v5: bool = icmp eq v3, v1

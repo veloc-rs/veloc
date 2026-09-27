@@ -248,6 +248,23 @@ impl<'a> FuncPrinter<'a> {
 
     fn fmt_block(&self, f: &mut dyn Write, body: &crate::FuncBody, block: crate::Block) -> Result {
         self.fmt_block_header(f, body, block)?;
+        // Declarations have function scope, not an instruction position. Emit
+        // each used literal once; forward uses and layout order are irrelevant.
+        if block == body.entry_block() {
+            use super::atom::AtomCodec;
+            let printer = InstPrinter::new(body.dfg(), Some(self.module));
+            for (value, _) in body.dfg().values() {
+                if let Some(constant) = body.dfg().as_const(value)
+                    && body.dfg().uses(value).next().is_some()
+                {
+                    f.write_str("  ")?;
+                    printer.fmt_definition(f, value)?;
+                    f.write_str(" = const ")?;
+                    crate::Constant::print(&printer, f, constant, Some(constant.ty()))?;
+                    writeln!(f)?;
+                }
+            }
+        }
         for inst in body.layout().block_insts(block) {
             f.write_str("  ")?;
             InstPrinter::new(body.dfg(), Some(self.module)).fmt_inst_with_results(f, inst)?;

@@ -11,8 +11,8 @@ block0(v0: ptr):
 // check: already-defined
 local function bad() -> i32
 block0():
-  value: i32 = iconst 1
-  value: i32 = iconst 2
+  value: i32 = const 1
+  value: i32 = const 2
   return value
 
 // ----- address-mode-1
@@ -96,15 +96,6 @@ block0(v0: ptr, v1: i32):
   return
 import function callee(i32) -> i32
 
-// ----- duplicate-7
-// run: parse-error
-// check: duplicate
-local function bad(i32<4>, i32<4>) -> void
-block0(v3: i32<4>, v8: i32<4>):
-  v24: i32<4> = shuffle v3, v8, mask=0x00010203, mask=0x00010203
-  return
-import function callee(i32) -> i32
-
 // ----- duplicate-8
 // run: parse-error
 // check: duplicate
@@ -182,7 +173,7 @@ import function callee(i32) -> i32
 // check: integer
 local function bad() -> void
 block0():
-  v5: i32 = iconst nonsense
+  v5: i32 = const nonsense
   return
 import function callee(i32) -> i32
 
@@ -191,7 +182,7 @@ import function callee(i32) -> i32
 // check: true
 local function bad() -> void
 block0():
-  v7: bool = bconst maybe
+  v7: bool = const maybe
   return
 import function callee(i32) -> i32
 
@@ -200,7 +191,7 @@ import function callee(i32) -> i32
 // check: even
 local function bad() -> void
 block0():
-  v8: i32<4> = vconst 0x123
+  v8: i32<4> = const 0x123
   return
 import function callee(i32) -> i32
 
@@ -377,7 +368,7 @@ import function callee(i32) -> i32
 
 // ----- payload-27
 // run: parse-error
-// check: mask
+// check: expected
 local function bad(i32<4>, i32<4>) -> void
 block0(v3: i32<4>, v8: i32<4>):
   v24: i32<4> = shuffle v3, v8
