@@ -1381,6 +1381,9 @@ impl Checker<'_> {
                 ));
             }
         }
+        if matches!(declaration.body(), Some(FunctionBody::Vm { .. })) {
+            return Err(Error::at(self.source, declaration.offset, "VM operation is only available in rule programs"));
+        }
         let body = match &declaration.kind {
             DeclKind::Constant { value: None, .. }
             | DeclKind::Function {

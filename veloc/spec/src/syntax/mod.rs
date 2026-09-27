@@ -84,6 +84,7 @@ pub struct Signature {
 pub enum FunctionBody {
     Value(Node),
     Rust { offset: usize, path: Option<String> },
+    Vm { offset: usize, opcode: String },
 }
 
 /// Source declarations; members retain their owner instead of becoming flat records.
@@ -206,7 +207,7 @@ impl Decl {
                 signature.relocate(base);
                 match body {
                     FunctionBody::Value(node) => node.relocate(base),
-                    FunctionBody::Rust { offset, .. } => *offset += base,
+                    FunctionBody::Rust { offset, .. } | FunctionBody::Vm { offset, .. } => *offset += base,
                 }
             }
             DeclKind::Op(signature)

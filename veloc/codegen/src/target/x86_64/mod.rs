@@ -11,20 +11,17 @@ pub mod lowering;
 mod machine;
 mod operand;
 mod pass_config;
-mod select;
 
 pub use emitter::X86_64CodeEmitter;
 pub use frame::X86_64FrameLowering;
-pub use legalize::X86_64Legalizer;
 pub use operand::X86_64OperandLowering;
 pub use pass_config::{X86_64PassConfig, X86_64PostIsel};
-pub use select::X86_64Selector;
 
 use crate::target::{
     RegClass, RegClassInfo, RegisterFile, SpecialRegs, SpillKind, TargetConfig, TargetDescription,
-    TargetEmitter, TargetFrameLowering, TargetInfo, TargetInstructionSelector, TargetInstructions,
-    TargetLegalizer, TargetMachine, TargetOperandLowering, TargetPassConfig, TargetPostIsel,
-    TargetRegalloc, TargetSchedule, ValidationMode,
+    TargetEmitter, TargetFrameLowering, TargetInfo, TargetInstructions, TargetMachine,
+    TargetOperandLowering, TargetPassConfig, TargetPostIsel, TargetRegalloc, TargetSchedule,
+    ValidationMode,
 };
 use veloc_lir::RegisterBank;
 use veloc_types::{DataLayout, Type, TypeLayout};
@@ -108,8 +105,6 @@ pub struct X86_64TargetMachine {
     config: TargetConfig,
     desc: TargetDescription,
     features: inst::FeatureSet,
-    legalizer: X86_64Legalizer,
-    selector: X86_64Selector,
     operand_lowering: X86_64OperandLowering,
     post_isel: X86_64PostIsel,
     frame_lowering: X86_64FrameLowering,
@@ -139,8 +134,6 @@ impl X86_64TargetMachine {
             config,
             desc,
             features,
-            legalizer: X86_64Legalizer { features },
-            selector: X86_64Selector::new(features),
             operand_lowering: X86_64OperandLowering,
             post_isel: X86_64PostIsel,
             frame_lowering: X86_64FrameLowering,
@@ -245,12 +238,17 @@ impl TargetMachine for X86_64TargetMachine {
         &self.config
     }
 
-    fn legalizer(&self) -> &dyn TargetLegalizer {
-        &self.legalizer
+    fn legalizer(&self) -> crate::passes::lowering::legalize::LegalizePolicy<'_> {
+        legalize::policy(&self.features)
     }
 
-    fn selector(&self) -> &dyn TargetInstructionSelector {
-        &self.selector
+    fn selector(&self) -> crate::isel::SelectPolicy<'_> {
+        crate::isel::SelectPolicy {
+            program: inst::selection_program,
+            features: self.features.as_words(),
+            metadata: |op| inst::target_inst_metadata(inst::TargetInst::from_u32(op)),
+            predicate: &self.features,
+        }
     }
 
     fn operand_lowering(&self) -> &dyn TargetOperandLowering {

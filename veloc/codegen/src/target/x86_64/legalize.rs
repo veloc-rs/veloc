@@ -1,7 +1,6 @@
 use super::inst as generated;
-use crate::passes::lowering::legalize::Query;
-use crate::passes::lowering::{LegalizeAction, RewriteContext};
-use crate::target::TargetLegalizer;
+use crate::passes::lowering::RewriteContext;
+use crate::passes::lowering::legalize::LegalizePolicy;
 use veloc_lir::GenericOpcode;
 use veloc_lir::{InstBuild, InstRead};
 use veloc_mir::Type;
@@ -13,26 +12,21 @@ mod host {
     include!(concat!(env!("OUT_DIR"), "/legalize_x86_64.rs"));
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct X86_64Legalizer {
-    pub features: generated::FeatureSet,
-}
 impl host::Instruction for crate::target::x86_64::inst::TargetInst {
-    const POPCNT32: Self = Self::X86Popcnt32;
-    const POPCNT64: Self = Self::X86Popcnt64;
+    const POPCNT32: &'static [u64] = Self::X86Popcnt32.required_features().as_words();
+    const POPCNT64: &'static [u64] = Self::X86Popcnt64.required_features().as_words();
 }
 impl host::Target for generated::FeatureSet {
-    fn supports(&self, instruction: crate::target::x86_64::inst::TargetInst) -> bool {
-        self.contains_all(instruction.required_features())
+    fn words(&self) -> &[u64] {
+        self.as_words()
     }
 }
 
-impl TargetLegalizer for X86_64Legalizer {
-    fn legalize_action(
-        &self,
-        query: &Query<'_>,
-    ) -> Result<Option<LegalizeAction>, crate::error::Error> {
-        Ok(host::decide(query.opcode(), query, &self.features))
+pub(super) fn policy(features: &generated::FeatureSet) -> LegalizePolicy<'_> {
+    LegalizePolicy {
+        program: host::program,
+        features: host::Target::words(features),
+        predicate: None,
     }
 }
 fn displacement(mfunc: &mut RewriteContext<'_>) -> Result<(), crate::error::Error> {

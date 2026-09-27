@@ -2,12 +2,24 @@
 //!
 //! 将通用 LIR 指令转换为目标架构特定指令。
 //!
-//! 这是一个通用的指令选择驱动器，实际的架构特定选择逻辑
-//! 通过 TargetInstructionSelector trait 委托给具体的目标后端实现。
+//! 目标提供静态规则和扩展，通用 VM 负责匹配与构建。
 
-use crate::target::TargetInstructionSelector;
+use super::matching::{self, Program};
 use std::vec::Vec;
-use veloc_lir::{InstId, MachineFunction};
+use veloc_lir::{GenericOpcode, InstId, MachineFunction, Reg};
+
+/// Target data and the explicit host extension used by the selection VM.
+#[derive(Clone, Copy)]
+pub struct SelectPolicy<'a> {
+    pub program: fn(GenericOpcode) -> Option<&'static Program>,
+    pub features: &'a [u64],
+    pub metadata: fn(u32) -> &'static crate::target::TargetInstMetadata,
+    pub predicate: &'a dyn SelectHooks,
+}
+
+pub trait SelectHooks: Send + Sync {
+    fn predicate(&self, id: u32, reg: Reg) -> bool;
+}
 
 fn format_select_failure_inst(mfunc: &MachineFunction, inst_id: InstId) -> std::string::String {
     use std::format;
@@ -49,7 +61,7 @@ pub enum SelectResult {
 }
 
 /// 指令选择上下文
-pub struct SelectionContext<'a> {
+struct SelectionContext<'a> {
     pub mfunc: &'a mut MachineFunction,
     pub inst_id: InstId,
     pub selected: &'a mut Vec<InstId>,
@@ -106,20 +118,63 @@ fn apply_select_result(
 /// 指令选择器
 ///
 /// 这是 GlobalISel 的核心组件之一，负责驱动指令选择过程。
-/// 实际的选择逻辑委托给 TargetInstructionSelector 实现。
+/// Executes target-provided programs through the shared VM.
 pub struct InstructionSelector<'a> {
-    target: &'a dyn TargetInstructionSelector,
+    target: SelectPolicy<'a>,
 }
 
 impl<'a> InstructionSelector<'a> {
     /// 创建新的指令选择器
-    pub fn new(target: &'a dyn TargetInstructionSelector) -> Self {
+    pub fn new(target: SelectPolicy<'a>) -> Self {
         Self { target }
     }
 
-    /// 对所有基本块执行指令选择
-    ///
-    /// 与 `select` 相同，提供更清晰的命名。
+    /// Match and build before committing replacement in the traversal below.
+    fn select_inst(
+        &self,
+        ctx: &mut SelectionContext<'_>,
+    ) -> Result<SelectResult, crate::error::Error> {
+        let opcode = ctx.mfunc.inst(ctx.inst_id).opcode();
+        let veloc_lir::MachineOpcode::Generic(generic) = opcode else {
+            return Ok(SelectResult::Keep);
+        };
+        let program = (self.target.program)(generic)
+            .ok_or_else(|| crate::error::Error::select(opcode, "No selection program"))?;
+        let memory = ctx.mfunc.inst(ctx.inst_id).memory();
+        let mut edit = ctx.mfunc.editor();
+        let mut insert = edit.before(ctx.inst_id);
+        let result = matching::execute(
+            program,
+            self.target.features,
+            &|id, reg| self.target.predicate.predicate(id, reg),
+            &mut insert,
+            ctx.inst_id,
+            ctx.selected,
+            ctx.edge_transfers,
+        )
+        .ok_or_else(|| crate::error::Error::select(opcode, "No matching selection rule"))?;
+        if let Some(access) = memory {
+            let mut destination = None;
+            for &id in ctx.selected.iter() {
+                let veloc_lir::MachineOpcode::Target(op) = edit.inst(id).opcode() else {
+                    continue;
+                };
+                if let Some(shape) = (self.target.metadata)(op).memory {
+                    if shape != (access.kind, access.bytes) || destination.replace(id).is_some() {
+                        return Err(crate::error::Error::codegen(
+                            "selection changed the memory access direction, size or count",
+                        ));
+                    }
+                }
+            }
+            let id = destination.ok_or_else(|| {
+                crate::error::Error::codegen("selection dropped the source memory access")
+            })?;
+            edit.set_inst_memory(id, Some(access));
+        }
+        Ok(result)
+    }
+
     pub fn select(&self, mfunc: &mut MachineFunction) -> Result<(), crate::error::Error> {
         // 复用的临时缓冲区，避免每条指令分配
         let mut selected: Vec<InstId> = Vec::with_capacity(4);
@@ -162,7 +217,7 @@ impl<'a> InstructionSelector<'a> {
                         selected: &mut selected,
                         edge_transfers: &mut edge_transfers,
                     };
-                    match self.target.select_instruction(&mut ctx) {
+                    match self.select_inst(&mut ctx) {
                         Ok(result) => result,
                         Err(crate::error::Error::Select(err)) => {
                             return Err(crate::error::Error::select(

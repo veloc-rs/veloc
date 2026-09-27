@@ -93,15 +93,16 @@ fn typed_legalization_contracts_reject_invalid_rules() {
     );
     let shared =
         strip_imports(std::fs::read_to_string(root.join("codegen/defs/legalize.spec")).unwrap());
-    let mut source = format!("{target}\n{shared}");
+    let mut source = format!("{target}\n{shared}").replace(
+        "fn words(&self)",
+        "fn available(&self) -> bool;\n    fn words(&self)",
+    );
     // Exercise nested host decisions independently of target policy spelling.
     source.push_str(
         r#"
-rule decision_test<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
-    action = match T {
-        Type::I32 if target.supports(Instruction::POPCNT32) => legal,
-        _ => legal,
-    };
+select<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
+    require(target.available());
+    legal(inst);
 }
 "#,
     );
@@ -114,53 +115,49 @@ rule decision_test<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
                 function: "decide",
                 opcode: "veloc_lir::GenericOpcode",
                 field: "veloc_lir::FieldValue",
-                result: "Action",
                 value_interface: "ValueRules",
-                value_adapter: "crate::passes::lowering::RewriteContext::replace_values",
-                rewrite: "crate::passes::lowering::LegalizeAction::rewrite",
-                legal_action: "crate::passes::lowering::LegalizeAction::Legal",
+                runtime: "crate::passes::lowering::legalize::vm",
             },
         )
     };
-    // Moving templates before or after policy cannot affect decision priority.
-    let decision = |code: String| {
-        code.split("pub fn decide")
-            .nth(1)
-            .unwrap()
-            .split("_ => None,\n} }\n")
-            .next()
-            .unwrap()
-            .to_owned()
-    };
-    assert_eq!(
-        decision(compile(&format!("{target}\n{shared}")).unwrap()),
-        decision(compile(&format!("{shared}\n{target}")).unwrap())
-    );
-    // Templates alone are checked and generated, but create no matching cases.
-    let declarations = target.split("rule ret_0").next().unwrap();
-    let templates_only = compile(&format!("{declarations}\n{shared}")).unwrap();
-    assert!(!templates_only.contains("GenericOpcode::Ctpop =>"));
-    assert!(!templates_only.contains("GenericOpcode::Ctlz =>"));
-    assert!(!templates_only.contains("GenericOpcode::Cttz =>"));
-    for (from, to, message) in [
-        (
-            "IntCC::LtS",
-            "FloatCC::Lt",
-            "attribute constant type mismatch",
-        ),
-        ("IntCC::LtS", "IntCC::Missing", "undeclared constant"),
-    ] {
-        let error = compile(&source.replace(from, to)).unwrap_err();
-        assert!(error.message.contains(message), "{}", error.message);
+
+    let output = compile(&source).unwrap();
+    assert!(output.contains("static PROGRAM:"));
+    assert!(output.contains("Some((&PROGRAM, entry))"));
+    assert!(!output.contains("::vm::select("));
+    assert!(output.contains("Emit {"));
+    assert!(output.contains("CheckSignature {"));
+    assert!(!output.contains("fn rewrite_"));
+    assert!(output.contains("REWRITE_load_displacement"));
+    assert!(output.contains("CheckSignedRange {"));
+    assert!(output.contains("CheckFeatures {"));
+    assert!(output.contains("CallPredicate {"));
+    assert!(output.contains("veloc_types::Type::PTR"));
+    assert!(!output.contains("pub trait Type {"));
+    // Shared templates do not register candidates and can precede or follow policy.
+    for source in [format!("{target}\n{shared}"), format!("{shared}\n{target}")] {
+        assert!(compile(&source).is_ok());
     }
-    let renamed = compile(
-        &source
-            .replace("fn emit(&mut self", "fn construct(&mut self")
-            .replace("emit = emit;", "emit = construct;"),
-    )
-    .unwrap();
-    assert!(renamed.contains("ctx.construct("));
-    for (from, to, message) in [
+    let declarations = target.split("select(").next().unwrap();
+    let templates = compile(&format!("{declarations}\n{shared}")).unwrap();
+    assert!(!templates.contains("GenericOpcode::Ctpop =>"));
+    assert!(!templates.contains("GenericOpcode::Ctlz =>"));
+    // Even an unused Rust binding must be checked by the Rust compiler.
+    let unused = source.replace("load_displacement(inst);", "legal(inst);");
+    assert!(
+        compile(&unused)
+            .unwrap()
+            .contains("apply: crate::target::x86_64::legalize::displacement")
+    );
+    let renamed = source
+        .replace("fn emit(&mut self", "fn construct(&mut self")
+        .replace("emit = emit;", "emit = construct;");
+    assert!(
+        compile(&renamed)
+            .unwrap()
+            .contains("ValueRewrite::construct(ctx")
+    );
+    for (from, to, diagnostic) in [
         (
             "emit = emit;",
             "emit = missing;",
@@ -171,133 +168,30 @@ rule decision_test<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
             "result: usize",
             "invalid signature for rewrite role emit",
         ),
-    ] {
-        let error = compile(&source.replace(from, to)).unwrap_err();
-        assert!(error.message.contains(message), "{}", error.message);
-    }
-    let output = compile(&source).unwrap();
-    assert!(!output.contains("ctx.input("));
-    assert!(!output.contains("ctx.value_type("));
-    assert!(!output.contains("ctx.bind("));
-    assert!(output.contains("destination: Option<veloc_lir::Reg>"));
-    assert!(!output.contains("pub trait Query"));
-    assert!(output.contains("&impl crate::passes::lowering::legalize::contracts::Query"));
-    // Rules use the shared Type representation without a second constant trait.
-    assert!(output.contains("veloc_types::Type::PTR"));
-    assert!(!output.contains("pub trait Type {"));
-    assert!(
-        compile(&source.replace("Type::I32 if", "Type::MISSING if"))
-            .unwrap_err()
-            .message
-            .contains("undeclared constant")
-    );
-    assert!(output.contains("rewrite_widen_add"));
-    assert!(!output.contains("Recipes"));
-    assert!(output.contains("fn rewrite_load_displacement_host()"));
-    let unused = source.replace("expand(load_displacement, inst)", "legal");
-    assert!(
-        compile(&unused)
-            .unwrap()
-            .contains("fn rewrite_load_displacement_host()")
-    );
-    // Nested decisions and host identifiers share the same expression compiler.
-    let nested = source.replace(
-        "_ => legal,",
-        "_ => match true { true if false => legal, _ => legal, },",
-    );
-    assert!(compile(&nested).unwrap().contains("match true"));
-    let named_host = source
-        .replace("target: &Target", "__match_value: &Target")
-        .replace("target.supports", "__match_value.supports");
-    let output = compile(&named_host).unwrap();
-    assert!(output.contains("__match_value_ == "));
-    assert!(output.contains("__match_value.supports"));
-
-    // Fragments compose without introducing root mutations or runtime calls.
-    let composed = format!(
-        "{source}\n{}",
-        r#"
-fn twice<T: Word>(x: T) -> T {
-    lir::Add<T>(x, x)
-}
-fn nested<U: Word>(x: U) -> U {
-    let a = twice<U>(x);
-    twice<U>(a)
-}
-rewrite composition(inst: lir::Ctpop<Type::I32>) {
-    replace = nested<Type::I32>(lir::Constant<Type::I32>(9));
-}
-"#
-    );
-    let generated = compile(&composed).unwrap();
-    let body = generated
-        .split("fn rewrite_composition_case1")
-        .nth(1)
-        .unwrap();
-    assert_eq!(body.matches("GenericOpcode::Constant").count(), 1);
-    assert_eq!(body.matches("GenericOpcode::Add").count(), 2);
-    assert!(!body.contains("nested("));
-    for (extra, diagnostic) in [
-        ("fn bad<T: Word>(x: T) -> T { bad<T>(x) }", "recursive"),
         (
-            "fn bad<T: Word>(x: T) -> T { other<T>(x) } fn other<U: Word>(x: U) -> U { bad<U>(x) }",
-            "recursive",
+            "IntCC::LtS",
+            "FloatCC::Lt",
+            "attribute constant type mismatch",
         ),
+        ("IntCC::LtS", "IntCC::Missing", "undeclared constant"),
         (
-            "fn bad(x: Type::I32) -> Type::I64 { x }",
-            "result type mismatch",
-        ),
-        (
-            "fn bad(x: Type::I32) -> Type::I32 { low_bit<Type::I64>(x) }",
-            "argument type mismatch",
-        ),
-        (
-            "fn bad(x: Type::F32) -> Type::F32 { low_bit<Type::F32>(x) }",
-            "outside domain",
-        ),
-        ("fn bad(x: Type::I32) -> Type::I32 { low_bit(x) }", "arity"),
-        ("fn bad<T: Word>(x: T) -> T { inst.src }", "unbound value"),
-        (
-            "fn bad(x: Type::I32) -> Type::I32 { let x = x; x }",
-            "duplicate",
-        ),
-    ] {
-        let error = compile(&format!("{source}\n{extra}")).unwrap_err();
-        assert!(error.message.contains(diagnostic), "{error}");
-    }
-
-    for (from, to, diagnostic) in [
-        (
-            "expand(load_displacement, inst)",
-            "expand(store_displacement, inst)",
+            "load_displacement(inst)",
+            "store_displacement(inst)",
             "node signature",
         ),
         (
-            "lowering::legalize::displacement",
-            "lowering::legalize::displacement;panic!()",
+            "crate::target::x86_64::legalize::displacement",
+            "crate::target::x86_64::legalize::displacement;panic!()",
             "Rust",
         ),
+        ("popcount32(inst)", "missing(inst)", "unknown rewrite"),
+        ("popcount32(inst)", "popcount64(inst)", "type domain"),
         (
-            "expand(popcount32, inst)",
-            "expand(missing, inst)",
-            "unknown rewrite",
-        ),
-        (
-            "expand(popcount32, inst)",
-            "expand(popcount64, inst)",
-            "type domain",
-        ),
-        (
-            "expand(popcount32, inst)",
-            "expand(leading_zeros32, inst)",
+            "popcount32(inst)",
+            "leading_zeros32(inst)",
             "node signature",
         ),
-        (
-            "expand(popcount32, inst)",
-            "expand(popcount32, unknown)",
-            "matched instruction",
-        ),
-        ("rewrite popcount32", "rule popcount32", "unknown rewrite"),
+        ("popcount32(inst)", "popcount32(unknown)", "case must end"),
         (
             "let nibbles =",
             "let pairs =",
@@ -317,32 +211,6 @@ rewrite composition(inst: lir::Ctpop<Type::I32>) {
             "lir::Constant<Type::I32>(1)",
             "lir::Constant<Type::I32>(9223372036854775808)",
             "exceeds i64",
-        ),
-        ("_ => legal,", "", "final unguarded _ fallback"),
-        (
-            "_ => legal,",
-            "_ if false => legal,",
-            "final unguarded _ fallback",
-        ),
-        (
-            "_ => legal,",
-            "_ => legal, Type::I32 => legal, _ => legal,",
-            "unreachable arm",
-        ),
-        (
-            "_ => legal,",
-            "Type::I32 => legal, Type::I32 => legal, _ => legal,",
-            "unreachable repeated",
-        ),
-        (
-            "Type::I32 if target.supports",
-            "unknown if target.supports",
-            "match patterns",
-        ),
-        (
-            "Type::I32 if target.supports",
-            "Type::UNDECLARED if target.supports",
-            "undeclared constant",
         ),
         (
             "inst: lir::Add<T>",
@@ -365,8 +233,8 @@ rewrite composition(inst: lir::Ctpop<Type::I32>) {
             "does not accept",
         ),
         (
-            "replace = lir::Trunc<T>(lir::Add",
-            "replace = lir::Trunc<Type::I8>(lir::Add",
+            "replace(inst, build(lir::Trunc<T>(lir::Add",
+            "replace(inst, build(lir::Trunc<Type::I8>(lir::Add",
             "replacement result",
         ),
         (
@@ -396,17 +264,41 @@ rewrite composition(inst: lir::Ctpop<Type::I32>) {
             "undeclared constant",
         ),
         (
-            "replace = lir::Trunc<T>",
-            "emit = lir::Trunc<T>",
-            "unknown decision rule field",
+            "inst.offset",
+            "inst.missing",
+            "declared scalar instruction field",
         ),
     ] {
-        assert!(source.contains(from));
+        assert!(source.contains(from), "{from}");
         let error = compile(&source.replacen(from, to, 1)).unwrap_err();
         assert!(
             error.message.contains(diagnostic),
             "expected {diagnostic}, got {error}"
         );
+    }
+    for (extra, diagnostic) in [
+        ("fn bad<T: Word>(x: T) -> T { bad<T>(x) }", "recursive"),
+        (
+            "fn bad(x: Type::I32) -> Type::I64 { x }",
+            "result type mismatch",
+        ),
+        (
+            "fn bad(x: Type::I32) -> Type::I32 { low_bit<Type::I64>(x) }",
+            "argument type mismatch",
+        ),
+        (
+            "fn bad(x: Type::F32) -> Type::F32 { low_bit<Type::F32>(x) }",
+            "outside domain",
+        ),
+        ("fn bad(x: Type::I32) -> Type::I32 { low_bit(x) }", "arity"),
+        ("fn bad<T: Word>(x: T) -> T { inst.src }", "unbound value"),
+        (
+            "fn bad(x: Type::I32) -> Type::I32 { let x = x; x }",
+            "duplicate",
+        ),
+    ] {
+        let error = compile(&format!("{source}\n{extra}")).unwrap_err();
+        assert!(error.message.contains(diagnostic), "{error}");
     }
 }
 
@@ -583,11 +475,8 @@ fn construction_functions_compose_with_checked_rust_bindings() {
             function: "decide",
             opcode: "crate::Opcode",
             field: "crate::Field",
-            result: "Action",
             value_interface: "ValueRules",
-            value_adapter: "crate::replace_values",
-            rewrite: "crate::rewrite",
-            legal_action: "crate::unused_legal",
+            runtime: "crate::vm",
         },
     )
     .unwrap();
@@ -595,6 +484,23 @@ fn construction_functions_compose_with_checked_rust_bindings() {
     let source = temp.join("construction.rs");
     let executable = temp.join(format!("construction{}", std::env::consts::EXE_SUFFIX));
     let host = include_str!("fixtures/construction.rs");
+    let deps = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_owned();
+    let bytecode = fs::read_dir(&deps)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("libveloc_bytecode-")
+                && p.extension().is_some_and(|e| e == "rlib")
+        })
+        .max_by_key(|p| fs::metadata(p).unwrap().modified().unwrap())
+        .unwrap();
     for (host, valid) in [
         (host.to_owned(), true),
         (
@@ -608,7 +514,9 @@ fn construction_functions_compose_with_checked_rust_bindings() {
     ] {
         fs::write(&source, format!("{host}\nmod generated {{ {code} }}")).unwrap();
         let output = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
-            .args(["--edition=2024", "-o"])
+            .args(["--edition=2024", "--extern"])
+            .arg(format!("veloc_bytecode={}", bytecode.display()))
+            .arg("-o")
             .arg(&executable)
             .arg(&source)
             .output()

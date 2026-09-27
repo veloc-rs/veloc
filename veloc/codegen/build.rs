@@ -37,14 +37,11 @@ fn main() {
                     definitions: &lir,
                     rust: veloc_spec::rules::DecisionRust {
                         dialect: "lir",
-                        function: "decide",
+                        function: "program",
                         opcode: "veloc_lir::GenericOpcode",
                         field: "veloc_lir::FieldValue",
-                        result: "Action",
                         value_interface: "ValueRules",
-                        value_adapter: "crate::passes::lowering::RewriteContext::replace_values",
-                        rewrite: "crate::passes::lowering::LegalizeAction::rewrite",
-                        legal_action: "crate::passes::lowering::LegalizeAction::Legal",
+                        runtime: "crate::passes::lowering::legalize::vm",
                     },
                 }),
                 ..Default::default()

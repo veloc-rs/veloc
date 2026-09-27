@@ -1,4 +1,5 @@
 pub mod info;
+pub mod vm;
 
 pub use info::*;
 
@@ -6,35 +7,36 @@ pub use info::*;
 mod tests;
 
 use crate::error::{Error, Result};
-use crate::target::TargetLegalizer;
-use veloc_lir::MachineFunction;
+use std::collections::VecDeque;
+use veloc_lir::function::EditChanges;
+use veloc_lir::{FuncEditor, InstId, MachineFunction, MachineOpcode};
+
+const REWRITES_PER_INST: usize = 1024;
+const TRACE_LENGTH: usize = 16;
 
 pub struct Legalizer<'a> {
-    target: &'a dyn TargetLegalizer,
+    target: LegalizePolicy<'a>,
 }
 
 impl<'a> Legalizer<'a> {
-    pub fn new(target: &'a dyn TargetLegalizer) -> Self {
+    pub fn new(target: LegalizePolicy<'a>) -> Self {
         Self { target }
     }
 
-    /// Explicit checkpoint; this never repairs the input or runs during construction.
+    /// Explicit read-only checkpoint. Uses the same matcher as execution.
     pub fn verify(&self, function: &MachineFunction) -> Result<()> {
         for id in function.blocks().flat_map(|b| function.block_insts(b)) {
-            let inst = function.inst(id);
-            if function
-                .try_call_info(id)
-                .is_some_and(|info| info.frame.is_none())
-            {
-                return Err(Error::codegen(std::format!("unlowered ABI call {id:?}")));
+            if needs_abi(function, id) {
+                return Err(Error::codegen(format!("unlowered ABI call {id:?}")));
             }
+            let inst = function.inst(id);
             if inst.is_generic() && !inst.is_call_frame() {
                 let query = Query::from_inst(inst, function.vregs())?;
                 if !matches!(
-                    self.target.legalize_action(&query)?,
-                    Some(LegalizeAction::Legal)
+                    vm::select(self.target, &query),
+                    Some((_, vm::Action::Legal))
                 ) {
-                    return Err(Error::codegen(std::format!(
+                    return Err(Error::codegen(format!(
                         "illegal instruction at selection boundary: {id:?}"
                     )));
                 }
@@ -43,72 +45,82 @@ impl<'a> Legalizer<'a> {
         Ok(())
     }
 
-    /// New calls enter ABI lowering before their generated transfers are legalized.
+    /// The worklist only schedules changed instructions. Matching, budget checks
+    /// and tracked edits are one engine step; ABI lowering remains a separate service.
     pub fn legalize(
         &self,
-        mfunc: &mut MachineFunction,
-        mut lower_call: impl FnMut(&mut veloc_lir::FuncEditor<'_>, veloc_lir::InstId) -> Result<()>,
+        function: &mut MachineFunction,
+        mut lower_call: impl FnMut(&mut FuncEditor<'_>, InstId) -> Result<()>,
     ) -> Result<bool> {
-        use std::collections::VecDeque;
-        const REWRITES_PER_INST: usize = 1024;
-        const TRACE_LENGTH: usize = 16;
-
-        // Queries depend only on instruction data and immutable value types.
-        // CFG changes alone cannot change legality; placement events report the
-        // affected instructions, including instructions entering new blocks.
-        let budget = mfunc.inst_count().max(1).saturating_mul(REWRITES_PER_INST);
-        let mut pending: VecDeque<_> = mfunc
+        let mut engine = Engine {
+            policy: self.target,
+            limit: function.inst_count().max(1).saturating_mul(REWRITES_PER_INST),
+            rewrites: 0,
+            trace: VecDeque::new(),
+        };
+        let mut pending: VecDeque<_> = function
             .blocks()
-            .flat_map(|block| mfunc.block_insts(block))
+            .flat_map(|block| function.block_insts(block))
             .collect();
         let mut queued: hashbrown::HashSet<_> = pending.iter().copied().collect();
-        let mut rewrites = 0;
-        let mut trace = VecDeque::new();
         while let Some(id) = pending.pop_front() {
             queued.remove(&id);
-            if mfunc.inst_block(id).is_none() {
-                continue;
-            }
-            let inst = mfunc.inst(id);
-            // Target nodes belong to selection/expansion and final emission,
-            // not generic instruction legalization.
-            if !inst.is_generic() || inst.is_invalid() || inst.is_call_frame() {
-                continue;
-            }
-            let opcode = inst.opcode();
-            if mfunc
-                .try_call_info(id)
-                .is_some_and(|info| info.frame.is_none())
-            {
-                if rewrites == budget {
-                    return Err(Error::codegen("ABI legalization did not converge"));
-                }
-                let (result, changes) = mfunc.editor().track(|f| lower_call(f, id));
-                result?;
-                if mfunc
-                    .try_call_info(id)
-                    .is_some_and(|info| info.frame.is_none())
-                {
-                    return Err(Error::codegen("ABI lowering left an unresolved call"));
-                }
-                rewrites += 1;
-                for changed in changes.insts.into_iter().chain(core::iter::once(id)) {
-                    if mfunc.inst_block(changed).is_some() && queued.insert(changed) {
-                        pending.push_back(changed);
-                    }
-                }
-                continue;
-            }
-            let query = Query::from_inst(inst, mfunc.vregs())?;
-            let action = self.target.legalize_action(&query)?.ok_or_else(|| {
-                Error::codegen(std::format!("missing legalization rule for {opcode:?}"))
-            })?;
-            let LegalizeAction::Rewrite(rewrite) = action else {
+            let Some(changes) = engine.step(function, id, &mut lower_call)? else {
                 continue;
             };
-            // General SSA rewrites cannot change an ABI location or its transfer
-            // width. Such changes must be expressed by ABI lowering before this
-            // boundary, not by pretending a physical register is a typed value.
+            // A surviving root must be checked again even if only its neighbours
+            // were edited. Removed instructions need no further processing.
+            for changed in changes.insts.into_iter().chain(core::iter::once(id)) {
+                if function.inst_block(changed).is_some() && queued.insert(changed) {
+                    pending.push_back(changed);
+                }
+            }
+        }
+        Ok(engine.rewrites != 0)
+    }
+}
+
+fn needs_abi(function: &MachineFunction, id: InstId) -> bool {
+    function
+        .try_call_info(id)
+        .is_some_and(|info| info.frame.is_none())
+}
+
+/// Per-run state, not target policy. The budget spans all blocks and ABI edits.
+struct Engine<'a> {
+    policy: LegalizePolicy<'a>,
+    limit: usize,
+    rewrites: usize,
+    trace: VecDeque<(InstId, MachineOpcode, &'static str)>,
+}
+
+impl Engine<'_> {
+    fn step(
+        &mut self,
+        function: &mut MachineFunction,
+        id: InstId,
+        lower_call: &mut impl FnMut(&mut FuncEditor<'_>, InstId) -> Result<()>,
+    ) -> Result<Option<EditChanges>> {
+        if function.inst_block(id).is_none() {
+            return Ok(None);
+        }
+        let inst = function.inst(id);
+        if !inst.is_generic() || inst.is_invalid() || inst.is_call_frame() {
+            return Ok(None);
+        }
+        let opcode = inst.opcode();
+        // None denotes an unresolved call handed off to ABI lowering, not a
+        // missing rule. All other instructions must match a legalization entry.
+        let selected = if needs_abi(function, id) {
+            None
+        } else {
+            let query = Query::from_inst(inst, function.vregs())?;
+            let selected = vm::select(self.policy, &query).ok_or_else(|| {
+                Error::codegen(format!("missing legalization rule for {opcode:?}"))
+            })?;
+            if matches!(selected.1, vm::Action::Legal) {
+                return Ok(None);
+            }
             if inst
                 .results()
                 .iter()
@@ -119,32 +131,47 @@ impl<'a> Legalizer<'a> {
                     "ABI boundary requires unsupported legalization; lower its value conversion before the boundary",
                 ));
             }
-            let rule = rewrite.name;
-            if rewrites == budget {
-                return Err(Error::codegen(std::format!(
-                    "legalization did not converge after {budget} rewrites; recent rules: {trace:?}; next: {id:?} {opcode:?} {rule:?}"
-                )));
-            }
-            let (result, changes) = mfunc.editor().track(|f| rewrite.apply(id, f));
-            result?;
-            if changes.insts.is_empty() {
-                return Err(Error::codegen(std::format!(
-                    "legalization rule {rule:?} made no instruction edits for {id:?} {opcode:?}"
-                )));
-            }
-            rewrites += 1;
-            if trace.len() == TRACE_LENGTH {
-                trace.pop_front();
-            }
-            trace.push_back((id, opcode, rule));
-            // A successful callback is not proof that its surviving root is
-            // legal. Re-query it even when only another instruction was edited.
-            for changed in changes.insts.into_iter().chain(core::iter::once(id)) {
-                if mfunc.inst_block(changed).is_some() && queued.insert(changed) {
-                    pending.push_back(changed);
-                }
-            }
+            Some(selected)
+        };
+        let rule = match selected {
+            None => "ABI lowering",
+            Some((_, vm::Action::Host { name, .. } | vm::Action::Recipe { name, .. })) => name,
+            Some((_, vm::Action::Legal)) => unreachable!("legal instructions do not rewrite"),
+        };
+        // Matching an already-legal instruction consumes no rewrite budget.
+        if self.rewrites == self.limit {
+            return Err(Error::codegen(format!(
+                "legalization did not converge after {} rewrites; recent rules: {:?}; next: {id:?} {opcode:?} {rule:?}",
+                self.limit, self.trace,
+            )));
         }
-        Ok(rewrites != 0)
+        let (result, changes) = function.editor().track(|edit| {
+            let Some((program, action)) = selected else {
+                return lower_call(edit, id);
+            };
+            let mut ctx = RewriteContext::new(id, edit.editor());
+            match *action {
+                vm::Action::Host { apply, .. } => apply(&mut ctx),
+                vm::Action::Recipe { entry, slots, .. } => {
+                    vm::apply(program, entry, slots, &mut ctx)
+                }
+                vm::Action::Legal => unreachable!("legal instructions do not rewrite"),
+            }
+        });
+        result?;
+        if selected.is_none() && needs_abi(function, id) {
+            return Err(Error::codegen("ABI lowering left an unresolved call"));
+        }
+        if changes.insts.is_empty() {
+            return Err(Error::codegen(format!(
+                "legalization rule {rule:?} made no instruction edits for {id:?} {opcode:?}"
+            )));
+        }
+        self.rewrites += 1;
+        if self.trace.len() == TRACE_LENGTH {
+            self.trace.pop_front();
+        }
+        self.trace.push_back((id, opcode, rule));
+        Ok(Some(changes))
     }
 }

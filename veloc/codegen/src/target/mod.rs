@@ -9,7 +9,7 @@ mod callconv;
 mod types;
 
 use crate::Emitter;
-pub use crate::passes::lowering::{LegalizeAction, RewriteContext};
+pub use crate::passes::lowering::RewriteContext;
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
 use std::borrow::Cow;
 use std::boxed::Box;
@@ -130,11 +130,11 @@ pub trait TargetMachine: TargetRegalloc + TargetSchedule {
     /// 获取架构配置
     fn config(&self) -> &TargetConfig;
 
-    /// 获取 legalize 组件。
-    fn legalizer(&self) -> &dyn TargetLegalizer;
+    /// Immutable legalization rules and target capabilities.
+    fn legalizer(&self) -> crate::passes::lowering::legalize::LegalizePolicy<'_>;
 
-    /// 获取指令选择组件。
-    fn selector(&self) -> &dyn TargetInstructionSelector;
+    /// Immutable selection rules and explicit host extensions.
+    fn selector(&self) -> crate::isel::SelectPolicy<'_>;
 
     /// 获取操作数/寄存器拷贝 lowering 组件。
     fn operand_lowering(&self) -> &dyn TargetOperandLowering;
@@ -189,8 +189,6 @@ pub trait TargetEmitter: Send + Sync {
         Ok(())
     }
 }
-
-pub use crate::isel::{SelectResult, SelectionContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteResult {
@@ -302,25 +300,6 @@ impl TargetInstMetadata {
             fixed_uses: self.fixed_uses.into(),
         }
     }
-}
-
-pub trait TargetLegalizer: Send + Sync {
-    /// Pure instruction-local query. Missing coverage is an error at the driver,
-    /// never an implicit declaration of legality.
-    fn legalize_action(
-        &self,
-        query: &crate::passes::lowering::legalize::Query<'_>,
-    ) -> Result<Option<LegalizeAction>, crate::error::Error>;
-}
-
-pub trait TargetInstructionSelector: Send + Sync {
-    /// 选择目标指令
-    ///
-    /// 返回选择结果，由指令选择驱动器统一处理。
-    fn select_instruction(
-        &self,
-        ctx: &mut SelectionContext<'_>,
-    ) -> Result<SelectResult, crate::error::Error>;
 }
 
 pub trait TargetOperandLowering: Send + Sync {

@@ -5,18 +5,18 @@ pub mod legalize;
 use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::Result;
 use crate::pipeline::{FunctionPass, FunctionPassContext};
-use crate::target::TargetLegalizer;
+use legalize::LegalizePolicy;
 use veloc_lir::MachineFunction;
 
 pub use abi::AbiLoweringPass;
-pub use legalize::{LegalizeAction, Legalizer, RewriteContext};
+pub use legalize::{Legalizer, RewriteContext};
 
 pub struct LegalizePass<'a> {
-    legalizer: &'a dyn TargetLegalizer,
+    legalizer: LegalizePolicy<'a>,
 }
 
 impl<'a> LegalizePass<'a> {
-    pub fn new(legalizer: &'a dyn TargetLegalizer) -> Self {
+    pub fn new(legalizer: LegalizePolicy<'a>) -> Self {
         Self { legalizer }
     }
 }

@@ -91,92 +91,43 @@ pub mod contracts {
 
 impl contracts::Query for Query<'_> {
     fn value_type(&self, result: bool, index: u32) -> Type {
+        self.ty(self.value(result, index))
+    }
+
+    fn value(&self, result: bool, index: u32) -> Reg {
         let regs = if result {
             self.inst.results()
         } else {
             self.inst.inputs()
         };
-        self.ty(regs[index as usize])
+        regs[index as usize]
     }
 
-    fn signature(&self, results: &[&[Type]], inputs: &[&[Type]]) -> bool {
-        let matches = |regs: &[Reg], sets: &[&[Type]]| {
-            regs.len() == sets.len()
-                && regs
-                    .iter()
-                    .zip(sets)
-                    .all(|(&reg, set)| set.contains(&self.ty(reg)))
-        };
-        matches(self.inst.results(), results) && matches(self.inst.inputs(), inputs)
+    fn opcode(&self) -> GenericOpcode {
+        Query::opcode(self)
     }
-
-    fn same(&self, indices: &[u32]) -> bool {
-        let ty = |i: u32| {
-            self.inst
-                .results()
-                .iter()
-                .chain(self.inst.inputs())
-                .nth(i as usize)
-                .map(|&reg| self.ty(reg))
-        };
-        indices.split_first().is_none_or(|(&first, rest)| {
-            ty(first).is_some_and(|first| rest.iter().all(|&i| ty(i) == Some(first)))
-        })
-    }
-
-    fn input_is(&self, index: u32, ty: Type) -> bool {
-        self.inst
-            .inputs()
-            .get(index as usize)
-            .is_some_and(|&reg| self.ty(reg) == ty)
-    }
-
-    fn signed_offset(&self, bits: u32) -> bool {
-        let fields = self.inst.fields();
-        if fields.is_empty() {
-            return false;
+    fn arity(&self, result: bool) -> usize {
+        if result {
+            self.inst.results().len()
+        } else {
+            self.inst.inputs().len()
         }
-        let veloc_lir::FieldValueRef::Imm(&offset) = fields.read(0) else {
-            return false;
+    }
+
+    fn immediate(&self, index: u32) -> i64 {
+        let veloc_lir::FieldValueRef::Imm(&value) = self.inst.fields().read(index as usize) else {
+            panic!("checked immediate field");
         };
-        bits != 0
-            && bits <= 64
-            && (bits == 64 || (offset >= -(1i64 << (bits - 1)) && offset < (1i64 << (bits - 1))))
+        value
     }
 }
 
-/// The selected implementation, not a second opcode dispatch. Function pointers
-/// avoid a per-rewrite closure allocation and keep target selection out of the driver.
+/// Immutable target policy. The shared runtime owns matching and execution.
 #[derive(Clone, Copy)]
-pub struct Rewrite {
-    pub name: &'static str,
-    pub apply: fn(&mut RewriteContext<'_>) -> Result<()>,
-}
-impl core::fmt::Debug for Rewrite {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.name)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum LegalizeAction {
-    Legal,
-    Rewrite(Rewrite),
-}
-
-impl LegalizeAction {
-    pub fn rewrite(name: &'static str, apply: fn(&mut RewriteContext<'_>) -> Result<()>) -> Self {
-        Self::Rewrite(Rewrite { name, apply })
-    }
-}
-
-impl Rewrite {
-    pub(super) fn apply(self, id: InstId, f: &mut veloc_lir::FuncEditor<'_>) -> Result<()> {
-        (self.apply)(&mut RewriteContext {
-            root: id,
-            function: f.editor(),
-        })
-    }
+pub struct LegalizePolicy<'a> {
+    pub program: fn(GenericOpcode) -> Option<(&'static super::vm::Program, usize)>,
+    pub features: &'a [u64],
+    pub predicate: Option<&'a (dyn Fn(usize, &Query<'_>) -> bool + Send + Sync)>,
 }
 
 /// A rewrite can read the function and edit through its invariant-preserving
@@ -192,7 +143,11 @@ impl core::ops::Deref for RewriteContext<'_> {
         &self.function
     }
 }
-impl RewriteContext<'_> {
+impl<'a> RewriteContext<'a> {
+    pub(super) fn new(root: InstId, function: veloc_lir::FuncEditor<'a>) -> Self {
+        Self { root, function }
+    }
+
     /// Snapshot the matched values/types, then build with explicit arguments.
     /// Construction may reuse the destination; existing-value results use RAUW.
     /// Edits are immediate and are not rolled back on failure.

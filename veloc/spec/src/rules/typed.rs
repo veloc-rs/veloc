@@ -72,7 +72,7 @@ impl Signature {
         defs: &Definitions,
         dialect: &str,
     ) -> Result<(Self, Vec<String>), Error> {
-        let (DeclKind::Rule(sig) | DeclKind::Rewrite(sig)) = &d.kind else {
+        let (DeclKind::Select(sig) | DeclKind::Rewrite(sig)) = &d.kind else {
             return Err(Error::at(
                 source,
                 d.offset,

@@ -8,7 +8,7 @@ use veloc_mir::Type;
 
 use veloc_bytecode::{Reader, selection::Instruction as Op};
 
-pub(crate) struct Program {
+pub struct Program {
     pub code: &'static [u8],
     pub entry: u32,
     pub insts: usize,
@@ -33,7 +33,7 @@ enum FieldSource {
 /// Physical field positions come from the same checked storage projections as
 /// InstView. Optional fields bound to none occupy no slot; sequences are not
 /// scalar accesses and are rejected by the selection compiler.
-pub(crate) enum Field {
+pub enum Field {
     Input(usize),
     Result(usize),
     Attribute(usize),
@@ -60,12 +60,12 @@ impl Field {
 }
 
 /// Generated construction entry points commit complete, positioned instructions.
-pub(crate) type Target =
+pub type Target =
     fn(&mut InstInserter<'_>, InstId, &[Reg], &[Reg], SmallVec<[FieldValue; 4]>) -> InstId;
 
 /// Debug output describes the actual bytecode, including byte offsets.
 #[allow(dead_code)]
-pub(crate) fn disassemble(program: &Program, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+pub fn disassemble(program: &Program, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
     let mut reader = Reader {
         bytes: program.code,
         pc: 0,
@@ -80,7 +80,7 @@ pub(crate) fn disassemble(program: &Program, out: &mut dyn core::fmt::Write) -> 
 /// One non-monomorphized executor for ordinary tests and construction recipes.
 /// Programs are trusted build output, not user-provided bytecode.
 #[inline(never)]
-pub(crate) fn execute(
+pub(super) fn execute(
     program: &Program,
     features: &[u64],
     predicate: &dyn Fn(u32, Reg) -> bool,
@@ -146,7 +146,23 @@ pub(crate) fn execute(
             } => {
                 assert!(!accepted);
                 if !(values[value]
-                    .and_then(|reg| reg.is_vreg().then(|| store.vreg_data(reg).ty))
+                    .and_then(|reg| {
+                        if reg.is_vreg() {
+                            return Some(store.vreg_data(reg).ty);
+                        }
+                        // ABI copies inherit their transfer type from the SSA endpoint.
+                        // A physical register by itself has no semantic value type.
+                        let root = store.inst(source);
+                        (root.generic_opcode() == Some(GenericOpcode::Copy))
+                            .then(|| {
+                                root.results()
+                                    .iter()
+                                    .chain(root.inputs())
+                                    .find(|reg| reg.is_vreg())
+                                    .map(|reg| store.vreg_data(*reg).ty)
+                            })
+                            .flatten()
+                    })
                     .is_some_and(|ty| program.types[set].contains(&ty)))
                 {
                     reader.pc = failure;

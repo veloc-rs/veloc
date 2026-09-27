@@ -1,18 +1,17 @@
-pub(crate) mod matching;
+pub mod matching;
 pub mod select;
 
 pub use self::select::*;
 use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::Result;
 use crate::pipeline::{FunctionPass, FunctionPassContext};
-use crate::target::TargetInstructionSelector;
 
 pub struct InstructionSelectionPass<'a> {
-    selector: &'a dyn TargetInstructionSelector,
+    selector: SelectPolicy<'a>,
 }
 
 impl<'a> InstructionSelectionPass<'a> {
-    pub fn new(selector: &'a dyn TargetInstructionSelector) -> Self {
+    pub fn new(selector: SelectPolicy<'a>) -> Self {
         Self { selector }
     }
 }

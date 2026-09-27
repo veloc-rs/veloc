@@ -1,8 +1,9 @@
 type I32 = int(32);
 type Type = rust("crate::Ty");
-type Action = rust("crate::Action");
 type Query = rust("crate::Q") {
-    fn signature(&self, results: sequence(sequence(Type)), inputs: sequence(sequence(Type))) -> bool;
+    fn opcode(&self) -> RewriteOpcode;
+    fn arity(&self, result: bool) -> usize;
+    fn value_type(&self, result: bool, index: u32) -> Type;
 }
 typeset Word = Type::I32;
 
@@ -13,15 +14,13 @@ fn compose<T: Word>(x: T) -> T {
     let doubled = host_twice<T>(x);
     host_twice<T>(lir::Add<T>(doubled, doubled))
 }
-rule composed(inst: lir::Ctpop<Type::I32>) {
-    replace = compose<Type::I32>(inst.src);
+select(inst: lir::Ctpop<Type::I32>) {
+    replace(inst, build(compose<Type::I32>(inst.src)));
 }
-rule shared(inst: lir::Ctlz<Type::I32>) {
-    replace {
-        let x = lir::Add<Type::I32>(inst.src, inst.src);
-        let y = host_twice<Type::I32>(x);
-        x
-    }
+select(inst: lir::Ctlz<Type::I32>) {
+    let x = build(lir::Add<Type::I32>(inst.src, inst.src));
+    let y = build(host_twice<Type::I32>(x));
+    replace(inst, x);
 }
 
 type RewriteValue = rust("crate::Value");

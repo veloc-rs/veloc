@@ -60,24 +60,17 @@ pub(super) fn build_x86_copy_inst(
     Ok(opcode.write(insert.writer(), &[dst], &[src], []))
 }
 
-/// x86_64 后端共享 lowering helper。
-#[derive(Debug, Clone, Copy)]
-pub struct X86_64Lowering {
-    /// 当前 target instance 选中的 CPU 描述。
-    pub features: generated::FeatureSet,
-}
-
-impl X86_64Lowering {
-    pub fn new(features: generated::FeatureSet) -> Self {
-        Self { features }
-    }
-}
-
-impl X86LoweringContext for X86_64Lowering {
+impl X86LoweringContext for generated::FeatureSet {
     fn has_bmi2(&self) -> bool {
-        self.features.contains(generated::Feature::BMI2)
+        self.contains(generated::Feature::BMI2)
     }
     fn has_avx2(&self) -> bool {
-        self.features.contains(generated::Feature::AVX2)
+        self.contains(generated::Feature::AVX2)
+    }
+}
+
+impl crate::isel::SelectHooks for generated::FeatureSet {
+    fn predicate(&self, id: u32, reg: Reg) -> bool {
+        generated::selection_predicate(self, id, reg)
     }
 }

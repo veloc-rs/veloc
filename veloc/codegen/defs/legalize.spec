@@ -11,11 +11,13 @@ typeset SmallInt = Narrow | Type::I32;
 // Instruction-local query contract shared by target policies.
 type Query = rust("crate::passes::lowering::legalize::Query") {
     trait = rust("crate::passes::lowering::legalize::contracts::Query");
-    fn signature(&self, results: sequence(sequence(Type)), inputs: sequence(sequence(Type))) -> bool;
-    fn same(&self, indices: sequence(u32)) -> bool;
+    fn opcode(&self) -> RewriteOpcode;
+    fn arity(&self, result: bool) -> usize;
     fn value_type(&self, result: bool, index: u32) -> Type;
-    fn input_is(&self, index: u32, ty: Type) -> bool;
-    fn signed_offset(&self, bits: u32) -> bool;
+    fn value(&self, result: bool, index: u32) -> RewriteValue;
+    fn immediate(&self, index: u32) -> i64;
+    fn ty(&self, value: RewriteValue) -> Type = vm("type");
+    fn fits_signed(&self, value: i64, bits: u32) -> bool = vm("signed_range");
 }
 
 type RewriteValue = rust("veloc_lir::Reg");

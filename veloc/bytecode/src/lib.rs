@@ -2,7 +2,14 @@
 #![no_std]
 
 pub mod equivalence;
+pub mod rewrite;
 pub mod selection;
+
+/// Build-time encoding contract shared by all bytecode dialects.
+pub trait Encode {
+    fn encode(&self, out: &mut impl Extend<u8>);
+    fn field_offset(&self, name: &str) -> Option<usize>;
+}
 
 /// Describe a bytecode once for its compiler, interpreter and disassembler.
 /// Fields choose fixed little-endian u32 or ULEB128 encoding. Lists use the
@@ -19,6 +26,11 @@ macro_rules! bytecode {
         #[derive(Clone, Copy, Debug)]
         $vis enum $inst<'a> {
             $($name { $($field: $crate::bytecode!(@ty $kind, 'a)),* }),*
+        }
+
+        impl $crate::Encode for $inst<'_> {
+            fn encode(&self, out: &mut impl Extend<u8>) { self.encode(out); }
+            fn field_offset(&self, name: &str) -> Option<usize> { self.field_offset(name) }
         }
 
         impl<'a> $inst<'a> {

@@ -78,6 +78,7 @@ impl<'a> Adapters<'a> {
                 list.push(name);
             }
         }
+        let returns = definition.flow == "Return";
         if !self.builders.contains_key(&build) {
             let mut body = String::new();
             if call {
@@ -86,6 +87,9 @@ impl<'a> Adapters<'a> {
                     "abi_results: &[Reg]".into(),
                     "effects: veloc_lir::RegEffects<&[Reg]>".into(),
                 ]);
+            }
+            if returns {
+                params.push("abi_uses: &[Reg]".into());
             }
             writeln!(
                 body,
@@ -109,6 +113,15 @@ impl<'a> Adapters<'a> {
 "
                 );
                 writeln!(body, "writer.with_effects(&uses, &defs).write(veloc_lir::MachineOpcode::Target(TargetInst::{opcode}.as_u32()), &results, &inputs, [{}])", fields.join(", ")).unwrap();
+            } else if returns {
+                writeln!(
+                    body,
+                    "let metadata = target_inst_metadata(TargetInst::{opcode});"
+                )
+                .unwrap();
+                body.push_str("let mut uses = smallvec::SmallVec::<[Reg; 4]>::from_slice(metadata.implicit_uses);\nfor &reg in abi_uses { if !uses.contains(&reg) { uses.push(reg); } }\n");
+                writeln!(body, "writer.with_effects(&uses, metadata.implicit_defs).write(veloc_lir::MachineOpcode::Target(TargetInst::{opcode}.as_u32()), &[{}], &[{}], [{}])",
+                    results.join(", "), inputs.join(", "), fields.join(", ")).unwrap();
             } else {
                 writeln!(
                     body,
@@ -148,6 +161,10 @@ impl<'a> Adapters<'a> {
                 "&abi_results".into(),
                 "veloc_lir::RegEffects { uses: &uses, defs: &defs }".into(),
             ]);
+        }
+        if returns {
+            body.push_str("let abi_uses = smallvec::SmallVec::<[Reg; 4]>::from_slice(store.inst(_source).inputs());\n");
+            args.push("&abi_uses".into());
         }
         let arguments = if args.is_empty() {
             String::new()
@@ -197,7 +214,7 @@ impl<'a> Adapters<'a> {
         for builder in self.builders.values() {
             out.push_str(builder);
         }
-        writeln!(out, "fn selection_predicate<C: {context}>(_ctx: &C, id: u32, reg: Reg) -> bool {{ let Some(_v) = reg.as_vreg() else {{ return false }}; match id {{").unwrap();
+        writeln!(out, "pub fn selection_predicate<C: {context}>(_ctx: &C, id: u32, reg: Reg) -> bool {{ let Some(_v) = reg.as_vreg() else {{ return false }}; match id {{").unwrap();
         for (id, name) in self.predicates.iter().enumerate() {
             let condition = generate_pattern_condition(&extractors[name].body, "_v", decls)
                 .replace("ctx.", "_ctx.");
@@ -207,14 +224,9 @@ impl<'a> Adapters<'a> {
     }
 }
 
-struct Instruction {
-    bytes: Vec<u8>,
-    failure: Option<usize>,
-}
 #[derive(Default)]
 struct Code {
-    instructions: Vec<Instruction>,
-    labels: Vec<usize>,
+    asm: crate::bytecode::Assembler,
     types: Vec<Vec<String>>,
     integers: Vec<String>,
     opcodes: Vec<String>,
@@ -237,16 +249,15 @@ impl Code {
         intern(&mut self.accesses, (opcode.into(), field.into(), access))
     }
     fn op(&mut self, op: Op<'_>) {
-        let mut bytes = Vec::new();
-        op.encode(&mut bytes);
-        self.instructions.push(Instruction {
-            bytes,
-            failure: None,
-        });
+        self.asm.emit(op);
     }
     fn branch(&mut self, op: Op<'_>, target: usize) {
-        self.op(op);
-        self.instructions.last_mut().unwrap().failure = Some(target);
+        let field = if matches!(op, Op::Jump { .. }) {
+            "target"
+        } else {
+            "failure"
+        };
+        self.asm.branch(op, field, target);
     }
     fn read_reg(
         &mut self,
@@ -468,11 +479,8 @@ impl Code {
         self.values = self.values.max(values);
         self.fields = self.fields.max(payloads);
     }
-    fn describe(&self, inst: &Instruction, adapters: &Adapters) -> String {
-        let op = Op::read(&mut Reader {
-            bytes: &inst.bytes,
-            pc: 0,
-        });
+    fn describe(&self, inst: &[u8], adapters: &Adapters) -> String {
+        let op = Op::read(&mut Reader { bytes: inst, pc: 0 });
         let field = |id: usize| {
             let (schema, name, _) = &self.accesses[id];
             format!("{schema}.{name}")
@@ -538,61 +546,24 @@ impl Code {
     }
 
     fn emit(&self, out: &mut String, name: &str, entry: usize, insts: usize, adapters: &Adapters) {
-        let mut offsets = Vec::new();
-        let mut size = 0usize;
-        for inst in &self.instructions {
-            offsets.push(size);
-            size += inst.bytes.len();
-        }
-        assert!(size <= u32::MAX as usize, "selection program too large");
+        let encoded = self.asm.finish();
         writeln!(
             out,
             "// {name}: entry @{:04x}; n0 = root; v = value slot; f = payload slot.",
-            offsets[self.labels[entry]]
+            encoded.labels[entry]
         )
         .unwrap();
-        writeln!(
-            out,
-            "    #[rustfmt::skip]\n    const {name}_CODE: &[u8] = &["
-        )
-        .unwrap();
-        for (index, inst) in self.instructions.iter().enumerate() {
-            let op = Op::read(&mut Reader {
-                bytes: &inst.bytes,
-                pc: 0,
-            });
-            let mut description = self.describe(inst, adapters);
-            if let Some(label) = inst.failure {
-                write!(
-                    description,
-                    " {}@{:04x}",
-                    if matches!(op, Op::Jump { .. }) {
-                        ""
-                    } else {
-                        "else "
-                    },
-                    offsets[self.labels[label]]
-                )
-                .unwrap();
-            }
-            let decoded = format!(
-                "{:04x} {:<14} {}",
-                offsets[index],
-                format!("{:?}", op.opcode()),
-                description.trim()
-            );
-            writeln!(out, "        // @{}", decoded.trim_end()).unwrap();
-            let mut bytes = inst.bytes.clone();
-            if let Some(label) = inst.failure {
-                let field = if matches!(op, Op::Jump { .. }) {
-                    "target"
-                } else {
-                    "failure"
-                };
-                let offset = op.field_offset(field).expect("branch target field");
-                bytes[offset..offset + 4]
-                    .copy_from_slice(&veloc_bytecode::encode_u32(offsets[self.labels[label]]));
-            }
+        writeln!(out, "#[rustfmt::skip]\nconst {name}_CODE: &[u8] = &[").unwrap();
+        for (index, bytes) in encoded.instructions.iter().enumerate() {
+            let op = Op::read(&mut Reader { bytes, pc: 0 });
+            writeln!(
+                out,
+                "    // @{:04x} {:?}: {}",
+                encoded.offsets[index],
+                op,
+                self.describe(bytes, adapters)
+            )
+            .unwrap();
             for byte in bytes {
                 write!(out, " {byte},").unwrap();
             }
@@ -601,7 +572,7 @@ impl Code {
         writeln!(
             out,
             "    ];\npub(super) const {name}: &Program = &Program {{ code: {name}_CODE, entry: 0x{:04x}, insts: {insts}, values: {}, fields: {},",
-            offsets[self.labels[entry]], self.values, self.fields
+            encoded.labels[entry], self.values, self.fields
         )
         .unwrap();
         writeln!(
@@ -699,7 +670,7 @@ pub(in super::super) fn emit(
     graph.validate(entry, &plan);
     let mut code = Code::default();
     for node in &graph.nodes {
-        code.labels.push(code.instructions.len());
+        code.asm.label();
         match node {
             Node::Reject => code.op(Op::Reject {}),
             Node::Accept(rule) => {

@@ -60,7 +60,7 @@ pub(crate) fn generate_header(output: &mut String, arch: &str) {
 use crate::target::{{
     AbiDescriptor, StackArea, AbiState, AbiLocation,
     FixedUseConstraint, GenericInstMetadata, RegInfo,
-    SelectResult, TargetArch, TargetInstMetadata, TiedOperandConstraint,
+    TargetArch, TargetInstMetadata, TiedOperandConstraint,
 }};
 pub use veloc_mir::Type;
 
@@ -405,7 +405,9 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
         }
         out.push_str("} } }\n");
     }
-    out.push_str("impl TargetInst { pub fn required_features(self) -> FeatureSet { match self {\n");
+    out.push_str(
+        "impl TargetInst { pub const fn required_features(self) -> FeatureSet { match self {\n",
+    );
     let mut ordered: Vec<_> = instructions.iter().collect();
     ordered.sort_by_key(|(name, _)| *name);
     for (name, instruction) in ordered {

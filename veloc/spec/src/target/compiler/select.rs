@@ -582,23 +582,15 @@ pub(crate) fn generate_select_instruction(
         "// Selection entry point; programs and host adapters are defined separately."
     )
     .unwrap();
-    writeln!(output, "pub fn select_instructions<C: {context}>(ctx: &C, features: FeatureSet, store: &mut veloc_lir::InstInserter<'_>, source: veloc_lir::InstId, out: &mut alloc::vec::Vec<veloc_lir::InstId>, edge_transfers: &mut alloc::vec::Vec<(veloc_lir::EdgeId, veloc_lir::EdgeId)>) -> Result<SelectResult, crate::error::Error> {{").unwrap();
-    writeln!(output, "use crate::isel::matching::Program;").unwrap();
-    writeln!(output, "let opcode = store.inst(source).opcode(); let veloc_lir::MachineOpcode::Generic(generic) = opcode else {{ return Ok(SelectResult::Keep) }};").unwrap();
-    writeln!(output, "let program: &'static Program = match generic {{").unwrap();
+    writeln!(output, "pub fn selection_program(opcode: veloc_lir::GenericOpcode) -> Option<&'static crate::isel::matching::Program> {{ match opcode {{").unwrap();
     for opcode in opcodes {
         let name = sanitize_ident(opcode).to_ascii_uppercase();
         writeln!(
             output,
-            "veloc_lir::GenericOpcode::{opcode} => selection_programs::{name},"
+            "veloc_lir::GenericOpcode::{opcode} => Some(selection_programs::{name}),"
         )
         .unwrap();
     }
-    writeln!(
-        output,
-        "_ => return Err(crate::error::Error::select(opcode, \"No selection program\")), }};"
-    )
-    .unwrap();
-    writeln!(output, "let predicate = |id, reg| selection_predicate(ctx, id, reg); crate::isel::matching::execute(program, features.as_words(), &predicate, store, source, out, edge_transfers).ok_or_else(|| crate::error::Error::select(opcode, \"No matching selection rule\")) }}").unwrap();
+    writeln!(output, "_ => None, }} }}").unwrap();
     adapters.emit(output, context, extractors, &decls);
 }

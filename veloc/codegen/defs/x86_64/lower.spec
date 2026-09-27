@@ -23,25 +23,11 @@ select(n: lir::Constant) {
 select(n: lir::Copy) {
     choose {
         case {
-            require(type_is<Type::I32>(n.dst));
+            require(type_is<Type::BOOL | SmallInt>(n.dst));
             replace(n, build(X86Mov32(n.src)));
         }
         case {
-            require(type_is<Type::I64>(n.dst));
-            replace(n, build(X86Mov64(n.src)));
-        }
-        case {
-            require(type_is<Type::PTR>(n.dst));
-            replace(n, build(X86Mov64(n.src)));
-        }
-        case {
-            require(type_is<Type::I64>(n.dst));
-            require(type_is<Type::PTR>(n.src));
-            replace(n, build(X86Mov64(n.src)));
-        }
-        case {
-            require(type_is<Type::PTR>(n.dst));
-            require(type_is<Type::I64>(n.src));
+            require(type_is<WordOrPtr>(n.dst));
             replace(n, build(X86Mov64(n.src)));
         }
         case {
@@ -53,6 +39,10 @@ select(n: lir::Copy) {
             replace(n, build(X86Movsd(n.src)));
         }
     }
+}
+
+select(n: lir::Ret) {
+    replace(n, build(X86Ret()));
 }
 
 select(n: lir::Inttoptr) {

@@ -57,24 +57,15 @@ struct Args {
     /// Infer identity rules for compatible semantic primitives.
     #[arg(long)]
     infer_primitives: bool,
-    /// Decision result type declared in the module.
-    #[arg(long)]
-    result: Option<String>,
     /// Explicit rewrite_interface declaration for value construction.
     #[arg(long)]
     value_interface: Option<String>,
     /// Rust attribute enum used by value construction.
     #[arg(long)]
     field: Option<String>,
-    /// Rust adapter for value rewrites.
+    /// Runtime module for legalization bytecode.
     #[arg(long)]
-    value_adapter: Option<String>,
-    /// Shared Rust action constructor for generated and host rewrites.
-    #[arg(long)]
-    rewrite: Option<String>,
-    /// Rust constructor for a legal decision.
-    #[arg(long)]
-    legal_action: Option<String>,
+    runtime: Option<String>,
 }
 
 fn required<'a>(
@@ -129,12 +120,9 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 dialect: required(args.source_dialect.as_deref(), "source-dialect")?,
                 function: required(args.function.as_deref(), "function")?,
                 opcode: required(args.source_opcode.as_deref(), "source-opcode")?,
-                result: required(args.result.as_deref(), "result")?,
                 value_interface: required(args.value_interface.as_deref(), "value-interface")?,
                 field: required(args.field.as_deref(), "field")?,
-                value_adapter: required(args.value_adapter.as_deref(), "value-adapter")?,
-                rewrite: required(args.rewrite.as_deref(), "rewrite")?,
-                legal_action: required(args.legal_action.as_deref(), "legal-action")?,
+                runtime: required(args.runtime.as_deref(), "runtime")?,
             },
         })
     } else {

@@ -82,24 +82,60 @@ enum Mode {
     NewBlock,
 }
 
-impl TargetLegalizer for Mode {
-    fn legalize_action(&self, query: &Query) -> Result<Option<LegalizeAction>> {
-        let opcode = query.opcode();
-        let apply = match self {
-            Self::Loop => |f: &mut RewriteContext<'_>| Mode::Loop.rewrite(f),
-            Self::NewBlock => |f: &mut RewriteContext<'_>| Mode::NewBlock.rewrite(f),
-            _ => |f: &mut RewriteContext<'_>| Mode::Chain.rewrite(f),
+// Exercise the real query VM with tiny terminal programs.
+macro_rules! terminal {
+    ($action:expr) => {
+        Some((
+            &vm::Program {
+                code: &[veloc_bytecode::rewrite::Opcode::Accept as u8, 0],
+                sets: &[],
+                features: &[],
+                actions: &[$action],
+                types: &[],
+                opcodes: &[],
+                fields: &[],
+                functions: &[],
+                emit: |_, _, _, _, _, _| unreachable!("terminal program"),
+            },
+            0,
+        ))
+    };
+}
+
+impl Mode {
+    fn policy(self) -> LegalizePolicy<'static> {
+        let program = match self {
+            Self::Chain => |op| Mode::Chain.program(op),
+            Self::Missing => |op| Mode::Missing.program(op),
+            Self::Loop => |op| Mode::Loop.program(op),
+            Self::NewBlock => |op| Mode::NewBlock.program(op),
         };
-        Ok(match (self, opcode) {
+        LegalizePolicy {
+            program,
+            features: &[],
+            predicate: None,
+        }
+    }
+
+    fn program(self, op: GenericOpcode) -> Option<(&'static vm::Program, usize)> {
+        match (self, op) {
             (Self::Missing, GenericOpcode::Sub) => None,
-            (Self::Loop, _) | (_, GenericOpcode::Neg | GenericOpcode::Sub) => {
-                Some(LegalizeAction::Rewrite(Rewrite {
-                    name: "test",
-                    apply,
-                }))
+            (Self::Loop, _) => terminal!(vm::Action::Host {
+                name: "loop",
+                apply: |ctx| Mode::Loop.rewrite(ctx)
+            }),
+            (Self::NewBlock, GenericOpcode::Neg | GenericOpcode::Sub) => {
+                terminal!(vm::Action::Host {
+                    name: "new_block",
+                    apply: |ctx| Mode::NewBlock.rewrite(ctx)
+                })
             }
-            _ => Some(LegalizeAction::Legal),
-        })
+            (_, GenericOpcode::Neg | GenericOpcode::Sub) => terminal!(vm::Action::Host {
+                name: "chain",
+                apply: |ctx| Mode::Chain.rewrite(ctx)
+            }),
+            _ => terminal!(vm::Action::Legal),
+        }
     }
 }
 impl Mode {
@@ -173,14 +209,14 @@ fn expansions_are_revisited_in_order_including_in_place_changes() {
                 .replace(old)
                 .write(MachineOpcode::Target(0), &[], &[], []);
             assert!(
-                !Legalizer::new(&Mode::Missing)
+                !Legalizer::new(Mode::Missing.policy())
                     .legalize(&mut f, |_, _| unreachable!("test contains no calls"))
                     .unwrap()
             );
             assert_eq!(f.inst(old).opcode(), MachineOpcode::Target(0));
             continue;
         }
-        Legalizer::new(&Mode::Chain)
+        Legalizer::new(Mode::Chain.policy())
             .legalize(&mut f, |_, _| unreachable!("test contains no calls"))
             .unwrap();
         let ops: std::vec::Vec<_> = f
@@ -203,13 +239,13 @@ fn expansions_are_revisited_in_order_including_in_place_changes() {
 
 #[test]
 fn missing_rules_and_nonconvergent_expansions_are_errors() {
-    let error = Legalizer::new(&Mode::Missing)
+    let error = Legalizer::new(Mode::Missing.policy())
         .legalize(&mut function(), |_, _| {
             unreachable!("test contains no calls")
         })
         .unwrap_err();
     assert!(std::format!("{error}").contains("missing legalization rule for Generic(Sub)"));
-    let error = Legalizer::new(&Mode::Loop)
+    let error = Legalizer::new(Mode::Loop.policy())
         .legalize(&mut function(), |_, _| {
             unreachable!("test contains no calls")
         })
@@ -220,7 +256,7 @@ fn missing_rules_and_nonconvergent_expansions_are_errors() {
 #[test]
 fn blocks_created_by_expansion_are_legalized() {
     let mut f = function();
-    Legalizer::new(&Mode::NewBlock)
+    Legalizer::new(Mode::NewBlock.policy())
         .legalize(&mut f, |_, _| unreachable!("test contains no calls"))
         .unwrap();
     assert_eq!(f.num_blocks(), 2);
@@ -236,11 +272,11 @@ fn blocks_created_by_expansion_are_legalized() {
 
 #[test]
 fn edits_to_previously_visited_instructions_are_revisited() {
-    struct CrossEdit;
-    impl TargetLegalizer for CrossEdit {
-        fn legalize_action(&self, query: &Query) -> Result<Option<LegalizeAction>> {
-            Ok(Some(match query.opcode() {
-                GenericOpcode::Ret => LegalizeAction::rewrite("cross_edit", |ctx| {
+    let policy = LegalizePolicy {
+        program: |opcode| match opcode {
+            GenericOpcode::Ret => terminal!(vm::Action::Host {
+                name: "cross_edit",
+                apply: |ctx| {
                     let first = ctx
                         .blocks()
                         .flat_map(|b| ctx.block_insts(b))
@@ -255,8 +291,11 @@ fn edits_to_previously_visited_instructions_are_revisited() {
                     let root = ctx.root();
                     ctx.editor().invalidate_inst(root);
                     Ok(())
-                }),
-                GenericOpcode::Sub => LegalizeAction::rewrite("sub_to_add", |ctx| {
+                }
+            }),
+            GenericOpcode::Sub => terminal!(vm::Action::Host {
+                name: "sub_to_add",
+                apply: |ctx| {
                     let root = ctx.root();
                     ctx.editor().replace(root).write(
                         MachineOpcode::Generic(GenericOpcode::Add),
@@ -265,13 +304,15 @@ fn edits_to_previously_visited_instructions_are_revisited() {
                         [],
                     );
                     Ok(())
-                }),
-                _ => LegalizeAction::Legal,
-            }))
-        }
-    }
+                }
+            }),
+            _ => terminal!(vm::Action::Legal),
+        },
+        features: &[],
+        predicate: None,
+    };
     let mut f = function();
-    Legalizer::new(&CrossEdit)
+    Legalizer::new(policy)
         .legalize(&mut f, |_, _| unreachable!("test contains no calls"))
         .unwrap();
     let first = f.blocks().flat_map(|b| f.block_insts(b)).next().unwrap();
@@ -291,18 +332,22 @@ fn insertion_is_reported() {
 
 #[test]
 fn cycles_across_new_blocks_share_one_budget() {
-    struct Cycle;
-    impl TargetLegalizer for Cycle {
-        fn legalize_action(&self, _: &Query) -> Result<Option<LegalizeAction>> {
-            Ok(Some(LegalizeAction::rewrite("cycle", |ctx| {
-                let root = ctx.root();
-                let block = ctx.editor().create_block();
-                ctx.editor().at_end(block).move_here(root);
-                Ok(())
-            })))
-        }
-    }
-    let error = Legalizer::new(&Cycle)
+    let policy = LegalizePolicy {
+        program: |_| {
+            terminal!(vm::Action::Host {
+                name: "cycle",
+                apply: |ctx| {
+                    let root = ctx.root();
+                    let block = ctx.editor().create_block();
+                    ctx.editor().at_end(block).move_here(root);
+                    Ok(())
+                }
+            })
+        },
+        features: &[],
+        predicate: None,
+    };
+    let error = Legalizer::new(policy)
         .legalize(&mut function(), |_, _| {
             unreachable!("test contains no calls")
         })
@@ -322,21 +367,16 @@ fn existing_value_replacement_updates_users_without_a_copy() {
         let root = f.editor().at_end(block).writer().copy(result, input);
         let user = f.editor().at_end(block).writer().copy(output, result);
 
-        let action = if generated {
-            LegalizeAction::rewrite("generated_identity", |ctx| {
+        let (result, changes) = f.editor().track(|edit| {
+            let mut ctx = RewriteContext::new(root, edit.editor());
+            if generated {
                 ctx.replace_values(|_, inputs, _, _| inputs[0])
-            })
-        } else {
-            LegalizeAction::rewrite("host_identity", |ctx| {
+            } else {
                 let input = ctx.inst(ctx.root()).inputs()[0];
                 ctx.replace_results(&[input]);
                 Ok(())
-            })
-        };
-        let LegalizeAction::Rewrite(rewrite) = action else {
-            unreachable!();
-        };
-        let (result, changes) = f.editor().track(|edit| rewrite.apply(root, edit));
+            }
+        });
         result.unwrap();
         assert_eq!(f.block_insts(block).collect::<Vec<_>>(), [user]);
         assert_eq!(f.inst(user).inputs(), &[input]);

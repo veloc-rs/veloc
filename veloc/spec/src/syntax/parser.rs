@@ -184,18 +184,26 @@ impl<'a> Parser<'a> {
     fn function_body(&mut self) -> Result<FunctionBody, Error> {
         if self.eat(TokenKind::Eq)? {
             let offset = self.token.offset;
-            if self.name()? != "rust" {
-                return Err(self.error(offset, "expected rust binding"));
+            let binding = self.name()?;
+            if binding != "rust" && binding != "vm" {
+                return Err(self.error(offset, "expected rust or vm binding"));
             }
             self.expect(TokenKind::LParen)?;
             let TokenKind::Text(path) = self.bump()?.kind else {
-                return Err(self.error(offset, "rust binding requires a qualified path"));
+                return Err(self.error(offset, "binding requires a string argument"));
             };
             self.expect(TokenKind::RParen)?;
             self.expect(TokenKind::Semi)?;
-            Ok(FunctionBody::Rust {
-                offset,
-                path: Some(path),
+            Ok(if binding == "vm" {
+                FunctionBody::Vm {
+                    offset,
+                    opcode: path,
+                }
+            } else {
+                FunctionBody::Rust {
+                    offset,
+                    path: Some(path),
+                }
             })
         } else {
             let offset = self.token.offset;
@@ -263,17 +271,20 @@ impl<'a> Parser<'a> {
         if declaration_name == "select" {
             let signature = self.signature(None, false, true)?;
             self.expect(TokenKind::LBrace)?;
-            self.expect(TokenKind::Name("choose"))?;
-            self.expect(TokenKind::LBrace)?;
             let mut cases = Vec::new();
-            while !self.at(TokenKind::RBrace) {
-                let at = self.token.offset;
-                self.expect(TokenKind::Name("case"))?;
+            if self.eat(TokenKind::Name("choose"))? {
                 self.expect(TokenKind::LBrace)?;
-                cases.push(self.statements(at, 0, Context::Rewrite)?);
+                while !self.at(TokenKind::RBrace) {
+                    let at = self.token.offset;
+                    self.expect(TokenKind::Name("case"))?;
+                    self.expect(TokenKind::LBrace)?;
+                    cases.push(self.statements(at, 0, Context::Rewrite)?);
+                }
+                self.expect(TokenKind::RBrace)?;
+                self.expect(TokenKind::RBrace)?;
+            } else {
+                cases.push(self.statements(offset, 0, Context::Rewrite)?);
             }
-            self.expect(TokenKind::RBrace)?;
-            self.expect(TokenKind::RBrace)?;
             return Ok(Decl {
                 offset,
                 name: String::new(),
@@ -695,7 +706,7 @@ impl<'a> Parser<'a> {
     }
 
     fn expression(&mut self, depth: u8, context: Context) -> Result<Node, Error> {
-        if context.is_expr() {
+        if context.is_expr() || context == Context::Rewrite {
             self.binary(depth, 0, context)
         } else {
             self.union(depth, context)
@@ -748,7 +759,9 @@ impl<'a> Parser<'a> {
         self.check_depth(depth, Context::Expr)?;
         let offset = self.token.offset;
         let kind = match self.token.kind {
-            TokenKind::Bang | TokenKind::Minus => {
+            TokenKind::Bang | TokenKind::Minus
+                if context != Context::Rewrite || self.token.kind == TokenKind::Bang =>
+            {
                 let op = self.token.kind.spelling();
                 self.bump()?;
                 Kind::Unary(op, Box::new(self.binary(depth + 1, 9, context)?))
@@ -956,7 +969,7 @@ impl<'a> Parser<'a> {
                         Kind::Call(name, types)
                     }
                 } else if self.eat(TokenKind::LParen)? {
-                    let arguments = if context.is_expr() {
+                    let arguments = if context.is_expr() || context == Context::Rewrite {
                         context
                     } else {
                         Context::Value

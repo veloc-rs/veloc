@@ -1,10 +1,16 @@
 use super::typed::Signature;
+use crate::bytecode::intern;
+mod predicate;
+mod program;
 use crate::{
     Definitions, Error, interfaces,
     syntax::{Decl, DeclKind, Kind, Node},
 };
+use predicate::Test;
+use program::Program;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
+use veloc_bytecode::rewrite::Instruction as Op;
 
 #[derive(Clone, Copy)]
 pub struct DecisionRust<'a> {
@@ -13,14 +19,10 @@ pub struct DecisionRust<'a> {
     pub function: &'a str,
     pub opcode: &'a str,
     pub field: &'a str,
-    pub result: &'a str,
     /// Explicit rewrite_interface declaration used for value construction.
     pub value_interface: &'a str,
-    /// Value-building adapter: (rewrite context, body) -> rewrite result.
-    pub value_adapter: &'a str,
-    /// Shared action constructor for generated and host rewrites.
-    pub rewrite: &'a str,
-    pub legal_action: &'a str,
+    /// Runtime module implementing the legalization bytecode contract.
+    pub runtime: &'a str,
 }
 
 pub fn decisions(
@@ -28,7 +30,13 @@ pub fn decisions(
     defs: &Definitions,
     config: DecisionRust<'_>,
 ) -> Result<String, Error> {
-    compile(source, &crate::syntax::parse(source)?, defs, config)
+    compile(
+        source,
+        &crate::syntax::parse(source)?,
+        defs,
+        config,
+        &|offset| format!("line {}", Error::at(source, offset, "").line),
+    )
 }
 
 impl crate::Source {
@@ -38,7 +46,11 @@ impl crate::Source {
         config: DecisionRust<'_>,
     ) -> Result<String, crate::SourceError> {
         self.check_imports()?;
-        compile(self.text(), self.declarations(), defs, config).map_err(|e| self.locate(e))
+        compile(self.text(), self.declarations(), defs, config, &|offset| {
+            let location = self.locate(Error::at(self.text(), offset, ""));
+            format!("{}:{}", location.path.display(), location.diagnostic.line)
+        })
+        .map_err(|e| self.locate(e))
     }
 }
 
@@ -47,18 +59,18 @@ fn compile(
     declarations: &[Decl],
     defs: &Definitions,
     config: DecisionRust<'_>,
+    location: &dyn Fn(usize) -> String,
 ) -> Result<String, Error> {
     if !super::identifier(config.function) || !super::identifier(config.dialect) {
         return Err(Error::at(source, 0, "invalid Rust function name"));
     }
     interfaces::rust_path(source, 0, config.opcode)?;
     interfaces::rust_path(source, 0, config.field)?;
-    interfaces::rust_path(source, 0, config.value_adapter)?;
-    interfaces::rust_path(source, 0, config.rewrite)?;
-    interfaces::rust_path(source, 0, config.legal_action)?;
+    interfaces::rust_path(source, 0, config.runtime)?;
     let bindings = interfaces::Bindings::compile(declarations, source)?;
     let interface = ValueInterface::compile(declarations, source, config, &bindings)?;
-    let emit_method = &interface.emit;
+    predicate::validate(declarations, source, &bindings, &interface.value)?;
+
     let bound = &interface.contract;
     let logical_types = crate::types::Types::compile(declarations, source)?;
     let types: BTreeMap<_, _> = declarations
@@ -75,15 +87,12 @@ fn compile(
     let operations: BTreeMap<_, _> = defs.operations().map(|op| (op.name.clone(), op)).collect();
     let functions = super::functions::Functions::compile(source, declarations, &aliases)?;
     functions.validate(source, &operations, defs, config.dialect)?;
-    let result = bindings
-        .0
-        .get(config.result)
-        .ok_or_else(|| Error::at(source, 0, "unknown decision result type"))?;
-    let result_path = result.path.clone();
+
     let mut out = interfaces::declarations(declarations, source, "host")?;
     let mut bodies = String::new();
     let mut hosts = BTreeMap::new();
-    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut groups: BTreeMap<String, crate::rules::graph::Candidates> = BTreeMap::new();
+    let mut program = Program::default();
     let mut rewrites = BTreeMap::new();
     for d in declarations {
         if !matches!(d.kind, DeclKind::Rewrite(_)) {
@@ -116,16 +125,12 @@ fn compile(
                 ));
             };
             interfaces::rust_path(source, binding.offset, path)?;
-            // Check every binding, including templates not selected by any rule.
-            writeln!(
-                bodies,
-                "fn rewrite_{}_host() -> {result_path} {{ {}({:?}, {path}) }}",
-                d.name, config.rewrite, d.name
-            )
-            .unwrap();
-            format!("rewrite_{}_host()", d.name)
+            writeln!(bodies, "#[allow(non_upper_case_globals)]\nconst REWRITE_{}: {}::Action = {}::Action::Host {{ name: {:?}, apply: {path} }};",
+                d.name, config.runtime, config.runtime, d.name).unwrap();
+            format!("REWRITE_{}", d.name)
         } else {
-            format!("rewrite_{}_case1_action()", d.name)
+            // Resolved after all templates are compiled, regardless of import order.
+            format!("REWRITE_{}", d.name)
         };
         if rewrites
             .insert(d.name.clone(), (sig, roots, action))
@@ -141,7 +146,7 @@ fn compile(
         {
             continue;
         }
-        if !names.insert(&d.name) {
+        if !d.name.is_empty() && !names.insert(&d.name) {
             return Err(Error::at(source, d.offset, "duplicate decision rule"));
         }
         if matches!(d.kind, DeclKind::Function { .. }) {
@@ -150,12 +155,7 @@ fn compile(
         if matches!(d.kind, DeclKind::Rewrite(_)) && d.fields.contains_key("rust") {
             continue;
         }
-        if d.fields
-            .keys()
-            .any(|key| !matches!(key.as_str(), "when" | "action" | "replace"))
-        {
-            return Err(Error::at(source, d.offset, "unknown decision rule field"));
-        }
+        let cases = cases(source, d)?;
         let (sig, roots) =
             Signature::parse(source, d, &aliases, &operations, defs, config.dialect)?;
         for (name, owner) in &sig.hosts {
@@ -183,266 +183,144 @@ fn compile(
                 }
             }
         }
-        let (emit, replacement) = match (d.fields.get("action"), d.fields.get("replace")) {
-            (Some(action), None) => (action, false),
-            (None, Some(replace)) => (replace, true),
-            _ => {
-                return Err(Error::at(
-                    source,
-                    d.offset,
-                    "specify exactly one action or replace",
-                ));
-            }
-        };
-        let expressions = Expressions {
-            source,
-            types: &types,
-            logical_types: &logical_types,
-            bindings: &bindings,
-            hosts: &sig.hosts,
-            signature: &sig,
-            rewrites: &rewrites,
-            roots: &roots,
-            legal_action: config.legal_action,
-        };
-        let mut guards = Vec::new();
-        let sets = |types: Vec<&super::typed::Ty>| -> Result<String, Error> {
-            let mut sets = Vec::new();
-            for ty in types {
-                sets.push(format!(
-                    "&[{}]",
-                    ty.domain
+        for case in &cases {
+            let emit = &case.body;
+            let replacement = case.replacement;
+            let label = format!("{} [{}]", location(case.offset), roots.join(" | "));
+            let expressions = Expressions {
+                source,
+                types: &types,
+                logical_types: &logical_types,
+                bindings: &bindings,
+                hosts: &sig.hosts,
+                signature: &sig,
+                rewrites: &rewrites,
+                roots: &roots,
+                legal_action: &format!("{}::Action::Legal", config.runtime),
+                defs,
+            };
+            let mut guards = Vec::new();
+            let structural = sig.dynamic;
+            if !structural {
+                let mut sets = |types: Vec<&super::typed::Ty>| -> Result<Vec<usize>, Error> {
+                    types
+                        .into_iter()
+                        .map(|ty| {
+                            let values = ty
+                                .domain
+                                .iter()
+                                .map(|n| expressions.constant(n, d.offset))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            Ok(intern(&mut program.sets, values))
+                        })
+                        .collect()
+                };
+                guards.push(Test::Signature {
+                    results: sets(sig.results.iter().collect())?,
+                    inputs: sets(sig.inputs.iter().map(|(_, ty)| ty).collect())?,
+                });
+                for name in sig.generics.keys() {
+                    let values: Vec<_> = sig
+                        .results
                         .iter()
-                        .map(|n| expressions.constant(n, d.offset))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .join(", ")
-                ));
-            }
-            Ok(format!("&[{}]", sets.join(", ")))
-        };
-        // Dynamic nodes (calls/returns) keep their declared host adapter.
-        // Fixed-arity nodes derive all type tests from their OpSpec signature.
-        let structural = sig.dynamic;
-        if !structural {
-            guards.push(format!(
-                "query.signature({}, {})",
-                sets(sig.results.iter().collect())?,
-                sets(sig.inputs.iter().map(|(_, t)| t).collect())?
-            ));
-            for name in sig.generics.keys() {
-                let indices = sig
-                    .results
-                    .iter()
-                    .chain(sig.inputs.iter().map(|(_, t)| t))
-                    .enumerate()
-                    .filter(|(_, ty)| &ty.name == name)
-                    .map(|(i, _)| i.to_string())
-                    .collect::<Vec<_>>();
-                if indices.len() > 1 {
-                    guards.push(format!("query.same(&[{}])", indices.join(", ")));
+                        .enumerate()
+                        .map(|(i, t)| (i * 2 + 1, t))
+                        .chain(sig.inputs.iter().enumerate().map(|(i, (_, t))| (i * 2, t)))
+                        .filter(|(_, ty)| &ty.name == name)
+                        .map(|(i, _)| i)
+                        .collect();
+                    if values.len() > 1 {
+                        guards.push(Test::Same(values));
+                    }
                 }
             }
-        }
-        if let Some(when) = d.fields.get("when") {
-            guards.push(expressions.rust(when)?);
-        }
-        let guard = if guards.is_empty() {
-            "true".into()
-        } else {
-            guards.join(" && ")
-        };
-        let mut seen = BTreeSet::new();
-        for name in roots.iter().cloned() {
-            let op = operations
-                .get(&name)
-                .ok_or_else(|| Error::at(source, d.offset, format!("unknown operation {name}")))?;
-            if !seen.insert(name.clone()) {
-                return Err(Error::at(source, d.offset, "repeated operation pattern"));
+            for condition in &case.guards {
+                expressions.guard(condition, &mut program, &mut guards)?;
             }
-            // Host-backed memory/control rules intentionally retain their
-            // instruction-specific adapter. Pure value rules are checked here.
-            if op.signature.is_ok() && !structural {
-                sig.check_call(
-                    source,
-                    d.offset,
-                    op,
-                    &sig.inputs
-                        .iter()
-                        .map(|(_, t)| t.clone())
-                        .collect::<Vec<_>>(),
-                    &sig.results,
-                    defs,
-                )?;
-            }
-            let action = if replacement {
-                if let Err(message) = &op.signature {
-                    return Err(Error::at(
+            let mut seen = BTreeSet::new();
+            for name in roots.iter().cloned() {
+                let op = operations.get(&name).ok_or_else(|| {
+                    Error::at(source, d.offset, format!("unknown operation {name}"))
+                })?;
+                if !seen.insert(name.clone()) {
+                    return Err(Error::at(source, d.offset, "repeated operation pattern"));
+                }
+                // Host-backed memory/control rules intentionally retain their
+                // instruction-specific adapter. Pure value rules are checked here.
+                if op.signature.is_ok() && !structural {
+                    sig.check_call(
                         source,
                         d.offset,
-                        format!(
-                            "value rewrite cannot discard instruction effects or attributes: {message}"
-                        ),
-                    ));
+                        op,
+                        &sig.inputs
+                            .iter()
+                            .map(|(_, t)| t.clone())
+                            .collect::<Vec<_>>(),
+                        &sig.results,
+                        defs,
+                    )?;
                 }
-                if structural || sig.results.len() != 1 {
-                    return Err(Error::at(
-                        source,
-                        emit.offset,
-                        "value replacement requires one explicit result",
-                    ));
-                }
-                let mut insts = Vec::new();
-                let (ty, value) = sig.expression(
-                    source,
-                    emit,
-                    &operations,
-                    defs,
-                    &mut insts,
-                    config.dialect,
-                    &mut BTreeMap::new(),
-                    &functions,
-                    &mut Vec::new(),
-                )?;
-                if ty != sig.results[0]
-                    && !(ty.domain.len() == 1 && ty.domain == sig.results[0].domain)
-                {
-                    return Err(Error::at(
-                        source,
-                        emit.offset,
-                        "replacement result does not match rule result",
-                    ));
-                }
-                let function = format!("rewrite_{}_case{}", d.name, seen.len());
-                let value_ty = &interface.value;
-                let type_ty = &bindings.0["Type"].path;
-                let mut parameters = vec!["ctx: &mut C".to_owned()];
-                let mut arguments = vec!["builder".to_owned()];
-                for (i, _) in sig.inputs.iter().enumerate() {
-                    parameters.push(format!("input{i}: {value_ty}"));
-                    arguments.push(format!("inputs[{i}]"));
-                }
-                for (i, generic) in sig.generics.keys().enumerate() {
-                    if !insts.iter().any(|inst| {
-                        inst.ty.name == *generic
-                            || matches!(&inst.op, super::typed::Call::Host { types, .. }
-                            if types.iter().any(|ty| ty.name == *generic))
-                    }) {
-                        continue;
+                let action = if replacement {
+                    if let Err(message) = &op.signature {
+                        return Err(Error::at(
+                            source,
+                            d.offset,
+                            format!(
+                                "value rewrite cannot discard instruction effects or attributes: {message}"
+                            ),
+                        ));
                     }
-                    parameters.push(format!("ty{i}: {type_ty}"));
-                    let (result, index) = sig.anchor(generic).unwrap();
-                    let index = if result {
-                        index
-                    } else {
-                        sig.results.len() + index
-                    };
-                    arguments.push(format!("_types[{index}]"));
-                }
-                parameters.push(format!("destination: Option<{value_ty}>"));
-                arguments.push("Some(destination)".into());
-                writeln!(
-                    bodies,
-                    "#[allow(unused_variables)]\nfn {function}<C: {bound}>({}) -> {value_ty} {{",
-                    parameters.join(", ")
-                )
-                .unwrap();
-                for inst in &insts {
-                    let ty = if sig.generics.contains_key(&inst.ty.name) {
-                        format!(
-                            "ty{}",
-                            sig.generics
-                                .keys()
-                                .position(|n| n == &inst.ty.name)
-                                .unwrap()
-                        )
-                    } else {
-                        expressions.constant(&inst.ty.name, emit.offset)?
-                    };
-                    let destination = if inst.result == value {
-                        "destination"
-                    } else {
-                        "None"
-                    };
-                    let binding = format!("let {} = ", inst.result);
-                    match &inst.op {
-                        super::typed::Call::Integer(op, immediate) => {
-                            let variant = operations[op]
-                                .attributes
-                                .first()
-                                .ok_or_else(|| {
-                                    Error::at(
-                                        source,
-                                        emit.offset,
-                                        "integer attribute requires a storage codec",
-                                    )
-                                })?
-                                .2
-                                .as_str();
-                            writeln!(bodies, "{binding}ctx.{emit_method}({}::{op}, {ty}, &[], &[{}::{variant}({immediate})], {destination});", config.opcode, config.field).unwrap();
-                        }
-                        super::typed::Call::Attributed(op, attributes) => {
-                            let fields = attributes
-                                .iter()
-                                .map(|(variant, name)| {
-                                    Ok(format!(
-                                        "{}::{variant}({})",
-                                        config.field,
-                                        expressions.constant(name, emit.offset)?
-                                    ))
-                                })
-                                .collect::<Result<Vec<_>, Error>>()?
-                                .join(", ");
-                            writeln!(bodies, "{binding}ctx.{emit_method}({}::{op}, {ty}, &[{}], &[{fields}], {destination});",
-                                config.opcode, inst.inputs.join(", ")).unwrap();
-                        }
-                        super::typed::Call::Instruction(op) => {
-                            writeln!(
-                                bodies,
-                                "{binding}ctx.{emit_method}({}::{op}, {ty}, &[{}], &[], {destination});",
-                                config.opcode,
-                                inst.inputs.join(", ")
-                            )
-                            .unwrap();
-                        }
-                        super::typed::Call::Host { name, types } => {
-                            let mut args = types
-                                .iter()
-                                .map(|ty| {
-                                    if let Some(i) = sig.generics.keys().position(|n| n == &ty.name)
-                                    {
-                                        Ok(format!("ty{i}"))
-                                    } else {
-                                        expressions.constant(&ty.name, emit.offset)
-                                    }
-                                })
-                                .collect::<Result<Vec<_>, Error>>()?;
-                            args.extend(inst.inputs.iter().cloned());
-                            writeln!(
-                                bodies,
-                                "let {} = build_{name}(ctx, {});",
-                                inst.result,
-                                args.join(", ")
-                            )
-                            .unwrap();
-                        }
+                    if structural || sig.results.len() != 1 {
+                        return Err(Error::at(
+                            source,
+                            emit.offset,
+                            "value replacement requires one explicit result",
+                        ));
                     }
+                    let mut insts = Vec::new();
+                    let (ty, value) = sig.expression(
+                        source,
+                        emit,
+                        &operations,
+                        defs,
+                        &mut insts,
+                        config.dialect,
+                        &mut BTreeMap::new(),
+                        &functions,
+                        &mut Vec::new(),
+                    )?;
+                    if ty != sig.results[0]
+                        && !(ty.domain.len() == 1 && ty.domain == sig.results[0].domain)
+                    {
+                        return Err(Error::at(
+                            source,
+                            emit.offset,
+                            "replacement result does not match rule result",
+                        ));
+                    }
+                    program.recipe(
+                        &sig,
+                        &insts,
+                        &value,
+                        &expressions,
+                        config,
+                        &label,
+                        emit.offset,
+                    )?
+                } else {
+                    expressions.rust(emit)?
+                };
+                if matches!(d.kind, DeclKind::Rewrite(_)) {
+                    writeln!(bodies, "#[allow(non_upper_case_globals)]\nconst REWRITE_{}: {}::Action = {action};", d.name, config.runtime).unwrap();
+                    continue;
                 }
-                writeln!(bodies, "{value}\n}}").unwrap();
-                writeln!(bodies,
-                    "fn {function}_action() -> {result_path} {{ {}({:?}, |ctx| {}(ctx, |builder, inputs, _types, destination| {function}({}))) }}",
-                    config.rewrite, d.name, config.value_adapter, arguments.join(", ")
-                ).unwrap();
-                format!("{function}_action()")
-            } else {
-                expressions.rust(emit)?
-            };
-            if matches!(d.kind, DeclKind::Rewrite(_)) {
-                continue;
+                let action = intern(&mut program.actions, action);
+                let tests = guards
+                    .iter()
+                    .map(|g| intern(&mut program.tests, g.clone()))
+                    .collect();
+                groups.entry(name).or_default().push((action, tests));
             }
-            groups.entry(name).or_default().push(format!(
-                "// rule {}\nif {guard} {{ return Some({action}); }}",
-                d.name
-            ));
         }
     }
     // The query adapter is the matcher input, not a lexical variable available
@@ -464,22 +342,58 @@ fn compile(
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let mut graph = crate::rules::graph::Graph::default();
+    let entries: Vec<_> = groups
+        .into_iter()
+        .map(|(opcode, candidates)| (opcode, graph.compile(candidates)))
+        .collect();
+    // Recipe labels already occupy the assembler's label namespace.
+    let base = program.labels;
+    for node in &graph.nodes {
+        program.asm.label();
+        match node {
+            crate::rules::graph::Node::Reject => program.asm.emit(Op::Reject {}),
+            crate::rules::graph::Node::Accept(action) => {
+                program.asm.emit(Op::Accept { action: *action })
+            }
+            crate::rules::graph::Node::Check { test, yes, no } => {
+                program.test(*test, base + no);
+                program
+                    .asm
+                    .branch(Op::Jump { target: 0 }, "target", base + yes);
+            }
+        }
+    }
+    let encoded = program.asm.finish();
     writeln!(
         out,
-        "pub fn {}(opcode: {}, {args}) -> Option<{result_path}> {{ match opcode {{",
-        config.function, config.opcode
+        "pub fn {}(opcode: {}) -> Option<(&'static {}::Program, usize)> {{",
+        config.function, config.opcode, config.runtime
     )
     .unwrap();
-    for (opcode, rules) in groups {
+    writeln!(out, "let entry = match opcode {{").unwrap();
+    for (opcode, entry) in entries {
         writeln!(
             out,
-            "{}::{opcode} => {{ {} None }},",
+            "{}::{opcode} => {},",
             config.opcode,
-            rules.join("\n")
+            encoded.labels[base + entry]
         )
         .unwrap();
     }
-    out.push_str("_ => None,\n} }\n");
+    writeln!(out, "_ => return None, }}; Some((&PROGRAM, entry)) }}").unwrap();
+    if !program.predicates.is_empty() {
+        writeln!(
+            out,
+            "#[allow(unused_parens)]\npub fn predicate({args}, id: usize) -> bool {{ match id {{"
+        )
+        .unwrap();
+        for (id, predicate) in program.predicates.iter().enumerate() {
+            writeln!(out, "{id} => {{ {predicate} }},").unwrap();
+        }
+        writeln!(out, "_ => unreachable!(\"legalization predicate\"), }} }}").unwrap();
+    }
+    program.render(&mut out, &encoded, config, &interface);
     let ty = &bindings
         .0
         .get("Type")
@@ -488,6 +402,124 @@ fn compile(
     out.push_str(&functions.wrappers(ty, bound, &interface.value));
     out.push_str(&bodies);
     Ok(out)
+}
+
+/// A candidate has a read-only guard followed by one deferred action. Builds
+/// are checked as a value expression, never executed while choosing a case.
+struct Case {
+    offset: usize,
+    guards: Vec<Node>,
+    body: Node,
+    replacement: bool,
+}
+
+fn cases(source: &str, d: &Decl) -> Result<Vec<Case>, Error> {
+    if matches!(d.kind, DeclKind::Rewrite(_)) {
+        return Ok(vec![Case {
+            offset: d.offset,
+            guards: Vec::new(),
+            body: d.fields["replace"].clone(),
+            replacement: true,
+        }]);
+    }
+    let DeclKind::Select(signature) = &d.kind else {
+        return Err(Error::at(source, d.offset, "expected select or rewrite"));
+    };
+    let root = signature
+        .params
+        .iter()
+        .find(|p| !matches!(p.ty.kind, Kind::Ref(_)))
+        .ok_or_else(|| Error::at(source, d.offset, "missing instruction parameter"))?;
+    let Some(Node {
+        kind: Kind::List(candidates),
+        ..
+    }) = d.fields.get("cases")
+    else {
+        return Err(Error::at(source, d.offset, "expected selection cases"));
+    };
+    if candidates.is_empty() {
+        return Err(Error::at(
+            source,
+            d.offset,
+            "select requires at least one case",
+        ));
+    }
+    let is_root = |node: &Node| matches!(&node.kind, Kind::Name(name) if name == &root.name);
+    candidates.iter().map(|candidate| {
+        let Kind::List(statements) = &candidate.kind else { unreachable!() };
+        let Some((last, preceding)) = statements.split_last() else {
+            return Err(Error::at(source, candidate.offset, "empty selection case"));
+        };
+        let mut guards = Vec::new();
+        let mut builds = Vec::new();
+        for statement in preceding {
+            match &statement.kind {
+                Kind::Call(name, args) if name == "require" && args.len() == 1 && builds.is_empty() => {
+                    guards.push(args[0].clone());
+                }
+                Kind::Let(name, value) => {
+                    let value = construction(source, value)?;
+                    builds.push(Node { offset: statement.offset, kind: Kind::Let(name.clone(), Box::new(value)) });
+                }
+                _ => return Err(Error::at(source, statement.offset,
+                    "expected require before construction, or let binding; actions must be last")),
+            }
+        }
+        let Kind::Call(name, args) = &last.kind else {
+            return Err(Error::at(source, last.offset, "expected legal, replace or rewrite call"));
+        };
+        let (body, replacement) = match (name.as_str(), args.as_slice()) {
+            ("replace", [node, value]) if is_root(node) => {
+                // A previously built value is shared, not built again.
+                let value = if matches!(value.kind, Kind::Name(_)) {
+                    value.clone()
+                } else { construction(source, value)? };
+                builds.push(value);
+                (Node { offset: last.offset, kind: Kind::List(builds) }, true)
+            }
+            ("legal", [node]) if is_root(node) && builds.is_empty() => {
+                (Node { offset: last.offset, kind: Kind::Name("legal".into()) }, false)
+            }
+            (name, [node]) if !matches!(name, "legal" | "replace" | "require" | "build")
+                && is_root(node) && builds.is_empty() => (last.clone(), false),
+            _ => return Err(Error::at(source, last.offset,
+                "case must end with legal(root), replace(root, value), or rewrite(root); builds require replace")),
+        };
+        Ok(Case { offset: candidate.offset, guards, body, replacement })
+    }).collect()
+}
+
+fn construction(source: &str, node: &Node) -> Result<Node, Error> {
+    let Kind::Call(name, args) = &node.kind else {
+        return Err(Error::at(
+            source,
+            node.offset,
+            "construction requires build(expression)",
+        ));
+    };
+    if name != "build" || args.len() != 1 {
+        return Err(Error::at(
+            source,
+            node.offset,
+            "construction requires build(expression)",
+        ));
+    }
+    fn unwrap(node: &Node) -> Node {
+        let mut node = node.clone();
+        match &mut node.kind {
+            Kind::Call(name, args) if name == "build" && args.len() == 1 => {
+                return unwrap(&args[0]);
+            }
+            Kind::Call(_, args) | Kind::TypedCall(_, _, args) => {
+                for arg in args {
+                    *arg = unwrap(arg);
+                }
+            }
+            _ => {}
+        }
+        node
+    }
+    Ok(unwrap(&args[0]))
 }
 
 struct Expressions<'a> {
@@ -500,14 +532,37 @@ struct Expressions<'a> {
     bindings: &'a interfaces::Bindings,
     hosts: &'a [(String, String)],
     signature: &'a Signature,
+    defs: &'a Definitions,
 }
 impl Expressions<'_> {
-    fn expand(&self, offset: usize, args: &[Node]) -> Result<String, Error> {
+    fn field(&self, receiver: &Node, field: &str, offset: usize) -> Result<String, Error> {
+        use crate::storage::operands::Domain;
+        if !self
+            .hosts
+            .iter()
+            .any(|(n, ty)| n == "query" && ty == "Query")
+        {
+            return Err(Error::at(
+                self.source,
+                offset,
+                "field queries require an explicit query: &Query parameter",
+            ));
+        }
+        let node = Node {
+            offset,
+            kind: Kind::Member(Box::new(receiver.clone()), field.into()),
+        };
+        let (domain, index) = self.access(&node)?;
+        Ok(match domain {
+            Domain::Input | Domain::Result => {
+                format!("query.value({}, {index})", domain == Domain::Result)
+            }
+            Domain::Attribute => format!("query.immediate({index})"),
+        })
+    }
+
+    fn rewrite(&self, name: &str, offset: usize, args: &[Node]) -> Result<String, Error> {
         let [
-            Node {
-                kind: Kind::Name(name),
-                ..
-            },
             Node {
                 kind: Kind::Name(node),
                 ..
@@ -517,7 +572,7 @@ impl Expressions<'_> {
             return Err(Error::at(
                 self.source,
                 offset,
-                "expected expand(rewrite, node)",
+                "rewrite requires one matched instruction argument",
             ));
         };
         if node != &self.signature.node {
@@ -698,7 +753,8 @@ impl Expressions<'_> {
         };
         Ok(match &node.kind {
             Kind::Match(value, arms) => self.match_expr(value, arms)?,
-            Kind::Call(name, args) if name == "expand" => self.expand(node.offset, args)?,
+            Kind::Call(name, args) => self.rewrite(name, node.offset, args)?,
+            Kind::Member(receiver, field) => self.field(receiver, field, node.offset)?,
             Kind::Number(n) => n.to_string(),
             Kind::Integer(n) => n.to_string(),
             Kind::Name(n) if n == "legal" => self.legal_action.into(),
@@ -732,6 +788,16 @@ impl Expressions<'_> {
                     .iter()
                     .find(|d| d.name == *method)
                     .ok_or_else(fail)?;
+                if matches!(
+                    declaration.body(),
+                    Some(crate::syntax::FunctionBody::Vm { .. })
+                ) {
+                    return Err(Error::at(
+                        self.source,
+                        node.offset,
+                        "VM method requires native predicate lowering",
+                    ));
+                }
                 let signature = declaration.signature().ok_or_else(fail)?;
                 if signature.params.first().is_none_or(|p| p.name != "self")
                     || signature.params.len() != args.len() + 1

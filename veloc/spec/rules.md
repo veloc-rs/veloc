@@ -266,36 +266,42 @@ Scaled indexing and memory-operation folding are not implemented.
 operand names and type relationships come from the operation declarations.
 No second handwritten operand signature or implicit host variable is needed.
 
+Legalization and instruction selection use the same anonymous `select` syntax.
+A single candidate needs no `choose` wrapper:
+
 ```text
-rule widen_add<T: Narrow>(inst: lir::Add<T>) {
-    replace = lir::Trunc<T>(
+select<T: Narrow>(inst: lir::Add<T>) {
+    replace(inst, build(lir::Trunc<T>(
         lir::Add<Type::I32>(
             lir::Zext<Type::I32>(inst.lhs),
             lir::Zext<Type::I32>(inst.rhs),
         ),
-    );
+    )));
 }
-rule ctpop32(inst: lir::Ctpop<Type::I32>, target: &Target) {
-    action = match target.supports(Instruction::POPCNT32) {
-        true => legal,
-        _ => expand(popcount32, inst),
-    };
+select(inst: lir::Ctpop<Type::I32>, target: &Target) {
+    choose {
+        case {
+            require(target.supports(Instruction::POPCNT32));
+            legal(inst);
+        }
+        case { popcount32(inst); }
+    }
 }
 ```
 
 Node type arguments specialize the declared operation generics. Construction
 expressions specify result types and infer input types from their arguments.
 Alternatives such as `lir::Add<T> | lir::Sub<T>` must have identical named
-value signatures. Rules are tried in source order; the first matching rule
-returns a plan. Related native candidates and their fallback can instead live
-in one action-level `match`, removing their dependence on inter-rule ordering.
-Matches evaluate the scrutinee once, test declared constants/literals and guards
-in order, and require a final unguarded `_` fallback. Nested matches are supported;
-binding/destructuring patterns and exhaustiveness inference are not yet supported.
+value signatures. Candidates are tried in source order; the first matching
+candidate returns a plan. All `require` conditions precede construction.
+`let x = build(...)` names a constructed value without duplicating it; the
+terminal operation is `legal(inst)`, `replace(inst, value)`, or a named rewrite call.
+Candidate diagnostics identify source locations, not artificial rule names.
 
 Shared `rewrite` declarations are callable templates, not matching rules.
 Loading a template never enables a fallback implicitly. Both implementation
-forms use `expand(name, inst)`, which checks the instruction and type domains:
+forms use ordinary calls such as `trailing_zeros(inst)`, checked against the
+matched instruction and type domains:
 
 ```text
 rewrite trailing_zeros<T: Word>(inst: lir::Cttz<T>) {
@@ -328,7 +334,8 @@ bindings, forward references and nested calls. The compiler checks all bodies,
 including unused functions, and rejects recursive calls, mismatched types and
 references to a caller's locals/root. Arguments are constructed once; each call
 has its own local scope. Calls are inlined into a single checked construction
-plan at generation time, with no runtime DSL interpreter or function lookup.
+plan at generation time. The plan becomes a bytecode recipe; named DSL functions
+are not looked up or interpreted at runtime.
 Only the enclosing rewrite binds the root result. This currently covers
 single-result pure values, not control-flow/effect tokens. Those still use
 explicit whole-root host rewrites.
@@ -359,14 +366,62 @@ editing APIs. Instruction attributes use the checked OpSpec storage codecs.
 `replace` compiles checked, fixed-arity pure value expressions with local
 bindings and integer attributes. Rust bindings support memory and other complex
 graph rewrites; Rust checks their callback signatures even when unused.
-`legal` is a built-in decision. `DecisionRust` supplies the runtime bindings for
-legal decisions, generated value rewrites, and Rust callbacks. Decision selection
-does not mutate the function; the worklist applies the selected plan and revisits
-the resulting operations.
-`when` can combine declared predicates with boolean operators. A rule can
-only call a host explicitly passed in its parameter list. Instruction-local
-queries and immutable target capabilities are separate contexts; graph
-analysis is not implicitly available. Rust predicates are opaque to offline
+`legal(inst)` is a built-in decision. `DecisionRust::runtime` names the
+runtime module supplying the program tables and adapters. Selection only runs
+read-only predicates and returns a plan; the worklist applies it under edit
+tracking and revisits the affected operations.
+
+The compiler shares its priority-preserving decision graph with instruction
+selection, including common-prefix sharing. Both backends share the assembler,
+fixed-width branch relocation and constant-pool interning. Execution remains
+separate: legalization recipes construct generic values; selection recipes
+construct machine instructions and transfer edge information.
+
+The legalization bytecode contains `CheckSignature`, `CheckSameType`, `CheckType`,
+`CheckSignedRange`, `CheckFeatures`, and `CallPredicate` for queries, with
+`Jump / Accept / Reject` for control flow
+and `Emit / Call / Return` for recipes. `choose`, `case`, and `let` are
+structural syntax, not one-to-one VM opcodes. Checked native operations lower
+to `Emit`; explicitly declared Rust helpers lower to `Call`. Identical recipes
+share code. Generated byte arrays include decoded instructions and PC offsets.
+
+Native query methods explicitly bind to VM operations, for example:
+
+```text
+fn ty(&self, value: RewriteValue) -> Type = vm("type");
+fn fits_signed(&self, value: i64, bits: u32) -> bool = vm("signed_range");
+fn supports(&self, features: sequence(u64)) -> bool = vm("features");
+```
+
+These declarations are checked but do not generate Rust forwarding methods.
+Signature/type/range/feature checks execute directly in the VM. Explicit Rust
+predicates remain an extension; unsupported native expression forms are errors,
+not silently emitted Rust calls.
+
+Generated legalization entry functions return the static program and entry PC
+for an opcode. Selection entry functions return a static program. Neither runs
+the VM: the shared driver consumes a target policy containing the lookup,
+feature words and explicit host extensions. Matching stays read-only until
+acceptance. The legalization matcher returns a borrowed static action entry.
+One engine step checks the budget and ABI boundary, applies that entry under
+edit tracking, and reports changes. The worklist only requeues affected
+instructions, including a surviving root. ABI lowering uses the same edit
+tracking and convergence budget but remains a separate service.
+Verification stops at matching and never runs a rewrite.
+
+Selection builds accepted instructions and the driver commits replacement and
+edge transfers. Neither engine requires a separately allocated rewrite plan.
+Same-typed legalization results either reuse their identity or replace uses;
+one-to-many type conversion requires a coordinated mapping of uses and CFG
+edges and is not implemented by the scalar recipe VM.
+
+`require` can combine Rust predicates with boolean operators; native conjunctions
+and direct native tests are lowered to bytecode. A rule can
+only call a host explicitly passed in its parameter list. Named instruction
+fields use the same checked storage projections as instruction views.
+For example, `query.fits_signed(inst.offset, 32)` reads the declared offset,
+not an assumed attribute slot. Instruction-local queries and immutable target
+capabilities remain separate contexts. Rust predicates are opaque to offline
 proof: declaring an interface does not provide an SMT model.
 
 Machine instructions declare `requires = ["POPCNT"]` in OpSpec. Feature names

@@ -4,6 +4,7 @@ mod check;
 mod decision;
 pub(crate) mod equivalence;
 mod functions;
+pub(crate) mod graph;
 mod rust;
 pub(crate) mod typed;
 pub use decision::{DecisionRust, decisions};

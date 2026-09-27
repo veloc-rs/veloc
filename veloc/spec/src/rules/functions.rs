@@ -33,6 +33,9 @@ impl Functions {
             let DeclKind::Function { signature, body } = &d.kind else {
                 continue;
             };
+            if matches!(body, FunctionBody::Vm { .. }) {
+                return Err(Error::at(source, d.offset, "VM bindings belong to query methods"));
+            }
             if signature.is_const {
                 return Err(Error::at(
                     source,
