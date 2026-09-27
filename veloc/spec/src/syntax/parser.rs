@@ -349,24 +349,7 @@ impl<'a> Parser<'a> {
                 if self.at(TokenKind::LParen) || self.at(TokenKind::Lt) =>
             {
                 let signature = self.signature(None, false, true)?;
-                if declaration_name == "rewrite" && self.at(TokenKind::Eq) {
-                    let FunctionBody::Rust {
-                        offset,
-                        path: Some(path),
-                    } = self.function_body()?
-                    else {
-                        unreachable!()
-                    };
-                    fields.insert(
-                        "rust".into(),
-                        Node {
-                            offset,
-                            kind: Kind::Text(path),
-                        },
-                    );
-                } else {
-                    fields = self.fields(0, Context::Value, Fields::Properties)?;
-                }
+                fields = self.fields(0, Context::Value, Fields::Properties)?;
                 if declaration_name == "rewrite" {
                     DeclKind::Rewrite(signature)
                 } else {

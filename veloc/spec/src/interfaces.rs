@@ -55,7 +55,9 @@ fn binding_path(source: &str, node: &Node) -> Result<String, Error> {
             },
         ] = args.as_slice()
     {
-        rust_path(source, node.offset, path)?;
+        if !primitive(path) {
+            rust_path(source, node.offset, path)?;
+        }
         return Ok(path.clone());
     }
     Err(Error::at(

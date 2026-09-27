@@ -11,10 +11,11 @@ crate::bytecode! {
         CheckType { value: uleb, set: uleb, failure: u32 },
         CheckSignedRange { field: uleb, bits: uleb, expected: uleb, failure: u32 },
         CheckFeatures { set: uleb, failure: u32 },
-        CallPredicate { predicate: uleb, failure: u32 },
         Accept { action: uleb },
+        // opcode is the definition-order IR opcode, not a program-local index.
         Emit { opcode: uleb, ty: uleb, inputs: [uleb], fields: [uleb], dst: uleb, reuse: uleb },
-        Call { function: uleb, types: [uleb], inputs: [uleb], dst: uleb },
         Return { value: uleb },
+        // Pairs of (operand index, value slot) and (field index, field source).
+        Update { inputs: [uleb], fields: [uleb] },
     }
 }

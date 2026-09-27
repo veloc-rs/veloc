@@ -9,10 +9,7 @@ mod tests;
 use crate::error::{Error, Result};
 use std::collections::VecDeque;
 use veloc_lir::function::EditChanges;
-use veloc_lir::{FuncEditor, InstId, MachineFunction, MachineOpcode};
-
-const REWRITES_PER_INST: usize = 1024;
-const TRACE_LENGTH: usize = 16;
+use veloc_lir::{FuncEditor, InstId, MachineFunction};
 
 pub struct Legalizer<'a> {
     target: LegalizePolicy<'a>,
@@ -31,9 +28,8 @@ impl<'a> Legalizer<'a> {
             }
             let inst = function.inst(id);
             if inst.is_generic() && !inst.is_call_frame() {
-                let query = Query::from_inst(inst, function.vregs())?;
                 if !matches!(
-                    vm::select(self.target, &query),
+                    vm::select(self.target, function, id)?,
                     Some((_, vm::Action::Legal))
                 ) {
                     return Err(Error::codegen(format!(
@@ -45,19 +41,14 @@ impl<'a> Legalizer<'a> {
         Ok(())
     }
 
-    /// The worklist only schedules changed instructions. Matching, budget checks
-    /// and tracked edits are one engine step; ABI lowering remains a separate service.
+    /// The worklist schedules changed instructions until all are legal.
+    /// ABI lowering remains a separate service.
     pub fn legalize(
         &self,
         function: &mut MachineFunction,
         mut lower_call: impl FnMut(&mut FuncEditor<'_>, InstId) -> Result<()>,
     ) -> Result<bool> {
-        let mut engine = Engine {
-            policy: self.target,
-            limit: function.inst_count().max(1).saturating_mul(REWRITES_PER_INST),
-            rewrites: 0,
-            trace: VecDeque::new(),
-        };
+        let mut modified = false;
         let mut pending: VecDeque<_> = function
             .blocks()
             .flat_map(|block| function.block_insts(block))
@@ -65,9 +56,10 @@ impl<'a> Legalizer<'a> {
         let mut queued: hashbrown::HashSet<_> = pending.iter().copied().collect();
         while let Some(id) = pending.pop_front() {
             queued.remove(&id);
-            let Some(changes) = engine.step(function, id, &mut lower_call)? else {
+            let Some(changes) = self.step(function, id, &mut lower_call)? else {
                 continue;
             };
+            modified = true;
             // A surviving root must be checked again even if only its neighbours
             // were edited. Removed instructions need no further processing.
             for changed in changes.insts.into_iter().chain(core::iter::once(id)) {
@@ -76,7 +68,7 @@ impl<'a> Legalizer<'a> {
                 }
             }
         }
-        Ok(engine.rewrites != 0)
+        Ok(modified)
     }
 }
 
@@ -86,17 +78,9 @@ fn needs_abi(function: &MachineFunction, id: InstId) -> bool {
         .is_some_and(|info| info.frame.is_none())
 }
 
-/// Per-run state, not target policy. The budget spans all blocks and ABI edits.
-struct Engine<'a> {
-    policy: LegalizePolicy<'a>,
-    limit: usize,
-    rewrites: usize,
-    trace: VecDeque<(InstId, MachineOpcode, &'static str)>,
-}
-
-impl Engine<'_> {
+impl Legalizer<'_> {
     fn step(
-        &mut self,
+        &self,
         function: &mut MachineFunction,
         id: InstId,
         lower_call: &mut impl FnMut(&mut FuncEditor<'_>, InstId) -> Result<()>,
@@ -114,8 +98,7 @@ impl Engine<'_> {
         let selected = if needs_abi(function, id) {
             None
         } else {
-            let query = Query::from_inst(inst, function.vregs())?;
-            let selected = vm::select(self.policy, &query).ok_or_else(|| {
+            let selected = vm::select(self.target, function, id)?.ok_or_else(|| {
                 Error::codegen(format!("missing legalization rule for {opcode:?}"))
             })?;
             if matches!(selected.1, vm::Action::Legal) {
@@ -135,23 +118,15 @@ impl Engine<'_> {
         };
         let rule = match selected {
             None => "ABI lowering",
-            Some((_, vm::Action::Host { name, .. } | vm::Action::Recipe { name, .. })) => name,
+            Some((_, vm::Action::Recipe { name, .. })) => name,
             Some((_, vm::Action::Legal)) => unreachable!("legal instructions do not rewrite"),
         };
-        // Matching an already-legal instruction consumes no rewrite budget.
-        if self.rewrites == self.limit {
-            return Err(Error::codegen(format!(
-                "legalization did not converge after {} rewrites; recent rules: {:?}; next: {id:?} {opcode:?} {rule:?}",
-                self.limit, self.trace,
-            )));
-        }
         let (result, changes) = function.editor().track(|edit| {
             let Some((program, action)) = selected else {
                 return lower_call(edit, id);
             };
             let mut ctx = RewriteContext::new(id, edit.editor());
             match *action {
-                vm::Action::Host { apply, .. } => apply(&mut ctx),
                 vm::Action::Recipe { entry, slots, .. } => {
                     vm::apply(program, entry, slots, &mut ctx)
                 }
@@ -167,11 +142,6 @@ impl Engine<'_> {
                 "legalization rule {rule:?} made no instruction edits for {id:?} {opcode:?}"
             )));
         }
-        self.rewrites += 1;
-        if self.trace.len() == TRACE_LENGTH {
-            self.trace.pop_front();
-        }
-        self.trace.push_back((id, opcode, rule));
         Ok(Some(changes))
     }
 }

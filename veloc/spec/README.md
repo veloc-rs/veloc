@@ -1567,7 +1567,7 @@ cargo run -p veloc-spec --features cli -- veloc/codegen/defs/x86_64/legalize.spe
   --source-dialect lir --source-opcode veloc_lir::GenericOpcode \
   --field veloc_lir::FieldValue \
   --function program \
-  --value-interface ValueRules \
+  --value veloc_lir::Reg \
   --runtime crate::passes::lowering::legalize::vm -o /tmp/legalize.rs
 ```
 

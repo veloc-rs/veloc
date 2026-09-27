@@ -9,18 +9,23 @@ use veloc_bytecode::Lebs;
 pub(super) struct Program {
     pub asm: Assembler,
     pub labels: usize,
-    pub predicates: Vec<String>,
     pub tests: Vec<Test>,
     pub sets: Vec<Vec<String>>,
     pub features: Vec<String>,
     pub feature_source: Option<String>,
     pub actions: Vec<String>,
     types: Vec<String>,
-    opcodes: Vec<String>,
     fields: Vec<String>,
-    functions: Vec<String>,
     recipes: BTreeMap<Vec<Vec<u8>>, usize>,
 }
+pub(super) enum Output {
+    Value(String),
+    Update {
+        inputs: Vec<(usize, String)>,
+        fields: Vec<(usize, String)>,
+    },
+}
+
 impl Program {
     pub fn test(&mut self, id: usize, failure: usize) {
         let op = match &self.tests[id] {
@@ -50,10 +55,6 @@ impl Program {
             },
             Test::Features(set) => Op::CheckFeatures {
                 set: *set,
-                failure: 0,
-            },
-            Test::Host(predicate) => Op::CallPredicate {
-                predicate: *predicate,
                 failure: 0,
             },
         };
@@ -87,11 +88,190 @@ impl Program {
         Ok(intern(&mut self.types, source))
     }
 
+    /// Rebuild the matched instruction with selected scalar fields changed.
+    /// Unmentioned operands, results and metadata retain their original meaning.
+    pub fn update_recipe(
+        &mut self,
+        sig: &Signature,
+        node: &Node,
+        expr: &Expressions<'_>,
+        functions: &crate::rules::functions::Functions,
+        operations: &BTreeMap<String, crate::schema::Operation>,
+        config: DecisionRust<'_>,
+        name: &str,
+    ) -> Result<String, Error> {
+        use crate::storage::operands::Domain;
+        let (last, preceding) = match &node.kind {
+            Kind::List(nodes) => {
+                let (last, preceding) = nodes.split_last().unwrap();
+                (last, preceding)
+            }
+            _ => (node, &[][..]),
+        };
+        let Kind::Object(root, changes) = &last.kind else {
+            unreachable!()
+        };
+        if root != &sig.node || sig.dynamic {
+            return Err(Error::at(
+                expr.source,
+                last.offset,
+                "update requires the matched fixed-signature instruction",
+            ));
+        }
+        // Replacing control edges or satisfying additional verifier predicates
+        // requires a dedicated checked operation, not a scalar field update.
+        for root in expr.roots {
+            let op = expr.defs.ops.iter().find(|op| &op.name == root).unwrap();
+            let crate::model::Projection::Operands(layout) = &op.projection else {
+                unreachable!()
+            };
+            if layout.flow != "Next" || operations[root].constrained {
+                return Err(Error::at(
+                    expr.source,
+                    last.offset,
+                    "constrained or control instruction requires a checked adapter",
+                ));
+            }
+        }
+        let mut insts = Vec::new();
+        let mut locals = BTreeMap::new();
+        for binding in preceding {
+            let Kind::Let(name, value) = &binding.kind else {
+                return Err(Error::at(
+                    expr.source,
+                    binding.offset,
+                    "expected construction binding",
+                ));
+            };
+            let value = sig.expression(
+                expr.source,
+                value,
+                operations,
+                expr.defs,
+                &mut insts,
+                config.dialect,
+                &mut locals,
+                functions,
+                &mut Vec::new(),
+            )?;
+            if locals.insert(name.clone(), value).is_some() {
+                return Err(Error::at(
+                    expr.source,
+                    binding.offset,
+                    "duplicate replacement binding",
+                ));
+            }
+        }
+        let mut inputs = Vec::new();
+        let mut fields = Vec::new();
+        for (field, value) in changes {
+            let access = Node {
+                offset: value.offset,
+                kind: Kind::Member(
+                    Box::new(Node {
+                        offset: value.offset,
+                        kind: Kind::Name(root.clone()),
+                    }),
+                    field.clone(),
+                ),
+            };
+            let (domain, index) = expr.access(&access)?;
+            match domain {
+                Domain::Input => {
+                    let (ty, slot) = sig.expression(
+                        expr.source,
+                        value,
+                        operations,
+                        expr.defs,
+                        &mut insts,
+                        config.dialect,
+                        &mut locals,
+                        functions,
+                        &mut Vec::new(),
+                    )?;
+                    let expected = &sig
+                        .inputs
+                        .iter()
+                        .find(|(n, _)| n == &format!("{root}.{field}"))
+                        .ok_or_else(|| Error::at(expr.source, value.offset, "unknown input field"))?
+                        .1;
+                    if &ty != expected && !(ty.domain.len() == 1 && ty.domain == expected.domain) {
+                        return Err(Error::at(
+                            expr.source,
+                            value.offset,
+                            "updated input type mismatch",
+                        ));
+                    }
+                    inputs.push((index, slot));
+                }
+                Domain::Attribute => {
+                    let source = match &value.kind {
+                        Kind::Number(n) => format!(
+                            "{}::FieldSource::Constant({}::Imm({n}))",
+                            config.runtime, config.field
+                        ),
+                        Kind::Integer(n) => {
+                            let n = i64::try_from(*n).map_err(|_| {
+                                Error::at(expr.source, value.offset, "integer literal exceeds i64")
+                            })?;
+                            format!(
+                                "{}::FieldSource::Constant({}::Imm({n}))",
+                                config.runtime, config.field
+                            )
+                        }
+                        Kind::Member(..) => {
+                            let (domain, index) = expr.access(value)?;
+                            if domain != Domain::Attribute {
+                                return Err(Error::at(
+                                    expr.source,
+                                    value.offset,
+                                    "expected an i64 attribute",
+                                ));
+                            }
+                            format!("{}::FieldSource::Root({index})", config.runtime)
+                        }
+                        _ => {
+                            return Err(Error::at(
+                                expr.source,
+                                value.offset,
+                                "expected an i64 literal or field",
+                            ));
+                        }
+                    };
+                    fields.push((index, source));
+                }
+                Domain::Result => {
+                    return Err(Error::at(
+                        expr.source,
+                        value.offset,
+                        "updates preserve result identities",
+                    ));
+                }
+            }
+        }
+        if inputs.is_empty() && fields.is_empty() {
+            return Err(Error::at(
+                expr.source,
+                last.offset,
+                "empty instruction update",
+            ));
+        }
+        self.recipe(
+            sig,
+            &insts,
+            Output::Update { inputs, fields },
+            expr,
+            config,
+            name,
+            node.offset,
+        )
+    }
+
     pub fn recipe(
         &mut self,
         sig: &Signature,
         insts: &[Inst],
-        value: &str,
+        output: Output,
         expr: &Expressions<'_>,
         config: DecisionRust<'_>,
         name: &str,
@@ -109,30 +289,6 @@ impl Program {
             let dst = values.len();
             values.insert(inst.result.clone(), dst);
             let ty = self.ty(&inst.ty.name, sig, expr, config, offset)?;
-            if let Call::Host { name, types } = &inst.op {
-                let types = types
-                    .iter()
-                    .map(|ty| self.ty(&ty.name, sig, expr, config, offset))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let args = (0..types.len())
-                    .map(|i| format!("types[{i}]"))
-                    .chain((0..inputs.len()).map(|i| format!("inputs[{i}]")))
-                    .collect::<Vec<_>>();
-                let function = intern(
-                    &mut self.functions,
-                    format!(
-                        "|ctx, types, inputs| build_{name}(ctx, {})",
-                        args.join(", ")
-                    ),
-                );
-                code.emit(Op::Call {
-                    function,
-                    types: Lebs::Values(&types),
-                    inputs: Lebs::Values(&inputs),
-                    dst,
-                });
-                continue;
-            }
             let (opcode, fields) = match &inst.op {
                 Call::Instruction(op) => (op, Vec::new()),
                 Call::Integer(op, n) => {
@@ -144,7 +300,27 @@ impl Program {
                             Error::at(expr.source, offset, "integer requires storage codec")
                         })?
                         .2;
-                    (op, vec![format!("{}::{variant}({n})", config.field)])
+                    (
+                        op,
+                        vec![format!(
+                            "{}::FieldSource::Constant({}::{variant}({n}))",
+                            config.runtime, config.field
+                        )],
+                    )
+                }
+                Call::FieldInteger(op, field) => {
+                    let (domain, index) = expr.access(field)?;
+                    if domain != crate::storage::operands::Domain::Attribute {
+                        return Err(Error::at(
+                            expr.source,
+                            field.offset,
+                            "expected an i64 attribute",
+                        ));
+                    }
+                    (
+                        op,
+                        vec![format!("{}::FieldSource::Root({index})", config.runtime)],
+                    )
                 }
                 Call::Attributed(op, fields) => (
                     op,
@@ -152,32 +328,56 @@ impl Program {
                         .iter()
                         .map(|(variant, name)| {
                             Ok(format!(
-                                "{}::{variant}({})",
+                                "{}::FieldSource::Constant({}::{variant}({}))",
+                                config.runtime,
                                 config.field,
                                 expr.constant(name, offset)?
                             ))
                         })
                         .collect::<Result<Vec<_>, Error>>()?,
                 ),
-                Call::Host { .. } => unreachable!(),
             };
             let fields: Vec<_> = fields
                 .into_iter()
                 .map(|f| intern(&mut self.fields, f))
                 .collect();
-            let opcode = intern(&mut self.opcodes, format!("{}::{opcode}", config.opcode));
+            // Same definition order as the generated opcode enum and decoder.
+            let opcode = expr
+                .defs
+                .ops
+                .iter()
+                .position(|op| op.name == *opcode)
+                .expect("checked construction opcode");
             code.emit(Op::Emit {
                 opcode,
                 ty,
                 inputs: Lebs::Values(&inputs),
                 fields: Lebs::Values(&fields),
                 dst,
-                reuse: usize::from(inst.result == value),
+                reuse: usize::from(
+                    matches!(&output, Output::Value(value) if &inst.result == value),
+                ),
             });
         }
-        code.emit(Op::Return {
-            value: values[value],
-        });
+        match output {
+            Output::Value(value) => code.emit(Op::Return {
+                value: values[&value],
+            }),
+            Output::Update { inputs, fields } => {
+                let inputs: Vec<_> = inputs
+                    .iter()
+                    .flat_map(|(i, value)| [*i, values[value]])
+                    .collect();
+                let fields: Vec<_> = fields
+                    .into_iter()
+                    .flat_map(|(i, source)| [i, intern(&mut self.fields, source)])
+                    .collect();
+                code.emit(Op::Update {
+                    inputs: Lebs::Values(&inputs),
+                    fields: Lebs::Values(&fields),
+                });
+            }
+        }
         let entry = *self
             .recipes
             .entry(code.instructions.clone())
@@ -194,13 +394,7 @@ impl Program {
         ))
     }
 
-    pub fn render(
-        &self,
-        out: &mut String,
-        code: &Encoded,
-        config: DecisionRust<'_>,
-        interface: &ValueInterface,
-    ) {
+    pub fn render(&self, out: &mut String, code: &Encoded, config: DecisionRust<'_>) {
         // Decode for human-readable generated output using the same opcode schema.
         writeln!(out, "#[rustfmt::skip]\nconst CODE: &[u8] = &[").unwrap();
         for (bytes, offset) in code.instructions.iter().zip(&code.offsets) {
@@ -217,16 +411,16 @@ impl Program {
         }
         writeln!(
             out,
-            "static PROGRAM: {}::Program = {}::Program {{ code: CODE,",
-            config.runtime, config.runtime
+            "pub static {}: {}::Program = {}::Program {{ entries: ENTRIES, code: CODE,",
+            config.function.to_uppercase(),
+            config.runtime,
+            config.runtime
         )
         .unwrap();
         for (name, table) in [
             ("actions", &self.actions),
             ("types", &self.types),
-            ("opcodes", &self.opcodes),
             ("fields", &self.fields),
-            ("functions", &self.functions),
         ] {
             writeln!(out, "{name}: &[{}],", table.join(",\n")).unwrap();
         }
@@ -241,7 +435,6 @@ impl Program {
             self.features.join(",")
         )
         .unwrap();
-        writeln!(out, "emit: |ctx, opcode, ty, inputs, fields, result| {}::{}(ctx, opcode, ty, inputs, fields, result),", interface.contract, interface.emit).unwrap();
         out.push_str("};\n");
     }
 }

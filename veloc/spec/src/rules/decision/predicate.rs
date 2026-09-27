@@ -1,5 +1,4 @@
-//! Typed native query operations. Rust callbacks are only the explicit fallback
-//! for methods without a VM binding; native calls never reach the Rust emitter.
+//! Typed query operations compiled exclusively to matcher bytecode.
 use super::*;
 use crate::storage::operands::{Domain, Shape};
 use crate::syntax::FunctionBody;
@@ -21,7 +20,6 @@ pub(super) enum Test {
         expected: bool,
     },
     Features(usize),
-    Host(usize),
 }
 
 impl Expressions<'_> {
@@ -74,35 +72,62 @@ impl Expressions<'_> {
         access.ok_or_else(fail)
     }
 
-    fn native<'n>(&self, node: &'n Node) -> Result<Option<(&str, &'n str, &'n [Node])>, Error> {
+    fn native<'n>(&self, node: &'n Node) -> Result<Option<(&str, &'n Node, &'n [Node])>, Error> {
         let Kind::Method(receiver, name, args) = &node.kind else {
             return Ok(None);
         };
-        let Kind::Name(host) = &receiver.kind else {
+        let owner = if let Kind::Name(host) = &receiver.kind {
+            self.hosts
+                .iter()
+                .find(|(n, _)| n == host)
+                .map(|(_, owner)| owner.as_str())
+        } else if matches!(receiver.kind, Kind::Member(..)) {
+            let (domain, _) = self.access(receiver)?;
+            let rust = if domain == Domain::Attribute {
+                "i64"
+            } else {
+                self.value_type
+            };
+            let mut owners = self.types.iter().filter(|(owner, declaration)| {
+                self.bindings
+                    .0
+                    .get(**owner)
+                    .is_some_and(|binding| binding.path == rust)
+                    && declaration
+                        .members()
+                        .iter()
+                        .any(|method| method.name == *name)
+            });
+            let owner = owners.next().map(|(owner, _)| *owner);
+            if owners.next().is_some() {
+                return Err(Error::at(
+                    self.source,
+                    node.offset,
+                    "ambiguous field method declaration",
+                ));
+            }
+            owner
+        } else {
+            None
+        };
+        let Some(owner) = owner else {
             return Ok(None);
         };
-        let Some((_, owner)) = self.hosts.iter().find(|(n, _)| n == host) else {
-            return Ok(None);
-        };
-        let method = self.types[owner.as_str()]
-            .members()
-            .iter()
-            .find(|d| d.name == *name);
+        let method = self.types[owner].members().iter().find(|d| d.name == *name);
         let Some(method) = method else {
             return Ok(None);
         };
         let Some(FunctionBody::Vm { opcode, .. }) = method.body() else {
             return Ok(None);
         };
-        let signature = method.signature().unwrap();
-        if signature.params.len() != args.len() + 1 {
+        if method.signature().unwrap().params.len() != args.len() + 1 {
             return Err(Error::at(
                 self.source,
                 node.offset,
                 "VM operation argument arity",
             ));
         }
-        Ok(Some((opcode, host, args)))
+        Ok(Some((opcode, receiver, args)))
     }
 
     pub(super) fn guard(
@@ -126,8 +151,52 @@ impl Expressions<'_> {
                 "unsupported native predicate expression",
             )
         };
+        // Pure DSL predicate: no host object or Rust callback is involved.
+        if let Kind::Call(name, args) = &node.kind
+            && name == "fits_signed"
+        {
+            let [value, bits] = args.as_slice() else {
+                return Err(Error::at(
+                    self.source,
+                    node.offset,
+                    "fits_signed expects a value and a bit width",
+                ));
+            };
+            let (domain, field) = self.access(value)?;
+            if domain != Domain::Attribute {
+                return Err(Error::at(
+                    self.source,
+                    value.offset,
+                    "fits_signed expects an i64 instruction attribute",
+                ));
+            }
+            let bits = match bits.kind {
+                Kind::Integer(n) => n,
+                Kind::Number(n) => n.into(),
+                _ => {
+                    return Err(Error::at(
+                        self.source,
+                        bits.offset,
+                        "bit width must be an integer literal",
+                    ));
+                }
+            };
+            if !(1..=64).contains(&bits) {
+                return Err(Error::at(
+                    self.source,
+                    node.offset,
+                    "signed bit width must be in 1..=64",
+                ));
+            }
+            out.push(Test::Signed {
+                field,
+                bits: bits as usize,
+                expected,
+            });
+            return Ok(());
+        }
         if let Kind::Binary("==", lhs, rhs) = &node.kind {
-            if let Some(("type", _, [value])) = self.native(lhs)? {
+            if let Some(("type", value, [])) = self.native(lhs)? {
                 if !expected {
                     return Err(fail());
                 }
@@ -149,29 +218,16 @@ impl Expressions<'_> {
                 return Ok(());
             }
         }
-        if let Some((opcode, host, args)) = self.native(node)? {
+        if let Some((opcode, receiver, args)) = self.native(node)? {
             match (opcode, args) {
-                ("signed_range", [field, bits]) => {
-                    let (domain, field) = self.access(field)?;
-                    let bits = match bits.kind {
-                        Kind::Integer(n) => n,
-                        Kind::Number(n) => n.into(),
-                        _ => return Err(fail()),
-                    };
-                    if domain != Domain::Attribute || !(1..=64).contains(&bits) {
-                        return Err(fail());
-                    }
-                    out.push(Test::Signed {
-                        field,
-                        bits: bits as usize,
-                        expected,
-                    });
-                }
                 ("features", [features]) if expected => {
                     let Kind::Name(name) = &features.kind else {
                         return Err(fail());
                     };
                     let set = intern(&mut program.features, self.constant(name, features.offset)?);
+                    let Kind::Name(host) = &receiver.kind else {
+                        return Err(fail());
+                    };
                     let words = format!("{host}.words()");
                     if program
                         .feature_source
@@ -190,13 +246,11 @@ impl Expressions<'_> {
                 _ => return Err(fail()),
             }
         } else {
-            let predicate = self.rust(node)?;
-            let predicate = if expected {
-                predicate
-            } else {
-                format!("!({predicate})")
-            };
-            out.push(Test::Host(intern(&mut program.predicates, predicate)));
+            return Err(Error::at(
+                self.source,
+                node.offset,
+                "condition has no VM implementation; Rust predicate callbacks are not supported",
+            ));
         }
         Ok(())
     }
@@ -223,7 +277,7 @@ pub(super) fn validate(
         let sig = method.signature().unwrap();
         let expected: (Vec<String>, String) = match opcode.as_str() {
             "type" => (
-                vec![value.into()],
+                vec![],
                 bindings
                     .0
                     .get("Type")
@@ -231,7 +285,6 @@ pub(super) fn validate(
                     .path
                     .clone(),
             ),
-            "signed_range" => (vec!["i64".into(), "u32".into()], "bool".into()),
             "features" => (vec!["&[u64]".into()], "bool".into()),
             _ => {
                 return Err(Error::at(
@@ -255,7 +308,13 @@ pub(super) fn validate(
             .map(|r| interfaces::Type::parse(&r.ty, source, &known).map(|t| t.rust(bindings)))
             .transpose()?;
         let receiver = sig.params.first().is_some_and(|p| p.name == "self" && matches!(&p.ty.kind, Kind::Ref(n) if matches!(&n.kind, Kind::Name(n) if n == owner)));
+        let owner_path = bindings.0.get(owner).map(|binding| binding.path.as_str());
+        let valid_owner = match opcode.as_str() {
+            "type" => owner_path == Some(value),
+            _ => true,
+        };
         if !receiver
+            || !valid_owner
             || sig.is_const
             || !sig.generics.is_empty()
             || params != expected.0

@@ -8,33 +8,9 @@ typeset WordValue = Type::BOOL | Word | ScalarFloat | Type::PTR;
 typeset WordOrPtr = Word | Type::PTR;
 typeset SmallInt = Narrow | Type::I32;
 
-// Instruction-local query contract shared by target policies.
-type Query = rust("crate::passes::lowering::legalize::Query") {
-    trait = rust("crate::passes::lowering::legalize::contracts::Query");
-    fn opcode(&self) -> RewriteOpcode;
-    fn arity(&self, result: bool) -> usize;
-    fn value_type(&self, result: bool, index: u32) -> Type;
-    fn value(&self, result: bool, index: u32) -> RewriteValue;
-    fn immediate(&self, index: u32) -> i64;
-    fn ty(&self, value: RewriteValue) -> Type = vm("type");
-    fn fits_signed(&self, value: i64, bits: u32) -> bool = vm("signed_range");
+type Value = rust("veloc_lir::Reg") {
+    fn ty(&self) -> Type = vm("type");
 }
-
-type RewriteValue = rust("veloc_lir::Reg");
-type RewriteOpcode = rust("veloc_lir::GenericOpcode");
-type RewriteField = rust("veloc_lir::FieldValue");
-type RewriteContext = rust("crate::passes::lowering::legalize::RewriteContext") {
-    trait = rust("crate::passes::lowering::legalize::contracts::ValueRewrite");
-    fn emit(&mut self, opcode: RewriteOpcode, ty: Type,
-        inputs: sequence(RewriteValue), fields: sequence(RewriteField),
-        result: optional(RewriteValue)) -> RewriteValue;
-}
-
-rewrite_interface ValueRules {
-    contract = RewriteContext;
-    emit = emit;
-}
-
 // Reusable value construction and explicit node rewrites. Functions do not replace roots.
 // Fixed-width plans are straight-line: no runtime graph construction loop.
 

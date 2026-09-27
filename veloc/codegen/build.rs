@@ -16,15 +16,6 @@ fn main() {
     println!("cargo:rerun-if-changed=../../rustfmt.toml");
     println!("cargo:rerun-if-env-changed=RUSTFMT");
     let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
-    let legalize_contract = load("defs/legalize.spec")
-        .generate(
-            &[Emit::Interfaces],
-            Options {
-                interfaces: Some("crate::passes::lowering::legalize::contracts"),
-                ..Default::default()
-            },
-        )
-        .expect("compile legalization contracts");
     let lir = load("../lir/defs/module.spec");
     let rules = load("defs/x86_64/legalize.spec");
     let target = load("defs/x86_64/module.spec");
@@ -40,7 +31,7 @@ fn main() {
                         function: "program",
                         opcode: "veloc_lir::GenericOpcode",
                         field: "veloc_lir::FieldValue",
-                        value_interface: "ValueRules",
+                        value: "veloc_lir::Reg",
                         runtime: "crate::passes::lowering::legalize::vm",
                     },
                 }),
@@ -73,10 +64,6 @@ fn main() {
         .expect("compile encoder host contracts");
     let mut files = Vec::new();
     for (name, text) in [
-        (
-            "legalize_contract.rs",
-            legalize_contract.get(Emit::Interfaces).unwrap(),
-        ),
         (
             "legalize_x86_64.rs",
             decisions.get(Emit::Decisions).unwrap(),

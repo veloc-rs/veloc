@@ -1,133 +1,12 @@
-use crate::error::{Error, Result};
-use cranelift_entity::PrimaryMap;
 use smallvec::SmallVec;
-use veloc_lir::InstRead;
-use veloc_lir::{FieldValue, GenericOpcode, InstId, InstRef, MachineFunction, Reg, VReg, VRegData};
+use veloc_lir::{FieldValue, GenericOpcode, InstId, MachineFunction, Reg};
 use veloc_mir::Type;
-
-/// Borrowed instruction-local facts. Types are read on demand; queries have
-/// no access to CFG, users, or mutation. The borrow ends before rewriting.
-#[derive(Debug, Clone, Copy)]
-pub struct Query<'a> {
-    inst: InstRef<'a>,
-    vregs: &'a PrimaryMap<VReg, VRegData>,
-}
-
-impl<'a> Query<'a> {
-    pub fn from_inst(inst: InstRef<'a>, vregs: &'a PrimaryMap<VReg, VRegData>) -> Result<Self> {
-        if inst.generic_opcode().is_none() {
-            return Err(Error::codegen("expected generic instruction"));
-        }
-        let regs = || inst.results().iter().chain(inst.inputs());
-        if regs().any(|reg| reg.as_vreg().is_some_and(|reg| vregs.get(reg).is_none())) {
-            return Err(Error::codegen("unknown virtual operand in legalization"));
-        }
-        if regs().any(|reg| reg.is_preg()) {
-            // Physical locations are permitted only at explicit ABI boundaries.
-            // In particular, a register name never supplies a semantic type.
-            let valid = match inst.view() {
-                veloc_lir::InstView::UnaryReg(copy)
-                    if copy.opcode == veloc_lir::UnaryRegOpcode::Copy =>
-                {
-                    copy.dst.is_vreg() != copy.src.is_vreg()
-                }
-                veloc_lir::InstView::Call(call) => call
-                    .args
-                    .iter()
-                    .chain(call.results)
-                    .all(|reg| reg.is_preg()),
-                veloc_lir::InstView::CallIndirect(call) => {
-                    call.callee.is_vreg()
-                        && call
-                            .args
-                            .iter()
-                            .chain(call.results)
-                            .all(|reg| reg.is_preg())
-                }
-                veloc_lir::InstView::Return(ret) => ret.values.iter().all(|reg| reg.is_preg()),
-                _ => false,
-            };
-            if !valid {
-                return Err(Error::codegen(
-                    "physical operands require a typed copy or ABI call/return boundary",
-                ));
-            }
-        }
-        Ok(Self { inst, vregs })
-    }
-
-    pub fn opcode(&self) -> GenericOpcode {
-        self.inst
-            .generic_opcode()
-            .expect("query requires a generic instruction")
-    }
-
-    fn ty(&self, reg: Reg) -> Type {
-        if let Some(reg) = reg.as_vreg() {
-            return self.vregs[reg].ty;
-        }
-        // A boundary copy's transfer type comes from its SSA endpoint, not
-        // from the physical register. Both endpoints therefore match the same
-        // ordinary Copy legality rule.
-        assert_eq!(
-            self.opcode(),
-            GenericOpcode::Copy,
-            "ABI locations have no standalone value type"
-        );
-        let value = self
-            .inst
-            .results()
-            .iter()
-            .chain(self.inst.inputs())
-            .find_map(|reg| reg.as_vreg())
-            .expect("typed boundary copy");
-        self.vregs[value].ty
-    }
-}
-
-pub mod contracts {
-    include!(concat!(env!("OUT_DIR"), "/legalize_contract.rs"));
-}
-
-impl contracts::Query for Query<'_> {
-    fn value_type(&self, result: bool, index: u32) -> Type {
-        self.ty(self.value(result, index))
-    }
-
-    fn value(&self, result: bool, index: u32) -> Reg {
-        let regs = if result {
-            self.inst.results()
-        } else {
-            self.inst.inputs()
-        };
-        regs[index as usize]
-    }
-
-    fn opcode(&self) -> GenericOpcode {
-        Query::opcode(self)
-    }
-    fn arity(&self, result: bool) -> usize {
-        if result {
-            self.inst.results().len()
-        } else {
-            self.inst.inputs().len()
-        }
-    }
-
-    fn immediate(&self, index: u32) -> i64 {
-        let veloc_lir::FieldValueRef::Imm(&value) = self.inst.fields().read(index as usize) else {
-            panic!("checked immediate field");
-        };
-        value
-    }
-}
 
 /// Immutable target policy. The shared runtime owns matching and execution.
 #[derive(Clone, Copy)]
 pub struct LegalizePolicy<'a> {
-    pub program: fn(GenericOpcode) -> Option<(&'static super::vm::Program, usize)>,
+    pub program: &'static super::vm::Program,
     pub features: &'a [u64],
-    pub predicate: Option<&'a (dyn Fn(usize, &Query<'_>) -> bool + Send + Sync)>,
 }
 
 /// A rewrite can read the function and edit through its invariant-preserving
@@ -148,22 +27,10 @@ impl<'a> RewriteContext<'a> {
         Self { root, function }
     }
 
-    /// Snapshot the matched values/types, then build with explicit arguments.
-    /// Construction may reuse the destination; existing-value results use RAUW.
-    /// Edits are immediate and are not rolled back on failure.
-    pub fn replace_values(
-        &mut self,
-        build: impl FnOnce(&mut Self, &[veloc_lir::Reg], &[Type], veloc_lir::Reg) -> veloc_lir::Reg,
-    ) -> Result<()> {
-        let root = self.function.inst(self.root);
-        assert_eq!(root.results().len(), 1, "value rewrite requires one result");
-        let destination = root.results()[0];
-        let inputs: SmallVec<[veloc_lir::Reg; 3]> = root.inputs().iter().copied().collect();
-        let types: SmallVec<[Type; 4]> = core::iter::once(destination)
-            .chain(inputs.iter().copied())
-            .map(|reg| self.function.vreg_data(reg).ty)
-            .collect();
-        let value = build(self, &inputs, &types, destination);
+    pub(super) fn finish_value(&mut self, value: Reg) {
+        let results = self.function.inst(self.root).results();
+        assert_eq!(results.len(), 1, "value rewrite requires one result");
+        let destination = results[0];
         if value != destination {
             assert_eq!(
                 self.function.vreg_data(destination).ty,
@@ -173,7 +40,38 @@ impl<'a> RewriteContext<'a> {
             replace_uses(&mut self.function, destination, value);
         }
         self.function.invalidate_inst(self.root);
-        Ok(())
+    }
+
+    /// Rebuild in place: result identities, access attributes and physical
+    /// effects belong to the original instruction, not to address temporaries.
+    pub(super) fn update(&mut self, changes: &[(usize, Reg)], attributes: &[(usize, FieldValue)]) {
+        let inst = self.function.inst(self.root);
+        let opcode = inst.opcode();
+        let memory = inst.memory();
+        let results: SmallVec<[Reg; 2]> = SmallVec::from_slice(inst.results());
+        let mut inputs: SmallVec<[Reg; 4]> = SmallVec::from_slice(inst.inputs());
+        let mut fields: SmallVec<[FieldValue; 2]> = (0..inst.fields().len())
+            .map(|i| inst.fields().at(i))
+            .collect();
+        let effects = inst.effects().unwrap_or_default();
+        let uses: SmallVec<[Reg; 4]> = SmallVec::from_slice(effects.uses);
+        let defs: SmallVec<[Reg; 4]> = SmallVec::from_slice(effects.defs);
+        for &(index, value) in changes {
+            assert_eq!(
+                self.function.vreg_data(inputs[index]).ty,
+                self.function.vreg_data(value).ty,
+                "updated input type"
+            );
+            inputs[index] = value;
+        }
+        for (index, value) in attributes {
+            fields[*index] = value.clone();
+        }
+        let mut writer = self.function.replace(self.root).with_effects(&uses, &defs);
+        if let Some(access) = memory {
+            writer = writer.with_memory(access);
+        }
+        writer.write(opcode, &results, &inputs, fields);
     }
 
     /// Replace results with independent, same-typed values and erase the root.
@@ -221,9 +119,8 @@ fn replace_uses(editor: &mut veloc_lir::FuncEditor<'_>, old: veloc_lir::Reg, new
     );
 }
 
-pub use contracts::ValueRewrite;
-impl ValueRewrite for RewriteContext<'_> {
-    fn emit(
+impl RewriteContext<'_> {
+    pub(super) fn emit(
         &mut self,
         opcode: GenericOpcode,
         ty: Type,

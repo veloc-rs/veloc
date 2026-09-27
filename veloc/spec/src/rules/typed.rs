@@ -476,7 +476,36 @@ impl Signature {
                     },
                 ] => i64::try_from(*n)
                     .map_err(|_| Error::at(source, node.offset, "integer literal exceeds i64"))?,
-                _ => return Err(Error::at(source, node.offset, "expected one i64 literal")),
+                [
+                    field @ Node {
+                        kind: Kind::Member(_, _),
+                        ..
+                    },
+                ] => {
+                    self.check_call(
+                        source,
+                        node.offset,
+                        op,
+                        &[],
+                        std::slice::from_ref(&ty),
+                        defs,
+                    )?;
+                    let result = format!("v{}", insts.len());
+                    insts.push(Inst {
+                        op: Call::FieldInteger(op.name.clone(), field.clone()),
+                        ty: ty.clone(),
+                        inputs: Vec::new(),
+                        result: result.clone(),
+                    });
+                    return Ok((ty, result));
+                }
+                _ => {
+                    return Err(Error::at(
+                        source,
+                        node.offset,
+                        "expected an i64 literal or instruction field",
+                    ));
+                }
             };
             self.check_call(
                 source,
@@ -565,6 +594,6 @@ pub(super) struct Inst {
 pub(super) enum Call {
     Instruction(String),
     Integer(String, i64),
+    FieldInteger(String, Node),
     Attributed(String, Vec<(String, String)>),
-    Host { name: String, types: Vec<Ty> },
 }

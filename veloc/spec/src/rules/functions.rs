@@ -1,13 +1,12 @@
 //! Pure construction functions. Calls are type checked and inlined into one
 //! construction plan, so parameter reuse never duplicates emitted instructions.
-use super::typed::{Call, Inst, Signature, Ty, domain};
+use super::typed::{Inst, Signature, Ty, domain};
 use crate::{
-    Definitions, Error, interfaces,
+    Definitions, Error,
     schema::Operation,
     syntax::{Decl, DeclKind, FunctionBody, Node, Results},
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write;
 
 struct Function {
     signature: Signature,
@@ -34,7 +33,11 @@ impl Functions {
                 continue;
             };
             if matches!(body, FunctionBody::Vm { .. }) {
-                return Err(Error::at(source, d.offset, "VM bindings belong to query methods"));
+                return Err(Error::at(
+                    source,
+                    d.offset,
+                    "VM bindings belong to query methods",
+                ));
             }
             if signature.is_const {
                 return Err(Error::at(
@@ -43,11 +46,12 @@ impl Functions {
                     "construction functions build IR values, not const values",
                 ));
             }
-            if let FunctionBody::Rust { offset, path } = body {
-                let path = path
-                    .as_ref()
-                    .ok_or_else(|| Error::at(source, *offset, "expected Rust function path"))?;
-                interfaces::rust_path(source, *offset, path)?;
+            if matches!(body, FunctionBody::Rust { .. }) {
+                return Err(Error::at(
+                    source,
+                    d.offset,
+                    "construction functions require a DSL body; Rust helpers are not supported",
+                ));
             }
             let mut sig = Signature {
                 node: String::new(),
@@ -114,40 +118,6 @@ impl Functions {
             }
         }
         Ok(Self(functions))
-    }
-
-    /// A generic wrapper checks every Rust binding, even when never selected.
-    /// Its bound deliberately omits root lookup/replacement capabilities.
-    pub fn wrappers(&self, ty: &str, bound: &str, value: &str) -> String {
-        let mut out = String::new();
-        for (name, f) in &self.0 {
-            let FunctionBody::Rust {
-                path: Some(path), ..
-            } = &f.body
-            else {
-                continue;
-            };
-            let types = (0..f.generics.len())
-                .map(|i| format!("ty{i}"))
-                .collect::<Vec<_>>();
-            let values = (0..f.signature.inputs.len())
-                .map(|i| format!("arg{i}"))
-                .collect::<Vec<_>>();
-            let params = types
-                .iter()
-                .map(|n| format!("{n}: {ty}"))
-                .chain(values.iter().map(|n| format!("{n}: {value}")))
-                .collect::<Vec<_>>();
-            let args = types.iter().chain(&values).cloned().collect::<Vec<_>>();
-            writeln!(
-                out,
-                "fn build_{name}<C: {bound}>(ctx: &mut C, {}) -> {value} {{ {path}(ctx, {}) }}",
-                params.join(", "),
-                args.join(", ")
-            )
-            .unwrap();
-        }
-        out
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -272,19 +242,6 @@ impl Functions {
             }
         }
         let expected = resolve(&f.signature.results[0]);
-        if matches!(f.body, FunctionBody::Rust { .. }) {
-            let result = format!("v{}", insts.len());
-            insts.push(Inst {
-                op: Call::Host {
-                    name: name.into(),
-                    types: types.to_vec(),
-                },
-                ty: expected.clone(),
-                inputs: args.into_iter().map(|(_, v)| v).collect(),
-                result: result.clone(),
-            });
-            return Ok((expected, result));
-        }
         let FunctionBody::Value(body) = &f.body else {
             unreachable!()
         };

@@ -57,9 +57,9 @@ struct Args {
     /// Infer identity rules for compatible semantic primitives.
     #[arg(long)]
     infer_primitives: bool,
-    /// Explicit rewrite_interface declaration for value construction.
+    /// Rust value type used by the legalization runtime.
     #[arg(long)]
-    value_interface: Option<String>,
+    value: Option<String>,
     /// Rust attribute enum used by value construction.
     #[arg(long)]
     field: Option<String>,
@@ -120,7 +120,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 dialect: required(args.source_dialect.as_deref(), "source-dialect")?,
                 function: required(args.function.as_deref(), "function")?,
                 opcode: required(args.source_opcode.as_deref(), "source-opcode")?,
-                value_interface: required(args.value_interface.as_deref(), "value-interface")?,
+                value: required(args.value.as_deref(), "value")?,
                 field: required(args.field.as_deref(), "field")?,
                 runtime: required(args.runtime.as_deref(), "runtime")?,
             },

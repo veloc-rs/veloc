@@ -1,24 +1,34 @@
 //! A read-only decision VM followed by a deferred value-rewrite recipe.
 //! The driver owns edit tracking, convergence and worklist updates.
-use super::contracts::Query as _;
-use super::info::{LegalizePolicy, Query, RewriteContext};
-use crate::error::Result;
+use super::info::{LegalizePolicy, RewriteContext};
+use crate::error::{Error, Result};
 use smallvec::SmallVec;
 use veloc_bytecode::{Reader, rewrite::Instruction as Op};
 use veloc_lir::{FieldValue, GenericOpcode, Reg};
+use veloc_lir::{InstId, InstRead, MachineFunction};
 use veloc_mir::Type;
 
 pub struct Program {
+    pub entries: &'static [Option<usize>],
     pub code: &'static [u8],
     pub sets: &'static [&'static [Type]],
     pub features: &'static [&'static [u64]],
     pub actions: &'static [Action],
     pub types: &'static [TypeSource],
-    pub opcodes: &'static [GenericOpcode],
-    pub fields: &'static [FieldValue],
-    pub emit:
-        fn(&mut RewriteContext<'_>, GenericOpcode, Type, &[Reg], &[FieldValue], Option<Reg>) -> Reg,
-    pub functions: &'static [fn(&mut RewriteContext<'_>, &[Type], &[Reg]) -> Reg],
+    pub fields: &'static [FieldSource],
+}
+
+pub enum FieldSource {
+    Constant(FieldValue),
+    Root(usize),
+}
+impl FieldSource {
+    fn read(&self, ctx: &RewriteContext<'_>) -> FieldValue {
+        match self {
+            Self::Constant(value) => value.clone(),
+            Self::Root(index) => ctx.inst(ctx.root()).fields().at(*index),
+        }
+    }
 }
 
 pub enum TypeSource {
@@ -29,10 +39,6 @@ pub enum TypeSource {
 #[derive(Clone, Copy)]
 pub enum Action {
     Legal,
-    Host {
-        name: &'static str,
-        apply: fn(&mut RewriteContext<'_>) -> Result<()>,
-    },
     Recipe {
         name: &'static str,
         entry: usize,
@@ -44,18 +50,29 @@ pub enum Action {
 /// Return the table entry directly, without allocating or rebuilding a plan.
 pub(super) fn select(
     policy: LegalizePolicy<'_>,
-    query: &Query<'_>,
-) -> Option<(&'static Program, &'static Action)> {
-    let (program, entry) = (policy.program)(query.opcode())?;
+    function: &MachineFunction,
+    id: InstId,
+) -> Result<Option<(&'static Program, &'static Action)>> {
+    check_input(function, id)?;
+    let inst = function.inst(id);
+    let program = policy.program;
+    let Some(entry) = program
+        .entries
+        .get(inst.generic_opcode().unwrap() as usize)
+        .copied()
+        .flatten()
+    else {
+        return Ok(None);
+    };
     let mut reader = Reader {
         bytes: program.code,
         pc: entry,
     };
     // Low bit selects results; remaining bits are the operand index.
-    let ty = |value: usize| query.value_type(value & 1 != 0, (value >> 1) as u32);
+    let ty = |value: usize| value_type(function, id, value & 1 != 0, value >> 1);
     let action = loop {
         match Op::read(&mut reader) {
-            Op::Reject {} => return None,
+            Op::Reject {} => return Ok(None),
             Op::Jump { target } => reader.pc = target,
             Op::CheckSignature {
                 results,
@@ -63,9 +80,13 @@ pub(super) fn select(
                 failure,
             } => {
                 let matches = |result, sets: veloc_bytecode::Lebs<'_>| {
-                    query.arity(result) == sets.len()
+                    (if result {
+                        inst.results().len()
+                    } else {
+                        inst.inputs().len()
+                    }) == sets.len()
                         && sets.iter().enumerate().all(|(i, set)| {
-                            program.sets[set].contains(&query.value_type(result, i as u32))
+                            program.sets[set].contains(&value_type(function, id, result, i))
                         })
                 };
                 if !matches(true, results) || !matches(false, inputs) {
@@ -95,7 +116,7 @@ pub(super) fn select(
                 expected,
                 failure,
             } => {
-                let n = query.immediate(field as u32);
+                let n = immediate(inst, field);
                 let fits = bits == 64 || (n >= -(1i64 << (bits - 1)) && n < (1i64 << (bits - 1)));
                 if fits != (expected != 0) {
                     reader.pc = failure;
@@ -110,16 +131,11 @@ pub(super) fn select(
                     reader.pc = failure;
                 }
             }
-            Op::CallPredicate { predicate, failure } => {
-                if !(policy.predicate.expect("declared Rust predicate"))(predicate, query) {
-                    reader.pc = failure;
-                }
-            }
             Op::Accept { action } => break action,
             _ => panic!("construction instruction in read-only query"),
         }
     };
-    Some((program, &program.actions[action]))
+    Ok(Some((program, &program.actions[action])))
 }
 
 pub(super) fn apply(
@@ -128,57 +144,154 @@ pub(super) fn apply(
     slots: usize,
     ctx: &mut RewriteContext<'_>,
 ) -> Result<()> {
-    ctx.replace_values(|ctx, inputs, types, destination| {
-        // Slots are definitely assigned by the checked, straight-line recipe.
-        // Input registers are snapshotted before any construction changes uses.
-        let mut values = SmallVec::<[Reg; 16]>::from_elem(destination, slots);
-        values[..inputs.len()].copy_from_slice(inputs);
-        let ty = |id: usize| match program.types[id] {
-            TypeSource::Exact(ty) => ty,
-            TypeSource::Value { result, index } => types[if result { index } else { 1 + index }],
-        };
-        let mut reader = Reader {
-            bytes: program.code,
-            pc: entry,
-        };
-        let mut args = SmallVec::<[Reg; 4]>::new();
-        loop {
-            match Op::read(&mut reader) {
-                Op::Emit {
-                    opcode,
-                    ty: t,
-                    inputs,
-                    fields,
-                    dst,
-                    reuse,
-                } => {
-                    args.clear();
-                    args.extend(inputs.iter().map(|i| values[i]));
-                    let fields: SmallVec<[FieldValue; 2]> =
-                        fields.iter().map(|i| program.fields[i].clone()).collect();
-                    values[dst] = (program.emit)(
-                        ctx,
-                        program.opcodes[opcode],
-                        ty(t),
-                        &args,
-                        &fields,
-                        (reuse != 0).then_some(destination),
-                    );
-                }
-                Op::Call {
-                    function,
-                    types,
-                    inputs,
-                    dst,
-                } => {
-                    args.clear();
-                    args.extend(inputs.iter().map(|i| values[i]));
-                    let types: SmallVec<[Type; 2]> = types.iter().map(ty).collect();
-                    values[dst] = program.functions[function](ctx, &types, &args);
-                }
-                Op::Return { value } => return values[value],
-                _ => panic!("query instruction in committed rewrite"),
+    let root = ctx.inst(ctx.root());
+    let destination = root.results().first().copied();
+    let results = root.results().len();
+    let types: SmallVec<[Type; 4]> = root
+        .results()
+        .iter()
+        .chain(root.inputs())
+        .map(|reg| ctx.vreg_data(*reg).ty)
+        .collect();
+    // Checked recipes assign fresh slots in order; no dummy register values.
+    let mut values = SmallVec::<[Reg; 16]>::with_capacity(slots);
+    values.extend_from_slice(root.inputs());
+    let ty = |id: usize| match program.types[id] {
+        TypeSource::Exact(ty) => ty,
+        TypeSource::Value { result, index } => types[if result { index } else { results + index }],
+    };
+    let mut reader = Reader {
+        bytes: program.code,
+        pc: entry,
+    };
+    let mut args = SmallVec::<[Reg; 4]>::new();
+    loop {
+        match Op::read(&mut reader) {
+            Op::Emit {
+                opcode,
+                ty: t,
+                inputs,
+                fields,
+                dst,
+                reuse,
+            } => {
+                args.clear();
+                args.extend(inputs.iter().map(|i| values[i]));
+                let fields: SmallVec<[FieldValue; 2]> =
+                    fields.iter().map(|i| program.fields[i].read(ctx)).collect();
+                assert_eq!(dst, values.len(), "fresh recipe result");
+                values.push(ctx.emit(
+                    GenericOpcode::from_code(opcode).expect("invalid opcode in generated recipe"),
+                    ty(t),
+                    &args,
+                    &fields,
+                    if reuse != 0 {
+                        Some(destination.expect("value replacement result"))
+                    } else {
+                        None
+                    },
+                ));
             }
+            Op::Return { value } => {
+                ctx.finish_value(values[value]);
+                return Ok(());
+            }
+            Op::Update { inputs, fields } => {
+                let mut changes = SmallVec::<[(usize, Reg); 4]>::new();
+                let mut inputs = inputs.iter();
+                while let Some(index) = inputs.next() {
+                    changes.push((index, values[inputs.next().expect("update input pair")]));
+                }
+                let mut attributes = SmallVec::<[(usize, FieldValue); 2]>::new();
+                let mut fields = fields.iter();
+                while let Some(index) = fields.next() {
+                    attributes.push((
+                        index,
+                        program.fields[fields.next().expect("update field pair")].read(ctx),
+                    ));
+                }
+                ctx.update(&changes, &attributes);
+                return Ok(());
+            }
+            _ => panic!("query instruction in committed rewrite"),
         }
-    })
+    }
+}
+
+/// Validate the instruction-local ABI boundary before reading operand types.
+fn check_input(function: &MachineFunction, id: InstId) -> Result<()> {
+    let inst = function.inst(id);
+    let vregs = function.vregs();
+    if inst.generic_opcode().is_none() {
+        return Err(Error::codegen("expected generic instruction"));
+    }
+    let regs = || inst.results().iter().chain(inst.inputs());
+    if regs().any(|reg| reg.as_vreg().is_some_and(|reg| vregs.get(reg).is_none())) {
+        return Err(Error::codegen("unknown virtual operand in legalization"));
+    }
+    if regs().any(|reg| reg.is_preg()) {
+        // Physical locations are permitted only at explicit ABI boundaries.
+        // In particular, a register name never supplies a semantic type.
+        let valid = match inst.view() {
+            veloc_lir::InstView::UnaryReg(copy)
+                if copy.opcode == veloc_lir::UnaryRegOpcode::Copy =>
+            {
+                copy.dst.is_vreg() != copy.src.is_vreg()
+            }
+            veloc_lir::InstView::Call(call) => call
+                .args
+                .iter()
+                .chain(call.results)
+                .all(|reg| reg.is_preg()),
+            veloc_lir::InstView::CallIndirect(call) => {
+                call.callee.is_vreg()
+                    && call
+                        .args
+                        .iter()
+                        .chain(call.results)
+                        .all(|reg| reg.is_preg())
+            }
+            veloc_lir::InstView::Return(ret) => ret.values.iter().all(|reg| reg.is_preg()),
+            _ => false,
+        };
+        if !valid {
+            return Err(Error::codegen(
+                "physical operands require a typed copy or ABI call/return boundary",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Physical Copy endpoints inherit the transfer type from the SSA endpoint.
+fn value_type(function: &MachineFunction, id: InstId, result: bool, index: usize) -> Type {
+    let inst = function.inst(id);
+    let reg = if result {
+        inst.results()[index]
+    } else {
+        inst.inputs()[index]
+    };
+    if let Some(reg) = reg.as_vreg() {
+        return function.vregs()[reg].ty;
+    }
+    assert_eq!(
+        inst.generic_opcode(),
+        Some(GenericOpcode::Copy),
+        "ABI locations have no standalone value type"
+    );
+    let value = inst
+        .results()
+        .iter()
+        .chain(inst.inputs())
+        .find_map(|reg| reg.as_vreg())
+        .expect("typed boundary copy");
+    function.vregs()[value].ty
+}
+
+fn immediate(inst: veloc_lir::InstRef<'_>, index: usize) -> i64 {
+    let veloc_lir::FieldValueRef::Imm(&value) = inst.fields().read(index) else {
+        panic!("checked immediate field");
+    };
+    value
 }

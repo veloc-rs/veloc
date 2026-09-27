@@ -30,8 +30,7 @@ select(inst: lir::Call) {
     legal(inst);
 }
 
-select(inst: lir::Callind, query: &Query) {
-    require(query.ty(inst.callee) == Type::PTR);
+select(inst: lir::Callind) {
     legal(inst);
 }
 
@@ -95,22 +94,34 @@ select(inst: lir::StackAddr) {
     legal(inst);
 }
 
-select<T: Scalar | Type::PTR>(inst: lir::Load<T>, query: &Query) {
-    require(!query.fits_signed(inst.offset, 32));
-    load_displacement(inst);
-}
-
 select<T: Scalar | Type::PTR>(inst: lir::Load<T>) {
-    legal(inst);
-}
-
-select<T: Scalar | Type::PTR>(inst: lir::Store<T>, query: &Query) {
-    require(!query.fits_signed(inst.offset, 32));
-    store_displacement(inst);
+    choose {
+        case {
+            require(!fits_signed(inst.offset, 32));
+            replace(inst, build(inst {
+                base: lir::PtrAdd<Type::PTR>(inst.base, lir::Constant<Type::I64>(inst.offset)),
+                offset: 0,
+            }));
+        }
+        case {
+            legal(inst);
+        }
+    }
 }
 
 select<T: Scalar | Type::PTR>(inst: lir::Store<T>) {
-    legal(inst);
+    choose {
+        case {
+            require(!fits_signed(inst.offset, 32));
+            replace(inst, build(inst {
+                base: lir::PtrAdd<Type::PTR>(inst.base, lir::Constant<Type::I64>(inst.offset)),
+                offset: 0,
+            }));
+        }
+        case {
+            legal(inst);
+        }
+    }
 }
 
 select(inst: lir::Constant<Type::BOOL>) {
@@ -275,8 +286,3 @@ select(inst: lir::Ctlz<Type::I64>) {
 select<T: Word>(inst: lir::Cttz<T>) {
     trailing_zeros(inst);
 }
-
-rewrite load_displacement<T: Scalar | Type::PTR>(inst: lir::Load<T>)
-    = rust("crate::target::x86_64::legalize::displacement");
-rewrite store_displacement<T: Scalar | Type::PTR>(inst: lir::Store<T>)
-    = rust("crate::target::x86_64::legalize::displacement");

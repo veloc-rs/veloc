@@ -93,19 +93,7 @@ fn typed_legalization_contracts_reject_invalid_rules() {
     );
     let shared =
         strip_imports(std::fs::read_to_string(root.join("codegen/defs/legalize.spec")).unwrap());
-    let mut source = format!("{target}\n{shared}").replace(
-        "fn words(&self)",
-        "fn available(&self) -> bool;\n    fn words(&self)",
-    );
-    // Exercise nested host decisions independently of target policy spelling.
-    source.push_str(
-        r#"
-select<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
-    require(target.available());
-    legal(inst);
-}
-"#,
-    );
+    let source = format!("{target}\n{shared}");
     let compile = |source: &str| {
         decisions(
             source,
@@ -115,23 +103,38 @@ select<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
                 function: "decide",
                 opcode: "veloc_lir::GenericOpcode",
                 field: "veloc_lir::FieldValue",
-                value_interface: "ValueRules",
+                value: "veloc_lir::Reg",
                 runtime: "crate::passes::lowering::legalize::vm",
             },
         )
     };
 
     let output = compile(&source).unwrap();
-    assert!(output.contains("static PROGRAM:"));
-    assert!(output.contains("Some((&PROGRAM, entry))"));
+    assert!(output.contains("pub static DECIDE:"));
+    assert!(output.contains("static ENTRIES:"));
     assert!(!output.contains("::vm::select("));
     assert!(output.contains("Emit {"));
     assert!(output.contains("CheckSignature {"));
     assert!(!output.contains("fn rewrite_"));
-    assert!(output.contains("REWRITE_load_displacement"));
     assert!(output.contains("CheckSignedRange {"));
     assert!(output.contains("CheckFeatures {"));
-    assert!(output.contains("CallPredicate {"));
+    assert!(!output.contains("CallPredicate"));
+    assert!(!output.contains("pub fn predicate"));
+    let rust_condition = source
+        .replace(
+            "fn words(&self)",
+            "fn available(&self) -> bool;\n    fn words(&self)",
+        )
+        .replace(
+            "require(target.supports(Instruction::POPCNT32));",
+            "require(target.available());",
+        );
+    assert!(
+        compile(&rust_condition)
+            .unwrap_err()
+            .message
+            .contains("no VM implementation")
+    );
     assert!(output.contains("veloc_types::Type::PTR"));
     assert!(!output.contains("pub trait Type {"));
     // Shared templates do not register candidates and can precede or follow policy.
@@ -140,34 +143,12 @@ select<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
     }
     let declarations = target.split("select(").next().unwrap();
     let templates = compile(&format!("{declarations}\n{shared}")).unwrap();
-    assert!(!templates.contains("GenericOpcode::Ctpop =>"));
-    assert!(!templates.contains("GenericOpcode::Ctlz =>"));
-    // Even an unused Rust binding must be checked by the Rust compiler.
-    let unused = source.replace("load_displacement(inst);", "legal(inst);");
-    assert!(
-        compile(&unused)
-            .unwrap()
-            .contains("apply: crate::target::x86_64::legalize::displacement")
-    );
-    let renamed = source
-        .replace("fn emit(&mut self", "fn construct(&mut self")
-        .replace("emit = emit;", "emit = construct;");
-    assert!(
-        compile(&renamed)
-            .unwrap()
-            .contains("ValueRewrite::construct(ctx")
-    );
+    assert!(!templates.contains("entries[veloc_lir::GenericOpcode::Ctpop as usize]"));
+    assert!(!templates.contains("entries[veloc_lir::GenericOpcode::Ctlz as usize]"));
+    assert!(output.contains("Update {"));
+    assert!(output.contains("FieldSource::Root(0)"));
+    assert!(!output.contains("legalize::displacement"));
     for (from, to, diagnostic) in [
-        (
-            "emit = emit;",
-            "emit = missing;",
-            "undeclared rewrite method",
-        ),
-        (
-            "result: optional(RewriteValue)",
-            "result: usize",
-            "invalid signature for rewrite role emit",
-        ),
         (
             "IntCC::LtS",
             "FloatCC::Lt",
@@ -175,14 +156,14 @@ select<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
         ),
         ("IntCC::LtS", "IntCC::Missing", "undeclared constant"),
         (
-            "load_displacement(inst)",
-            "store_displacement(inst)",
-            "node signature",
+            "offset: 0,",
+            "unknown: 0,",
+            "declared scalar instruction field",
         ),
         (
-            "crate::target::x86_64::legalize::displacement",
-            "crate::target::x86_64::legalize::displacement;panic!()",
-            "Rust",
+            "offset: 0,",
+            "offset: inst.base,",
+            "expected an i64 attribute",
         ),
         ("popcount32(inst)", "missing(inst)", "unknown rewrite"),
         ("popcount32(inst)", "popcount64(inst)", "type domain"),
@@ -460,7 +441,7 @@ fn primitive_inference_uses_the_same_contract_checker() {
 }
 
 #[test]
-fn construction_functions_compose_with_checked_rust_bindings() {
+fn construction_functions_inline_into_bytecode() {
     use veloc_spec::rules::{DecisionRust, decisions};
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../veloc");
     let definitions = Source::load(root.join("lir/defs/module.spec"))
@@ -475,7 +456,7 @@ fn construction_functions_compose_with_checked_rust_bindings() {
             function: "decide",
             opcode: "crate::Opcode",
             field: "crate::Field",
-            value_interface: "ValueRules",
+            value: "crate::Value",
             runtime: "crate::vm",
         },
     )
@@ -484,6 +465,17 @@ fn construction_functions_compose_with_checked_rust_bindings() {
     let source = temp.join("construction.rs");
     let executable = temp.join(format!("construction{}", std::env::consts::EXE_SUFFIX));
     let host = include_str!("fixtures/construction.rs");
+    // The mock enum must use the same definition-derived wire numbers as LIR.
+    let mut numbers = String::new();
+    for (code, op) in definitions.operations().enumerate() {
+        if matches!(op.name.as_str(), "Ctpop" | "Ctlz" | "Add") {
+            numbers.push_str(&format!(
+                "const {}_CODE: isize = {code};\n",
+                op.name.to_uppercase()
+            ));
+        }
+    }
+    let host = format!("{host}\n{numbers}");
     let deps = std::env::current_exe()
         .unwrap()
         .parent()
@@ -501,39 +493,24 @@ fn construction_functions_compose_with_checked_rust_bindings() {
         })
         .max_by_key(|p| fs::metadata(p).unwrap().modified().unwrap())
         .unwrap();
-    for (host, valid) in [
-        (host.to_owned(), true),
-        (
-            host.replace(
-                "ctx.emit(Opcode::Add, ty, &[x, x], &[], None)",
-                "ctx.editor()",
-            ),
-            false,
-        ),
-        (host.replace("-> Value {", "-> () {"), false),
-    ] {
-        fs::write(&source, format!("{host}\nmod generated {{ {code} }}")).unwrap();
-        let output = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
-            .args(["--edition=2024", "--extern"])
-            .arg(format!("veloc_bytecode={}", bytecode.display()))
-            .arg("-o")
-            .arg(&executable)
-            .arg(&source)
-            .output()
-            .unwrap();
-        assert_eq!(
-            output.status.success(),
-            valid,
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        if valid {
-            let output = Command::new(&executable).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-    }
+    fs::write(&source, format!("{host}\nmod generated {{ {code} }}")).unwrap();
+    let output = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        .args(["--edition=2024", "--extern"])
+        .arg(format!("veloc_bytecode={}", bytecode.display()))
+        .arg("-o")
+        .arg(&executable)
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = Command::new(&executable).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

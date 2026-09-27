@@ -238,10 +238,20 @@ pub(crate) fn opcode_enum(defs: &Definitions, name: &str) -> String {
     let mut out = format!(
         "#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]\n#[allow(non_camel_case_types)]\npub enum {name} {{\n"
     );
-    for op in &defs.ops {
-        writeln!(out, "{},", op.name).unwrap();
+    // Definition order is the shared opcode numbering used by rule bytecode.
+    for (code, op) in defs.ops.iter().enumerate() {
+        writeln!(out, "{} = {code},", op.name).unwrap();
     }
     out.push_str("}\n");
+    writeln!(
+        out,
+        "impl {name} {{ pub const fn from_code(code: usize) -> Option<Self> {{ match code {{"
+    )
+    .unwrap();
+    for (code, op) in defs.ops.iter().enumerate() {
+        writeln!(out, "{code} => Some(Self::{}),", op.name).unwrap();
+    }
+    out.push_str("_ => None, } } }\n");
     out
 }
 
