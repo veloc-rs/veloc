@@ -10,16 +10,19 @@ mod graph;
 mod matching;
 
 use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
-use extract::Placement;
 use graph::Graph;
-use smallvec::SmallVec;
-use veloc_analyzer::AnalysisManager;
+use veloc_analyzer::{AnalysisManager, Dominators};
 use veloc_mir::function::Expressions;
-use veloc_mir::{FuncBody, Inst, Value};
+use veloc_mir::{FuncBody, Inst};
 
-/// Estimates execution cost, not the effort spent searching a rewrite rule.
-/// Costs are clamped to at least one so cyclic e-classes cannot win extraction.
+/// Relative costs of materializing constants and movable operations, not total
+/// function runtime or compiler work. Ranking adds these as tree costs; planning
+/// accounts for shared occurrences. Existing pinned values are zero-cost inputs,
+/// not claims that their producing instructions are free to execute.
+/// Materialization costs are clamped to at least one.
 pub trait CostModel {
+    /// Cost of one operation, using its first result type even when another
+    /// projection is the requested value. Multi-result ops are charged once.
     fn operation(&self, opcode: veloc_mir::Opcode, ty: veloc_mir::Type) -> usize;
     fn constant(&self, value: veloc_mir::constant::ScalarConst) -> usize;
 }
@@ -51,9 +54,10 @@ impl FunctionPass for ExpressionPass {
         config: &OptConfig,
         metrics: &mut Metrics,
     ) -> PreservedAnalyses {
-        if run(
-            am.function_mut(),
+        if run_with_analyses(
+            am,
             self.budget,
+            &GenericCost,
             config.is_debug_enabled("simplify"),
             metrics,
         ) {
@@ -75,7 +79,26 @@ pub fn run_with_cost(
     debug: bool,
     metrics: &mut Metrics,
 ) -> bool {
-    let changed = optimize_function(func, budget, cost, metrics);
+    run_with_analyses(
+        &mut AnalysisManager::new(func),
+        budget,
+        cost,
+        debug,
+        metrics,
+    )
+}
+
+fn run_with_analyses(
+    am: &mut AnalysisManager<'_>,
+    budget: Budget,
+    cost: &dyn CostModel,
+    debug: bool,
+    metrics: &mut Metrics,
+) -> bool {
+    // Expression selection and DCE preserve CFG topology. Own the snapshot
+    // while editing instructions, without holding a borrow of the manager.
+    let dom = am.take_dominators();
+    let changed = optimize_function(am.function_mut(), budget, cost, &dom, metrics);
     if changed && debug {
         log::info!("Optimized expression graph");
     }
@@ -90,6 +113,13 @@ pub struct Budget {
     pub graph_nodes: usize,
     pub rounds: usize,
     pub match_steps: usize,
+    /// Cost-propagation steps for candidate ranking. Partial estimates remain
+    /// usable; exhaustion must not consume the placement budget.
+    pub rank_steps: usize,
+    /// Placement and joint DAG-selection work, independently of ranking.
+    /// Exhaustion keeps the last complete selection, or the original function
+    /// if the initial selection has not finished.
+    pub extract_steps: usize,
 }
 
 impl Budget {
@@ -97,11 +127,15 @@ impl Budget {
         graph_nodes: 160,
         rounds: 2,
         match_steps: 16_384,
+        rank_steps: 4_096,
+        extract_steps: 12_288,
     };
     pub const DEFAULT: Self = Self {
         graph_nodes: 512,
         rounds: 6,
         match_steps: 262_144,
+        rank_steps: 32_768,
+        extract_steps: 98_304,
     };
 }
 
@@ -128,7 +162,6 @@ impl<'a> EqualitySession<'a> {
             }
         }
         graph.limit = graph.values.len().saturating_add(budget.graph_nodes);
-        graph.rebuild(f);
         Self {
             ir: f.expressions(),
             graph,
@@ -141,17 +174,17 @@ impl<'a> EqualitySession<'a> {
         log::debug!("egraph stopped: {stop:?}");
     }
 
-    fn finish(self, model: &dyn CostModel) -> (u64, Vec<Inst>) {
+    fn finish(
+        self,
+        model: &dyn CostModel,
+        dom: &Dominators,
+        rank: &mut usize,
+        work: &mut usize,
+    ) -> (u64, Vec<Inst>) {
         let Self { ir, graph, anchors } = self;
-        // Only executable consumers are roots. Candidate uses do not make
-        // expressions live, and pure alternatives never become roots themselves.
-        let roots: Vec<_> = anchors
-            .iter()
-            .flat_map(|&inst| ir.body().dfg().operands(inst).iter().copied())
-            .collect();
-        let Some(choices) = graph.extract(ir.body(), &roots, model) else {
-            return (0, Vec::new());
-        };
+        // Preserve use locations through selection. Candidate uses do not make
+        // expressions live; only executable anchors request occurrences.
+        let extraction = graph.extract(ir.body(), &anchors, model, dom, rank, work);
         let removable = anchors
             .iter()
             .copied()
@@ -165,22 +198,8 @@ impl<'a> EqualitySession<'a> {
                         .all(|&v| graph.constants[graph.find(v)].is_some())
             })
             .collect();
-        let mut placement = Placement::new(ir.body(), &graph);
         let mut ir = ir.freeze();
-        let mut changed = 0;
-        for inst in anchors {
-            placement.local.clear();
-            let args: SmallVec<[Value; 4]> = ir.body().dfg().operands(inst).into();
-            for (index, old) in args.into_iter().enumerate() {
-                let class = graph.find(old);
-                if let Some(new) = placement.materialize(&mut ir, inst, class, &graph, &choices)
-                    && old != new
-                {
-                    ir.replace_input(inst, index as u32, new);
-                    changed += 1;
-                }
-            }
-        }
+        let changed = extraction.apply(&mut ir);
         (changed, removable)
     }
 }
@@ -243,6 +262,7 @@ fn optimize_function(
     f: &mut FuncBody,
     budget: Budget,
     model: &dyn CostModel,
+    dom: &Dominators,
     metrics: &mut Metrics,
 ) -> bool {
     let mut session = EqualitySession::new(f, budget);
@@ -252,7 +272,11 @@ fn optimize_function(
     let mut fuel = budget.match_steps;
     session.saturate(budget.rounds, &mut fuel);
     metrics.add("egraph.nodes", session.graph.values.len() as u64);
-    let (mut changed, mut removable) = session.finish(model);
+    let mut rank = budget.rank_steps;
+    let mut work = budget.extract_steps;
+    let (mut changed, mut removable) = session.finish(model, dom, &mut rank, &mut work);
+    metrics.add("egraph.rank_steps", (budget.rank_steps - rank) as u64);
+    metrics.add("egraph.extract_steps", (budget.extract_steps - work) as u64);
     // Candidate use-def links have been released before checking actual uses.
     removable.retain(|&inst| {
         f.dfg()
@@ -355,8 +379,138 @@ block1():
             super::saturate(&mut graph, &mut ir, Budget::DEFAULT.rounds, &mut fuel);
             assert_eq!(graph.find(cancel), graph.find(y), "{ty:?}");
             assert_eq!(graph.find(wrapped), graph.find(x), "{ty:?}");
-            let extracted = graph.extract(ir.body(), &[wrapped], &GenericCost).unwrap();
-            assert_eq!(extracted[graph.find(wrapped)], Some(x));
         }
+    }
+
+    #[test]
+    fn extraction_preserves_sibling_uses_and_handles_budget_stops() {
+        // The two additions share an e-class, but neither definition dominates
+        // the other return. Keep both occurrences instead of copying them anew.
+        for extract_steps in [0, 1, 32, Budget::DEFAULT.extract_steps] {
+            let mut module = veloc_mir::ModuleParser::new()
+                .parse(
+                    r#"
+local function siblings(bool, i64, i64) -> i64
+block0(v0: bool, v1: i64, v2: i64):
+  br v0, block1(), block2()
+block1():
+  v3: i64 = iadd v1, v2
+  return v3
+block2():
+  v4: i64 = iadd v2, v1
+  return v4
+"#,
+                )
+                .unwrap();
+            module.validate().unwrap();
+            let body = module.body_mut(veloc_mir::FuncId(0)).unwrap();
+            let budget = Budget {
+                extract_steps,
+                ..Budget::DEFAULT
+            };
+            assert!(!run(body, budget, false, &mut Metrics::default()));
+            assert!(!run(body, budget, false, &mut Metrics::default()));
+            module.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn ranking_exhaustion_does_not_disable_extraction() {
+        for rank_steps in [0, 1] {
+            let mut module = veloc_mir::ModuleParser::new()
+                .parse(
+                    r#"
+local function identity(i64) -> i64
+block0(v0: i64):
+  v1: i64 = iconst 0
+  v2: i64 = iadd v0, v1
+  return v2
+"#,
+                )
+                .unwrap();
+            module.validate().unwrap();
+            let body = module.body_mut(veloc_mir::FuncId(0)).unwrap();
+            let budget = Budget {
+                rank_steps,
+                ..Budget::DEFAULT
+            };
+            assert!(run(body, budget, false, &mut Metrics::default()));
+            let ret = body
+                .layout()
+                .block_insts(body.entry_block())
+                .last()
+                .unwrap();
+            assert_eq!(body.dfg().operands(ret), &[Value(0)]);
+            module.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn extraction_coordinates_shared_computations_across_uses() {
+        struct Cost;
+        impl CostModel for Cost {
+            fn operation(&self, op: Op, _: Type) -> usize {
+                if op == Op::IMul { 5 } else { 1 }
+            }
+            fn constant(&self, _: ScalarConst) -> usize {
+                1
+            }
+        }
+
+        let mut module = veloc_mir::ModuleParser::new()
+            .parse(
+                r#"
+local function shared(i64, ptr) -> i64
+block0(v0: i64, v1: ptr):
+  v2: i64 = iconst 6
+  v3: i64 = iconst 9
+  v4: i64 = imul v0, v2
+  store v4, v1, offset=0
+  v5: i64 = imul v0, v3
+  return v5
+"#,
+            )
+            .unwrap();
+        module.validate().unwrap();
+        let body = module.body_mut(veloc_mir::FuncId(0)).unwrap();
+        let mut session = EqualitySession::new(body, Budget::DEFAULT);
+        let graph = &mut session.graph;
+        let ir = &mut session.ir;
+        let three = graph
+            .literal(ir, ScalarConst::from_bits(Type::I64, 3).unwrap())
+            .unwrap();
+        let shared = graph
+            .build(ir, Op::IMul, &[Value(0), three], Type::I64)
+            .unwrap();
+        let six = graph
+            .build(ir, Op::IAdd, &[shared, shared], Type::I64)
+            .unwrap();
+        let nine = graph
+            .build(ir, Op::IAdd, &[six, shared], Type::I64)
+            .unwrap();
+        graph.union(ir.body(), Value(4), six);
+        graph.union(ir.body(), Value(5), nine);
+        graph.rebuild(ir.body());
+
+        // Each original multiply costs 6 with its literal: total 12. Changing
+        // just one root is worse. Changing both costs 6 + 1 + 1 = 8, with the
+        // shared multiply placed before the store and reused by the return.
+        let mut rank = Budget::DEFAULT.rank_steps;
+        let mut work = Budget::DEFAULT.extract_steps;
+        let dom = Dominators::compute(session.ir.body().cfg(), session.ir.body().entry_block());
+        let (changed, _) = session.finish(&Cost, &dom, &mut rank, &mut work);
+        assert_eq!(changed, 2);
+        super::super::dce::run_dce(body, false, &mut Metrics::default());
+        let mut multiplies = 0;
+        let mut additions = 0;
+        for inst in body.layout().block_insts(body.entry_block()) {
+            match body.dfg().opcode(inst) {
+                Op::IMul => multiplies += 1,
+                Op::IAdd => additions += 1,
+                _ => {}
+            }
+        }
+        assert_eq!((multiplies, additions), (1, 2));
+        module.validate().unwrap();
     }
 }

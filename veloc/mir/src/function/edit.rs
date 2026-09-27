@@ -81,6 +81,7 @@ impl<'a> FuncEditor<'a> {
     pub fn append_block(&mut self, block: Block) {
         assert!(self.body.dfg.blocks.get(block).is_some(), "unknown block");
         self.body.layout.append_block(block);
+        self.body.cfg.add_block(block);
     }
 
     pub fn set_value_name(&mut self, value: Value, name: &str) {
@@ -419,22 +420,7 @@ impl<'a> FuncEditor<'a> {
                 .visit_successors(|call| successors.push(call.block));
         }
         successors.sort_unstable();
-        successors.dedup();
-        if self.body.cfg.blocks[block].succs == successors.as_slice() {
-            return;
-        }
-        let old = core::mem::take(&mut self.body.cfg.blocks[block].succs);
-        for &succ in &old {
-            if !successors.contains(&succ) {
-                self.body.cfg.blocks[succ].preds.retain(|&b| b != block);
-            }
-        }
-        for &succ in &successors {
-            if !old.contains(&succ) {
-                self.body.cfg.blocks[succ].preds.push(block);
-            }
-        }
-        self.body.cfg.blocks[block].succs = successors.into_vec();
+        self.body.cfg.set_successors(block, &successors);
     }
 }
 

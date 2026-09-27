@@ -1,20 +1,225 @@
-//! Choose shared, acyclic expressions and place them at dominance-valid uses.
+//! Select expressions at executable uses, then commit a dominance-valid plan.
 use super::{CostModel, graph::Graph};
 use cranelift_entity::SecondaryMap;
 use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
 use std::collections::VecDeque;
-use veloc_mir::function::{Dominators, FrozenExpressions, InstOrder};
-use veloc_mir::{FuncBody, Inst, Value, ValueDef};
+use veloc_analyzer::Dominators;
+use veloc_mir::constant::ScalarConst;
+use veloc_mir::function::{FrozenExpressions, InstOrder};
+use veloc_mir::{Block, FuncBody, Inst, Value, ValueDef};
 
-/// Reused across extraction trials. Only visited entries need resetting.
+/// References either executable MIR or one result of a planned instruction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Input {
+    Existing(Value),
+    Result { step: usize, index: usize },
+}
+
+enum Recipe {
+    Constant(ScalarConst),
+    Operation {
+        source: Inst,
+        args: SmallVec<[Input; 3]>,
+    },
+}
+
+struct Step {
+    before: Inst,
+    recipe: Recipe,
+    refs: usize,
+}
+
+struct Rewrite {
+    inst: Inst,
+    operand: u32,
+    input: Input,
+}
+
+/// A complete plan, not a global class-to-value preference. Steps are in
+/// dependency order, and each use names an occurrence available at that use.
+/// Planning never edits MIR; failed trials leave no partially emitted code.
 #[derive(Default)]
-struct PlanWorkspace {
-    state: SecondaryMap<Value, u8>,
-    touched: Vec<Value>,
-    pending: Vec<(Value, bool)>,
-    output: Vec<(Value, Value)>,
-    operations: HashSet<Inst>,
+pub(super) struct Extraction {
+    steps: Vec<Step>,
+    rewrites: Vec<Rewrite>,
+}
+
+impl Extraction {
+    pub(super) fn apply(self, ir: &mut FrozenExpressions<'_>) -> u64 {
+        if self.rewrites.is_empty() {
+            return 0;
+        }
+        let mut results = Vec::<SmallVec<[Value; 2]>>::with_capacity(self.steps.len());
+        for step in self.steps {
+            if step.refs == 0 {
+                results.push(SmallVec::new());
+                continue;
+            }
+            let values = match step.recipe {
+                Recipe::Constant(value) => smallvec::smallvec![ir.constant(step.before, value)],
+                Recipe::Operation { source, args } => {
+                    let args: SmallVec<[Value; 3]> =
+                        args.iter().map(|arg| arg.value(&results)).collect();
+                    let inst = ir.place(step.before, source, &args);
+                    ir.body().dfg().inst_results(inst).into()
+                }
+            };
+            results.push(values);
+        }
+        let mut changed = 0;
+        for rewrite in self.rewrites {
+            let value = rewrite.input.value(&results);
+            if ir.body().dfg().operands(rewrite.inst)[rewrite.operand as usize] != value {
+                ir.replace_input(rewrite.inst, rewrite.operand, value);
+                changed += 1;
+            }
+        }
+        changed
+    }
+}
+
+impl Input {
+    fn value(self, results: &[SmallVec<[Value; 2]>]) -> Value {
+        match self {
+            Self::Existing(value) => value,
+            Self::Result { step, index } => results[step][index],
+        }
+    }
+}
+
+/// A checkpoint only covers the current use's new dependencies. Restoring it
+/// never walks the previously committed plan or changes existing MIR.
+#[derive(Clone, Copy, Default)]
+struct Mark {
+    steps: usize,
+    bound: usize,
+    selected: usize,
+}
+
+#[derive(Default)]
+struct Plan {
+    steps: Vec<Recipe>,
+    inputs: SecondaryMap<Value, Option<Input>>,
+    bound: Vec<Value>,
+    selected: Vec<(Value, Value)>,
+    operations: HashMap<Inst, usize>,
+}
+
+impl Plan {
+    fn mark(&self) -> Mark {
+        Mark {
+            steps: self.steps.len(),
+            bound: self.bound.len(),
+            selected: self.selected.len(),
+        }
+    }
+
+    fn restore(&mut self, mark: Mark) {
+        for recipe in self.steps.drain(mark.steps..) {
+            if let Recipe::Operation { source, .. } = recipe {
+                self.operations.remove(&source);
+            }
+        }
+        for class in self.bound.drain(mark.bound..) {
+            self.inputs[class] = None;
+        }
+        self.selected.truncate(mark.selected);
+    }
+
+    fn bind(&mut self, class: Value, input: Input) {
+        debug_assert!(self.inputs[class].is_none());
+        self.inputs[class] = Some(input);
+        self.bound.push(class);
+    }
+}
+
+/// Explicit DFS frames avoid native-stack growth for deep expressions. Each
+/// frame tries alternatives until all dependencies can be placed at this use.
+struct Frame {
+    class: Value,
+    next: usize,
+    preferred: Option<Value>,
+    selected: Option<Value>,
+    arg: usize,
+    mark: Mark,
+}
+
+impl Frame {
+    fn new(class: Value, mark: Mark) -> Self {
+        Self {
+            class,
+            next: 0,
+            preferred: None,
+            selected: None,
+            arg: 0,
+            mark,
+        }
+    }
+}
+
+/// A preference belongs to a use site, not globally to an equivalence class.
+/// Sibling blocks may need different representatives of the same class.
+type Choices = HashMap<(Inst, Value), Value>;
+
+#[derive(Clone, Copy)]
+struct Choice {
+    anchor: Inst,
+    class: Value,
+    value: Value,
+}
+
+struct Selection {
+    extraction: Extraction,
+    choices: Vec<Choice>,
+    cost: usize,
+}
+
+/// Enter/leave events let selection use a single binding per class. Leaving a
+/// dominator subtree rolls bindings back, so siblings never see each other's
+/// newly materialized values.
+enum Visit {
+    Enter,
+    Anchor(Inst),
+    Leave,
+}
+
+#[derive(Default)]
+struct Scope {
+    inputs: SecondaryMap<Value, Option<Input>>,
+    undo: Vec<(Value, Option<Input>)>,
+    marks: Vec<usize>,
+}
+
+impl Scope {
+    fn bind(&mut self, class: Value, input: Input) {
+        self.undo.push((class, self.inputs[class]));
+        self.inputs[class] = Some(input);
+    }
+
+    fn leave(&mut self) {
+        let mark = self.marks.pop().expect("dominator scope");
+        for (class, old) in self.undo.drain(mark..).rev() {
+            self.inputs[class] = old;
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Candidate {
+    value: Value,
+    rank: (usize, usize),
+}
+
+struct Planner<'a> {
+    graph: &'a Graph,
+    body: &'a FuncBody,
+    work: &'a mut usize,
+    candidates: SecondaryMap<Value, SmallVec<[Candidate; 2]>>,
+    dom: &'a Dominators,
+    order: InstOrder,
+    available: Scope,
+    active: SecondaryMap<Value, bool>,
 }
 
 impl Graph {
@@ -22,39 +227,51 @@ impl Graph {
         if let Some(c) = self.constant(value) {
             model.constant(c).max(1)
         } else if let Some(inst) = self.floating_inst(f, value) {
+            let result = f.dfg().inst_results(inst)[0];
             model
-                .operation(f.dfg().opcode(inst), f.dfg().value_type(value))
+                .operation(f.dfg().opcode(inst), f.dfg().value_type(result))
                 .max(1)
         } else {
+            // A pinned definition is an existing input to extraction. Its own
+            // execution cost is outside the movable expression being rebuilt.
             0
         }
     }
 
-    pub(super) fn extract(
+    /// Rank candidates globally, but do not commit to one expression per class.
+    /// These tree costs are only search hints; placement checks availability and
+    /// charges each newly planned instruction once, including multi-result ops.
+    /// Repeated dependencies are intentionally counted repeatedly here. Exact
+    /// sharing depends on the selected occurrences, not just class membership.
+    fn candidates(
         &self,
         f: &FuncBody,
-        roots: &[Value],
         model: &dyn CostModel,
-    ) -> Option<SecondaryMap<Value, Option<Value>>> {
-        let mut costs = SecondaryMap::<Value, _>::with_default((usize::MAX, usize::MAX));
-        let mut best = SecondaryMap::<Value, Option<Value>>::new();
+        work: &mut usize,
+    ) -> SecondaryMap<Value, SmallVec<[Candidate; 2]>> {
+        let mut costs = SecondaryMap::with_default((usize::MAX, usize::MAX));
+        let mut ranks = SecondaryMap::with_default((usize::MAX, usize::MAX));
         let mut pending = VecDeque::new();
         let mut queued = SecondaryMap::<Value, bool>::new();
-        // A known constant is a terminal choice. Placement creates its literal
-        // only if an executable use actually needs it.
+        let mut candidates = SecondaryMap::<Value, SmallVec<[Candidate; 2]>>::new();
         for &value in &self.values {
             let class = self.find(value);
-            if let Some(literal) = self.constants[class] {
-                if best[class].is_none() {
-                    costs[class] = (model.constant(literal).max(1), 1);
-                    best[class] = Some(class);
-                }
+            candidates[class].push(Candidate {
+                value,
+                rank: (usize::MAX, usize::MAX),
+            });
+            if let Some(c) = self.constants[class] {
+                costs[class] = (model.constant(c).max(1), 0);
             } else {
                 pending.push_back(value);
                 queued[value] = true;
             }
         }
-        while let Some(value) = pending.pop_front() {
+        while *work != 0 {
+            let Some(value) = pending.pop_front() else {
+                break;
+            };
+            *work -= 1;
             queued[value] = false;
             let class = self.find(value);
             let mut price = self.price(f, value, model);
@@ -64,10 +281,10 @@ impl Graph {
                 price = price.saturating_add(costs[arg].0);
                 depth = depth.max(costs[arg].1);
             }
-            let depth = depth.saturating_add(usize::from(self.floating_inst(f, value).is_some()));
+            depth = depth.saturating_add(usize::from(self.floating_inst(f, value).is_some()));
+            ranks[value] = (price, depth);
             if price != usize::MAX && (price, depth) < costs[class] {
                 costs[class] = (price, depth);
-                best[class] = Some(value);
                 for &user in &self.users[class] {
                     for &result in f.dfg().inst_results(user) {
                         if self.constants[self.find(result)].is_none() && !queued[result] {
@@ -78,249 +295,541 @@ impl Graph {
                 }
             }
         }
-        let mut work = usize::MAX;
-        let mut scratch = PlanWorkspace::default();
-        if !self.plan(f, roots, &best, &mut work, &mut scratch) {
-            return None;
+        for values in candidates.values_mut() {
+            for candidate in values.iter_mut() {
+                candidate.rank = ranks[candidate.value];
+            }
+            // A budget stop leaves partial estimates intact. Unestimated
+            // candidates retain MAX and sort last, but remain eligible to plan.
+            values.sort_by_key(|candidate| (candidate.rank, candidate.value));
         }
-        let mut plan = std::mem::take(&mut scratch.output);
-        let mut price = self.plan_price(f, &plan, model, &mut scratch.operations);
-        let mut work = self.values.len().saturating_mul(16);
-        let mut reachable = HashSet::new();
-        loop {
-            let mut improved = false;
-            reachable.clear();
-            reachable.extend(plan.iter().map(|&(class, _)| class));
-            for &value in &self.values {
-                let class = self.find(value);
-                if work == 0 {
-                    break;
+        candidates
+    }
+
+    pub(super) fn extract(
+        &self,
+        body: &FuncBody,
+        anchors: &[Inst],
+        model: &dyn CostModel,
+        dom: &Dominators,
+        rank: &mut usize,
+        work: &mut usize,
+    ) -> Extraction {
+        if *work == 0 {
+            return Extraction::default();
+        }
+        // Ranking is optional guidance, not a prerequisite for placement.
+        // Even zero ranking fuel must leave all candidates available to search.
+        let candidates = self.candidates(body, model, rank);
+        let mut planner = Planner {
+            graph: self,
+            body,
+            work,
+            candidates,
+            dom,
+            order: InstOrder::default(),
+            available: Scope::default(),
+            active: SecondaryMap::new(),
+        };
+        let visits = planner.visits(anchors);
+        let mut original = Extraction::default();
+        for &inst in anchors {
+            for (operand, &value) in body.dfg().operands(inst).iter().enumerate() {
+                original.rewrites.push(Rewrite {
+                    inst,
+                    operand: operand as u32,
+                    input: Input::Existing(value),
+                });
+            }
+        }
+        let Some(original_cost) = planner.cost(&mut original, model) else {
+            return Extraction::default();
+        };
+        let mut choices = Choices::new();
+        let Some(mut best) = planner.select(&visits, &choices, model) else {
+            return Extraction::default();
+        };
+
+        // Search complete multi-root selections, not independently priced
+        // trees. A paired move can expose sharing even when changing either
+        // root alone would be more expensive. This is bounded local search,
+        // not an exact minimum-cost DAG solver.
+        while *planner.work != 0 {
+            let moves = planner.alternatives(&best);
+            let mut improved = None;
+            'search: for (index, &a) in moves.iter().enumerate() {
+                let old_a = choices.insert((a.anchor, a.class), a.value);
+                if let Some(trial) = planner.select(&visits, &choices, model) {
+                    if trial.cost < best.cost {
+                        improved = Some(trial);
+                        break;
+                    }
                 }
-                work -= 1;
-                if !reachable.contains(&class)
-                    || best[class] == Some(value)
-                    || self.constants[class].is_some()
-                {
+                for &b in &moves[index + 1..] {
+                    if *planner.work == 0 {
+                        break 'search;
+                    }
+                    *planner.work -= 1;
+                    if (a.anchor, a.class) == (b.anchor, b.class)
+                        || !planner.shares_dependency(a.value, b.value)
+                    {
+                        continue;
+                    }
+                    let old = choices.insert((b.anchor, b.class), b.value);
+                    if let Some(trial) = planner.select(&visits, &choices, model) {
+                        if trial.cost < best.cost {
+                            improved = Some(trial);
+                            break 'search;
+                        }
+                    }
+                    restore_choice(&mut choices, b, old);
+                }
+                restore_choice(&mut choices, a, old_a);
+            }
+            let Some(trial) = improved else { break };
+            best = trial;
+            choices.clear();
+            choices.extend(best.choices.iter().map(|c| ((c.anchor, c.class), c.value)));
+        }
+        if best.cost <= original_cost {
+            best.extraction
+        } else {
+            Extraction::default()
+        }
+    }
+}
+
+fn restore_choice(choices: &mut Choices, choice: Choice, old: Option<Value>) {
+    let key = (choice.anchor, choice.class);
+    if let Some(value) = old {
+        choices.insert(key, value);
+    } else {
+        choices.remove(&key);
+    }
+}
+
+impl Planner<'_> {
+    fn visits(&self, anchors: &[Inst]) -> Vec<Visit> {
+        let mut uses = SecondaryMap::<Block, Vec<Inst>>::new();
+        for &inst in anchors {
+            uses[self.body.layout().inst_block(inst).expect("executable use")].push(inst);
+        }
+        let mut visits = Vec::new();
+        let mut stack = vec![(self.body.entry_block(), false)];
+        while let Some((block, leave)) = stack.pop() {
+            if leave {
+                visits.push(Visit::Leave);
+                continue;
+            }
+            visits.push(Visit::Enter);
+            visits.extend(uses[block].iter().copied().map(Visit::Anchor));
+            stack.push((block, true));
+            stack.extend(self.dom.children(block).map(|child| (child, false)));
+        }
+        visits
+    }
+
+    /// Replaying a trial changes only planning state. MIR remains frozen until
+    /// a complete selection wins; budget exhaustion cannot leave partial edits.
+    fn select(
+        &mut self,
+        visits: &[Visit],
+        choices: &Choices,
+        model: &dyn CostModel,
+    ) -> Option<Selection> {
+        self.available = Scope::default();
+        let mut extraction = Extraction::default();
+        let mut selected = Vec::new();
+        let mut plan = Plan::default();
+        let mut stack = Vec::new();
+        for visit in visits {
+            let anchor = match *visit {
+                Visit::Enter => {
+                    self.available.marks.push(self.available.undo.len());
                     continue;
                 }
-                let old = best[class].replace(value);
-                if self.plan(f, roots, &best, &mut work, &mut scratch) {
-                    let candidate_price =
-                        self.plan_price(f, &scratch.output, model, &mut scratch.operations);
-                    if candidate_price < price {
-                        std::mem::swap(&mut plan, &mut scratch.output);
-                        price = candidate_price;
-                        improved = true;
+                Visit::Leave => {
+                    self.available.leave();
+                    continue;
+                }
+                Visit::Anchor(anchor) => anchor,
+            };
+            if *self.work == 0 {
+                return None;
+            }
+            *self.work -= 1;
+            plan.restore(Mark::default());
+            let base = extraction.steps.len();
+            for (operand, &root) in self.body.dfg().operands(anchor).iter().enumerate() {
+                let class = self.graph.find(root);
+                let mark = plan.mark();
+                if !self.resolve(anchor, base, class, choices, &mut plan, &mut stack) {
+                    if *self.work == 0 {
+                        return None;
+                    }
+                    plan.restore(mark);
+                    plan.bind(class, Input::Existing(root));
+                }
+                extraction.rewrites.push(Rewrite {
+                    inst: anchor,
+                    operand: operand as u32,
+                    input: plan.inputs[class].expect("planned executable use"),
+                });
+            }
+            selected.extend(plan.selected.iter().map(|&(class, value)| Choice {
+                anchor,
+                class,
+                value,
+            }));
+            for &class in &plan.bound {
+                self.available
+                    .bind(class, plan.inputs[class].expect("bound class"));
+            }
+            // A multi-result instruction is one computation, not one per class.
+            for (step, recipe) in plan.steps.iter().enumerate() {
+                if let Recipe::Operation { source, .. } = recipe {
+                    for (index, &value) in self.body.dfg().inst_results(*source).iter().enumerate()
+                    {
+                        let class = self.graph.find(value);
+                        if self.available.inputs[class].is_none() {
+                            self.available.bind(
+                                class,
+                                Input::Result {
+                                    step: base + step,
+                                    index,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            extraction
+                .steps
+                .extend(plan.steps.drain(..).map(|recipe| Step {
+                    before: anchor,
+                    recipe,
+                    refs: 0,
+                }));
+            plan.operations.clear();
+        }
+        let cost = self.cost(&mut extraction, model)?;
+        Some(Selection {
+            extraction,
+            choices: selected,
+            cost,
+        })
+    }
+
+    /// Charge the selected computation DAG, including original definitions kept
+    /// by any root. Counting only new recipes would incorrectly make a reused
+    /// instruction free, or miss an old computation still needed by another use.
+    /// Reference counts belong to occurrences, never to equivalence classes.
+    fn cost(&mut self, extraction: &mut Extraction, model: &dyn CostModel) -> Option<usize> {
+        let mut seen = HashSet::new();
+        let mut pending: Vec<_> = extraction.rewrites.iter().map(|r| r.input).collect();
+        let mut cost = 0usize;
+        while let Some(input) = pending.pop() {
+            if *self.work == 0 {
+                return None;
+            }
+            *self.work -= 1;
+            let price = match input {
+                Input::Existing(value) => {
+                    let ValueDef::Inst(inst) = self.body.dfg().value_def(value) else {
+                        continue;
+                    };
+                    if !seen.insert(inst) {
+                        continue;
+                    }
+                    if let Some(c) = self.body.dfg().as_scalar_const(value) {
+                        model.constant(c).max(1)
+                    } else if self.graph.floating[inst] {
+                        pending.extend(
+                            self.body
+                                .dfg()
+                                .operands(inst)
+                                .iter()
+                                .copied()
+                                .map(Input::Existing),
+                        );
+                        let result = self.body.dfg().inst_results(inst)[0];
+                        model
+                            .operation(
+                                self.body.dfg().opcode(inst),
+                                self.body.dfg().value_type(result),
+                            )
+                            .max(1)
+                    } else {
                         continue;
                     }
                 }
-                best[class] = old;
-            }
-            if !improved || work == 0 {
-                break;
-            }
-        }
-        Some(best)
-    }
-
-    fn plan(
-        &self,
-        f: &FuncBody,
-        roots: &[Value],
-        best: &SecondaryMap<Value, Option<Value>>,
-        work: &mut usize,
-        scratch: &mut PlanWorkspace,
-    ) -> bool {
-        let PlanWorkspace {
-            state,
-            touched,
-            pending,
-            output,
-            ..
-        } = scratch;
-        for class in touched.drain(..) {
-            state[class] = 0;
-        }
-        pending.clear();
-        output.clear();
-        for &root in roots {
-            pending.push((self.find(root), false));
-            while let Some((class, ready)) = pending.pop() {
-                if *work == 0 {
-                    return false;
-                }
-                *work -= 1;
-                if state[class] == 2 {
-                    continue;
-                }
-                let Some(value) = best[class] else {
-                    return false;
-                };
-                if state[class] == 0 {
-                    touched.push(class);
-                }
-                let args = self.args(f, value);
-                if !ready && !args.is_empty() {
-                    if state[class] == 1 {
-                        return false;
+                Input::Result { step, .. } => {
+                    let step = &mut extraction.steps[step];
+                    step.refs += 1;
+                    if step.refs != 1 {
+                        continue;
                     }
-                    state[class] = 1;
-                    pending.push((class, true));
-                    pending.extend(args.iter().rev().map(|&arg| (self.find(arg), false)));
-                } else {
-                    state[class] = 2;
-                    output.push((class, value));
+                    match &step.recipe {
+                        Recipe::Constant(c) => model.constant(*c).max(1),
+                        Recipe::Operation { source, args } => {
+                            pending.extend(args.iter().copied());
+                            let value = self.body.dfg().inst_results(*source)[0];
+                            model
+                                .operation(
+                                    self.body.dfg().opcode(*source),
+                                    self.body.dfg().value_type(value),
+                                )
+                                .max(1)
+                        }
+                    }
+                }
+            };
+            cost = cost.saturating_add(price);
+        }
+        Some(cost)
+    }
+
+    fn alternatives(&mut self, selection: &Selection) -> Vec<Choice> {
+        let mut moves = Vec::new();
+        for &choice in &selection.choices {
+            for candidate in &self.candidates[choice.class] {
+                if *self.work == 0 {
+                    return moves;
+                }
+                *self.work -= 1;
+                if candidate.value != choice.value {
+                    moves.push(Choice {
+                        value: candidate.value,
+                        ..choice
+                    });
                 }
             }
         }
-        true
+        moves
     }
 
-    fn plan_price(
-        &self,
-        f: &FuncBody,
-        plan: &[(Value, Value)],
-        model: &dyn CostModel,
-        operations: &mut HashSet<Inst>,
-    ) -> usize {
-        operations.clear();
-        plan.iter().fold(0usize, |price, &(_, value)| {
-            if self.constant(value).is_none()
-                && let Some(inst) = self.floating_inst(f, value)
-                && !operations.insert(inst)
-            {
-                return price;
-            }
-            price.saturating_add(self.price(f, value, model))
+    fn shares_dependency(&self, a: Value, b: Value) -> bool {
+        self.graph.args(self.body, a).iter().any(|&x| {
+            // Sharing a pinned input such as a block parameter has no saving
+            // in this model; it should not trigger expensive paired trials.
+            (self.graph.constant(x).is_some() || self.graph.floating_inst(self.body, x).is_some())
+                && self
+                    .graph
+                    .args(self.body, b)
+                    .iter()
+                    .any(|&y| self.graph.find(x) == self.graph.find(y))
         })
     }
-}
 
-/// Materialize the selected graph at actual uses. Reuse is constrained by SSA
-/// dominance; different branches can receive separate copies of one candidate.
-pub(super) struct Placement {
-    dom: Dominators,
-    order: InstOrder,
-    available: SecondaryMap<Value, Vec<Value>>,
-    boundaries: SecondaryMap<Value, Vec<Value>>,
-    pending: Vec<(Value, bool)>,
-    pub(super) local: HashMap<Value, Value>,
-}
-
-impl Placement {
-    pub(super) fn new(f: &FuncBody, graph: &Graph) -> Self {
-        let mut boundaries = SecondaryMap::<Value, Vec<Value>>::new();
-        let mut available = SecondaryMap::<Value, Vec<Value>>::new();
-        for &value in &graph.values {
-            if f.dfg().as_scalar_const(value).is_some() {
-                available[graph.find(value)].push(value);
-            }
-            if graph.floating_inst(f, value).is_none() {
-                boundaries[graph.find(value)].push(value);
-            }
-        }
-        Self {
-            dom: Dominators::compute(f.cfg(), f.entry_block(), f.dfg().block_count()),
-            order: InstOrder::default(),
-            available,
-            boundaries,
-            pending: Vec::new(),
-            local: HashMap::new(),
+    fn inst_dominates(&mut self, def: Inst, anchor: Inst) -> bool {
+        let Some(block) = self.body.layout().inst_block(def) else {
+            return false;
+        };
+        let use_block = self
+            .body
+            .layout()
+            .inst_block(anchor)
+            .expect("executable use");
+        if block == use_block {
+            self.order.comes_before(self.body.layout(), def, anchor)
+        } else {
+            self.dom.dominates(block, use_block)
         }
     }
 
-    fn dominates(&mut self, f: &FuncBody, value: Value, anchor: Inst) -> bool {
-        let use_block = f.layout().inst_block(anchor).expect("placed use");
-        match f.dfg().value_def(value) {
-            ValueDef::Param(block) => block == use_block || self.dom.dominates(block, use_block),
-            ValueDef::Inst(def) => {
-                let Some(block) = f.layout().inst_block(def) else {
-                    return false;
-                };
-                if block == use_block {
-                    self.order.comes_before(f.layout(), def, anchor)
-                } else {
-                    self.dom.dominates(block, use_block)
-                }
+    fn dominates(&mut self, value: Value, anchor: Inst) -> bool {
+        match self.body.dfg().value_def(value) {
+            ValueDef::Param(block) => {
+                let use_block = self
+                    .body
+                    .layout()
+                    .inst_block(anchor)
+                    .expect("executable use");
+                block == use_block || self.dom.dominates(block, use_block)
             }
+            ValueDef::Inst(def) => self.inst_dominates(def, anchor),
         }
     }
 
-    pub(super) fn materialize(
+    /// On a cost tie prefer a definition already available here. Otherwise two
+    /// sibling blocks could repeatedly copy each other's equivalent expression
+    /// on every optimizer invocation instead of keeping their own definition.
+    fn preferred(&mut self, class: Value, anchor: Inst) -> Option<Value> {
+        let mut best = None;
+        let mut rank = (usize::MAX, usize::MAX);
+        for index in 0..self.candidates[class].len() {
+            let candidate = self.candidates[class][index];
+            if candidate.rank > rank {
+                break;
+            }
+            let available = self.dominates(candidate.value, anchor);
+            if !available
+                && self
+                    .graph
+                    .floating_inst(self.body, candidate.value)
+                    .is_none()
+            {
+                continue;
+            }
+            if best.is_none() {
+                best = Some(candidate.value);
+                rank = candidate.rank;
+            }
+            if available {
+                return Some(candidate.value);
+            }
+        }
+        best
+    }
+
+    fn resolve(
         &mut self,
-        ir: &mut FrozenExpressions<'_>,
         anchor: Inst,
+        base: usize,
         root: Value,
-        graph: &Graph,
-        choices: &SecondaryMap<Value, Option<Value>>,
-    ) -> Option<Value> {
-        self.pending.clear();
-        self.pending.push((root, false));
-        while let Some((class, ready)) = self.pending.pop() {
-            if self.local.contains_key(&class) {
-                continue;
-            }
-            if let Some(value) = (0..self.available[class].len()).rev().find_map(|index| {
-                let value = self.available[class][index];
-                self.dominates(ir.body(), value, anchor).then_some(value)
-            }) {
-                self.local.insert(class, value);
-                continue;
-            }
-            if let Some(constant) = graph.constant(class) {
-                let value = ir.constant(anchor, constant);
-                self.local.insert(class, value);
-                self.available[class].push(value);
-                continue;
-            }
-            let selected = choices[class]?;
-            let Some(source) = graph.floating_inst(ir.body(), selected) else {
-                // A single global choice may be unavailable here, although an
-                // equivalent pinned value dominates this particular use.
-                let value = if self.dominates(ir.body(), selected, anchor) {
-                    selected
-                } else {
-                    (0..self.boundaries[class].len()).find_map(|index| {
-                        let value = self.boundaries[class][index];
-                        self.dominates(ir.body(), value, anchor).then_some(value)
-                    })?
-                };
-                self.local.insert(class, value);
-                self.available[class].push(value);
-                continue;
-            };
-            let args = graph.args(ir.body(), selected);
-            if !ready && !args.is_empty() {
-                self.pending.push((class, true));
-                self.pending
-                    .extend(args.iter().rev().map(|&v| (graph.find(v), false)));
-                continue;
-            }
-            let args: SmallVec<[Value; 3]> =
-                args.iter().map(|&v| self.local[&graph.find(v)]).collect();
-            let reuse = self.dominates(ir.body(), selected, anchor)
-                && ir.body().dfg().operands(source) == args.as_slice();
-            let original: SmallVec<[Value; 2]> = ir.body().dfg().inst_results(source).into();
-            let inst = if reuse {
-                source
-            } else {
-                ir.place(anchor, source, &args)
-            };
-            let actual = ir.body().dfg().inst_results(inst);
-            let selected_index = original
-                .iter()
-                .position(|&v| v == selected)
-                .expect("result membership");
-            for (&old, &new) in original.iter().zip(actual) {
-                let result_class = graph.find(old);
-                // Another projection may already have a cheaper selected value.
-                self.local.entry(result_class).or_insert(new);
-                if !self.available[result_class].contains(&new) {
-                    self.available[result_class].push(new);
-                }
-            }
-            self.local.insert(class, actual[selected_index]);
+        choices: &Choices,
+        plan: &mut Plan,
+        stack: &mut Vec<Frame>,
+    ) -> bool {
+        if plan.inputs[root].is_some() {
+            return true;
         }
-        self.local.get(&root).copied()
+        debug_assert!(stack.is_empty());
+        stack.push(Frame::new(root, plan.mark()));
+        self.active[root] = true;
+        while let Some(frame) = stack.last_mut() {
+            if *self.work == 0 {
+                for frame in stack.drain(..) {
+                    self.active[frame.class] = false;
+                }
+                return false;
+            }
+            *self.work -= 1;
+            let class = frame.class;
+            if frame.selected.is_none() {
+                if frame.next == 0 {
+                    if let Some(input) = self.available.inputs[class] {
+                        plan.bind(class, input);
+                        self.active[class] = false;
+                        stack.pop();
+                        continue;
+                    }
+                    if let Some(c) = self.graph.constant(class) {
+                        let existing = (0..self.candidates[class].len()).find_map(|index| {
+                            let value = self.candidates[class][index].value;
+                            (self.body.dfg().as_scalar_const(value).is_some()
+                                && self.dominates(value, anchor))
+                            .then_some(value)
+                        });
+                        let input = if let Some(value) = existing {
+                            Input::Existing(value)
+                        } else {
+                            let step = base + plan.steps.len();
+                            plan.steps.push(Recipe::Constant(c));
+                            Input::Result { step, index: 0 }
+                        };
+                        plan.bind(class, input);
+                        self.active[class] = false;
+                        stack.pop();
+                        continue;
+                    }
+                    frame.preferred = choices
+                        .get(&(anchor, class))
+                        .copied()
+                        .or_else(|| self.preferred(class, anchor));
+                }
+                // An explicit preference comes first, followed by cost-ranked
+                // alternatives. Unavailable leaves and cycles reject only this
+                // candidate, not the entire extraction.
+                let preferred = frame.preferred;
+                let value = if frame.next == 0 && preferred.is_some() {
+                    preferred
+                } else {
+                    self.candidates[class]
+                        .get(frame.next - usize::from(preferred.is_some()))
+                        .map(|candidate| candidate.value)
+                };
+                frame.next += 1;
+                let Some(value) = value else {
+                    plan.restore(frame.mark);
+                    self.active[class] = false;
+                    stack.pop();
+                    let Some(parent) = stack.last_mut() else {
+                        return false;
+                    };
+                    plan.restore(parent.mark);
+                    parent.selected = None;
+                    parent.arg = 0;
+                    continue;
+                };
+                if frame.next > 1 && preferred == Some(value) {
+                    continue;
+                }
+                if self.graph.floating_inst(self.body, value).is_none() {
+                    if self.dominates(value, anchor) {
+                        plan.bind(class, Input::Existing(value));
+                        self.active[class] = false;
+                        stack.pop();
+                    }
+                    continue;
+                }
+                frame.selected = Some(value);
+            }
+            let value = frame.selected.expect("selected floating expression");
+            let args = self.graph.args(self.body, value);
+            if let Some(&arg) = args.get(frame.arg) {
+                let arg = self.graph.find(arg);
+                if plan.inputs[arg].is_some() {
+                    frame.arg += 1;
+                } else if self.active[arg] {
+                    plan.restore(frame.mark);
+                    frame.selected = None;
+                    frame.arg = 0;
+                } else {
+                    stack.push(Frame::new(arg, plan.mark()));
+                    self.active[arg] = true;
+                }
+                continue;
+            }
+            let source = self
+                .graph
+                .floating_inst(self.body, value)
+                .expect("floating expression");
+            let args: SmallVec<[Input; 3]> = args
+                .iter()
+                .map(|&arg| plan.inputs[self.graph.find(arg)].expect("planned operand"))
+                .collect();
+            let results = self.body.dfg().inst_results(source);
+            let index = results
+                .iter()
+                .position(|&v| v == value)
+                .expect("result membership");
+            let reuse = self.dominates(value, anchor)
+                && self
+                    .body
+                    .dfg()
+                    .operands(source)
+                    .iter()
+                    .zip(&args)
+                    .all(|(&old, &new)| new == Input::Existing(old));
+            let input = if reuse {
+                Input::Existing(value)
+            } else {
+                let step = if let Some(&step) = plan.operations.get(&source) {
+                    step
+                } else {
+                    let step = base + plan.steps.len();
+                    plan.steps.push(Recipe::Operation { source, args });
+                    plan.operations.insert(source, step);
+                    step
+                };
+                Input::Result { step, index }
+            };
+            plan.bind(class, input);
+            plan.selected.push((class, value));
+            self.active[class] = false;
+            stack.pop();
+        }
+        true
     }
 }

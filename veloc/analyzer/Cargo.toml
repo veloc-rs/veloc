@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+veloc-collections = { workspace = true }
 veloc-mir = { workspace = true }
 bitvec = { workspace = true }
 cranelift-entity = { workspace = true }

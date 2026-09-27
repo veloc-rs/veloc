@@ -124,8 +124,7 @@ impl<'a> FuncTranslator<'a> {
             core::iter::once(entry)
                 .chain(func.layout().block_order().filter(|&block| block != entry))
         };
-        let incoming =
-            (!func.cfg().blocks()[entry].preds.is_empty()).then_some(self.mfunc.entry_block());
+        let incoming = (!func.cfg().preds(entry).is_empty()).then_some(self.mfunc.entry_block());
         for block in order() {
             self.block_map[block] = Some(if block == entry && incoming.is_none() {
                 self.mfunc.entry_block()

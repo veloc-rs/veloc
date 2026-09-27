@@ -1,6 +1,6 @@
 //! Public editing and validation of the control-flow substrate. Text-only
 //! structural and dominance diagnostics live in the file-test corpus.
-use veloc_mir::function::Dominators;
+use veloc_collections::graph::DominatorTree;
 use veloc_mir::{Block, EdgeRef, ModuleParser, TypeInfo, Value};
 
 #[test]
@@ -136,17 +136,17 @@ fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
         edges,
         [(Block(1), vec![Value(1)]), (Block(2), vec![Value(1)])]
     );
-    assert_eq!(func.cfg().blocks()[Block(0)].succs, [Block(1), Block(2)]);
-    assert_eq!(func.cfg().blocks()[Block(1)].preds, [Block(0)]);
-    assert_eq!(func.cfg().blocks()[Block(2)].preds, [Block(0)]);
+    assert_eq!(func.cfg().succs(Block(0)), [Block(1), Block(2)]);
+    assert_eq!(func.cfg().preds(Block(1)), [Block(0)]);
+    assert_eq!(func.cfg().preds(Block(2)), [Block(0)]);
     module.validate().unwrap();
 
     let func = module.body_mut(veloc_mir::FuncId(0)).unwrap();
     func.edit()
         .redirect_edge(EdgeRef { inst, index: 0 }, Block(2), &[Value(1)]);
-    assert!(func.cfg().blocks()[Block(1)].preds.is_empty());
-    assert_eq!(func.cfg().blocks()[Block(2)].preds, [Block(0)]);
-    let dom = Dominators::compute(func.cfg(), Block(0), func.dfg().block_count());
+    assert!(func.cfg().preds(Block(1)).is_empty());
+    assert_eq!(func.cfg().preds(Block(2)), [Block(0)]);
+    let dom = DominatorTree::compute(func.cfg(), Block(0));
     assert!(dom.dominates(Block(0), Block(2)));
     assert_eq!(dom.immediate_dominator(Block(2)), Some(Block(0)));
     assert!(!dom.is_reachable(Block(1)));

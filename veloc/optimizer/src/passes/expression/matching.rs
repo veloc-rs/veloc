@@ -206,10 +206,6 @@ impl Machine {
             if graph.constant(root).is_some() {
                 return Ok(());
             }
-            let ty = body.dfg().value_type(root);
-            if !ty.is_integer() && ty != Type::BOOL {
-                return Ok(());
-            }
             self.index.clear();
             // Inputs are alternatives (OR), never cumulative constraints.
             // Distinct entry plans retain their own order while sharing rows.

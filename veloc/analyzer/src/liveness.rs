@@ -155,7 +155,7 @@ pub fn analyze_liveness(func: &FuncBody) -> Liveness {
                 intervals[v].add_range(block_starts[use_block], use_pc + 1);
                 if !live_in[use_block.index()] {
                     live_in.set(use_block.index(), true);
-                    for &pred in &func.cfg().blocks()[use_block].preds {
+                    for &pred in func.cfg().preds(use_block) {
                         if !live_in[pred.index()] {
                             worklist.push(pred);
                         }
@@ -174,7 +174,7 @@ pub fn analyze_liveness(func: &FuncBody) -> Liveness {
                 intervals[v].add_range(v_def_pc, block_ends[b]);
             } else {
                 intervals[v].add_range(block_starts[b], block_ends[b]);
-                for &pred in &func.cfg().blocks()[b].preds {
+                for &pred in func.cfg().preds(b) {
                     if !live_in[pred.index()] {
                         worklist.push(pred);
                     }

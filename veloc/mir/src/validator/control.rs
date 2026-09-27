@@ -2,7 +2,7 @@
 //! Check handles before any type projection dereferences them.
 
 use super::ValidationError;
-use crate::function::Dominators;
+use veloc_collections::graph::DominatorTree;
 use crate::{Block, FunctionRef, Module, Result, Value, ValueDef};
 use alloc::vec::Vec;
 
@@ -53,9 +53,8 @@ impl Structure {
     pub(super) fn check_ssa(mut self, func: &FunctionRef) -> Result<()> {
         let body = func.body.expect("defined function");
         for block in body.layout().block_order() {
-            let data = &body.cfg().blocks[block];
-            let mut succs = data.succs.clone();
-            let mut preds = data.preds.clone();
+            let mut succs = body.cfg().succs(block).to_vec();
+            let mut preds = body.cfg().preds(block).to_vec();
             succs.sort_unstable();
             preds.sort_unstable();
             self.predecessors[block.0 as usize].sort_unstable();
@@ -68,7 +67,7 @@ impl Structure {
         let Some(entry) = func.entry_block() else {
             return Ok(());
         };
-        let dom = Dominators::compute(&body.cfg(), entry, body.dfg().blocks.len());
+        let dom = DominatorTree::compute(body.cfg(), entry);
         for block in body.layout().block_order() {
             for inst in body.layout().block_insts(block) {
                 for &value in body.dfg().operands(inst) {

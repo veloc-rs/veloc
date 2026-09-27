@@ -248,13 +248,16 @@ impl DataFlowGraph {
 
     /// Erase a closed set, including mutually dependent dead instructions.
     pub(crate) fn remove_insts(&mut self, insts: &[Inst]) {
-        let dead: hashbrown::HashSet<_> = insts.iter().copied().collect();
-        for &inst in insts {
-            for &value in self.inst_results(inst) {
-                assert!(
-                    self.uses(value).all(|site| dead.contains(&site.inst())),
-                    "cannot erase a live definition"
-                );
+        #[cfg(debug_assertions)]
+        {
+            let dead: hashbrown::HashSet<_> = insts.iter().copied().collect();
+            for &inst in insts {
+                for &value in self.inst_results(inst) {
+                    assert!(
+                        self.uses(value).all(|site| dead.contains(&site.inst())),
+                        "cannot erase a live definition"
+                    );
+                }
             }
         }
         for &inst in insts {

@@ -1,10 +1,11 @@
 //! IR-independent control-flow analyses over dense entity IDs.
 //! Instruction semantics and cache invalidation remain with each IR adapter.
-use alloc::{vec, vec::Vec};
-use cranelift_entity::{EntityRef, SecondaryMap};
+use alloc::vec::Vec;
+use cranelift_entity::EntityRef;
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
     #[test]
     fn exits_and_natural_backedges() {
         use super::*;
@@ -64,143 +65,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ControlFlowGraph<B: EntityRef> {
-    blocks: Vec<B>,
-    preds: SecondaryMap<B, Vec<B>>,
-    succs: SecondaryMap<B, Vec<B>>,
-}
-impl<B: EntityRef> ControlFlowGraph<B> {
-    pub fn new(blocks: impl IntoIterator<Item = B>) -> Self {
-        Self {
-            blocks: blocks.into_iter().collect(),
-            preds: SecondaryMap::new(),
-            succs: SecondaryMap::new(),
-        }
-    }
-    pub fn blocks(&self) -> &[B] {
-        &self.blocks
-    }
-    pub fn preds(&self, block: B) -> &[B] {
-        self.preds.get(block).map_or(&[], Vec::as_slice)
-    }
-    pub fn succs(&self, block: B) -> &[B] {
-        self.succs.get(block).map_or(&[], Vec::as_slice)
-    }
-    pub fn add_edge(&mut self, from: B, to: B) {
-        if !self.succs[from].contains(&to) {
-            self.succs[from].push(to);
-            self.preds[to].push(from);
-        }
-    }
-}
-impl<B: EntityRef> Default for ControlFlowGraph<B> {
-    fn default() -> Self {
-        Self::new([])
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DominatorTree<B: EntityRef> {
-    // DFS intervals of the immediate-dominator tree. Unreachable blocks have
-    // no interval and must not accidentally dominate reachable blocks.
-    intervals: SecondaryMap<B, Option<(usize, usize)>>,
-}
-
-impl<B: EntityRef> DominatorTree<B> {
-    pub fn dominates(&self, a: B, b: B) -> bool {
-        if a == b {
-            return true;
-        }
-        match (
-            self.intervals.get(a).copied().flatten(),
-            self.intervals.get(b).copied().flatten(),
-        ) {
-            (Some((start, end)), Some((point, _))) => start <= point && point < end,
-            _ => false,
-        }
-    }
-    pub fn compute(cfg: &ControlFlowGraph<B>, entry: B) -> Self {
-        let mut seen = SecondaryMap::<B, bool>::new();
-        let mut postorder = Vec::new();
-        let mut pending = vec![(entry, false)];
-        while let Some((block, leave)) = pending.pop() {
-            if leave {
-                postorder.push(block);
-            } else if !seen[block] {
-                seen[block] = true;
-                pending.push((block, true));
-                pending.extend(cfg.succs(block).iter().rev().map(|&b| (b, false)));
-            }
-        }
-        postorder.reverse();
-        let blocks = postorder;
-        let mut index = SecondaryMap::<B, Option<usize>>::new();
-        for (i, &block) in blocks.iter().enumerate() {
-            index[block] = Some(i);
-        }
-        // Iterative immediate dominators in reverse postorder. Intersect by
-        // climbing parent indices, avoiding quadratic sets of dominators.
-        let mut parents = vec![usize::MAX; blocks.len()];
-        parents[0] = 0;
-        loop {
-            let mut changed = false;
-            for (i, &block) in blocks.iter().enumerate().skip(1) {
-                let mut preds = cfg
-                    .preds(block)
-                    .iter()
-                    .filter_map(|&b| index[b])
-                    .filter(|&p| parents[p] != usize::MAX);
-                let Some(mut parent) = preds.next() else {
-                    continue;
-                };
-                for mut pred in preds {
-                    while parent != pred {
-                        while parent > pred {
-                            parent = parents[parent];
-                        }
-                        while pred > parent {
-                            pred = parents[pred];
-                        }
-                    }
-                }
-                if parents[i] != parent {
-                    parents[i] = parent;
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        let mut children = vec![Vec::new(); blocks.len()];
-        for i in 1..blocks.len() {
-            children[parents[i]].push(i);
-        }
-        let mut intervals = SecondaryMap::<B, Option<(usize, usize)>>::new();
-        let mut pending = vec![(0, false)];
-        let mut clock = 0;
-        while let Some((i, leave)) = pending.pop() {
-            let block = blocks[i];
-            if leave {
-                intervals[block].as_mut().unwrap().1 = clock;
-            } else {
-                intervals[block] = Some((clock, 0));
-                clock += 1;
-                pending.push((i, true));
-                pending.extend(children[i].iter().rev().map(|&child| (child, false)));
-            }
-        }
-        DominatorTree { intervals }
-    }
-}
-impl<B: EntityRef> Default for DominatorTree<B> {
-    fn default() -> Self {
-        Self {
-            intervals: SecondaryMap::new(),
-        }
-    }
-}
+pub use veloc_collections::graph::{ControlFlowGraph, DominatorTree};
 
 /// Post-dominance with respect to paths reaching an exit. Blocks in non-exiting
 /// regions only post-dominate themselves; this does not prove termination.
@@ -210,12 +75,12 @@ pub struct PostDominatorTree<B: EntityRef> {
 }
 impl<B: EntityRef> PostDominatorTree<B> {
     pub fn compute(cfg: &ControlFlowGraph<B>) -> Self {
-        let Some(last) = cfg.blocks.iter().map(|b| b.index()).max() else {
+        let Some(last) = cfg.blocks().iter().map(|b| b.index()).max() else {
             return Self::default();
         };
         let root = B::new(last.checked_add(1).expect("CFG entity index overflow"));
-        let mut reverse = ControlFlowGraph::new(cfg.blocks.iter().copied().chain([root]));
-        for &block in &cfg.blocks {
+        let mut reverse = ControlFlowGraph::new(cfg.blocks().iter().copied().chain([root]));
+        for &block in cfg.blocks() {
             if cfg.succs(block).is_empty() {
                 reverse.add_edge(root, block);
             }
@@ -248,7 +113,7 @@ impl<B: EntityRef> LoopInfo<B> {
     pub fn compute(cfg: &ControlFlowGraph<B>, dom: &DominatorTree<B>) -> Self {
         let mut backedges = Vec::new();
         for &block in cfg.blocks() {
-            if dom.intervals.get(block).copied().flatten().is_none() {
+            if !dom.is_reachable(block) {
                 continue;
             }
             for &succ in cfg.succs(block) {

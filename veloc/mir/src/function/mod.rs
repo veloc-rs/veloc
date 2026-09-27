@@ -4,13 +4,10 @@ use crate::dfg::DataFlowGraph;
 use crate::{Block, Linkage, SigId, Value};
 use alloc::string::String;
 
-mod cfg;
-mod dominance;
 mod edit;
 mod expressions;
 mod layout;
-pub use cfg::ControlFlowGraph;
-pub use dominance::Dominators;
+pub type ControlFlowGraph = veloc_collections::graph::ControlFlowGraph<Block>;
 pub use edit::{EdgeRef, FuncEditor, InstCursor};
 pub use expressions::{Expressions, FrozenExpressions};
 pub use layout::{InstOrder, Layout};
@@ -73,7 +70,7 @@ impl FuncBody {
         Self {
             dfg,
             layout,
-            cfg: ControlFlowGraph::default(),
+            cfg: ControlFlowGraph::new([entry_block]),
             entry_block,
         }
     }

@@ -548,10 +548,7 @@ fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetInstructions) -> CfgI
             }
         }
         block_succs.sort();
-        block_succs.dedup();
-        for succ in block_succs {
-            cfg.add_edge(block, succ);
-        }
+        cfg.set_successors(block, &block_succs);
     }
 
     cfg

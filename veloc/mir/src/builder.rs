@@ -270,8 +270,8 @@ impl<'a> SsaBuilder<'a> {
                 .or_default()
                 .push((var, val));
         } else {
-            let preds = &self.func().cfg().blocks[block].preds;
-            if let &[pred] = preds.as_slice() {
+            let preds = self.func().cfg().preds(block);
+            if let &[pred] = preds {
                 val = self.use_var_on_block(pred, var);
             } else {
                 let ty = self.var_types[&var];
@@ -291,7 +291,7 @@ impl<'a> SsaBuilder<'a> {
             .iter()
             .position(|&v| v == phi)
             .expect("Phi not found in block params");
-        let preds = self.func().cfg().blocks[block].preds.clone();
+        let preds = self.func().cfg().preds(block).to_vec();
         for p in preds {
             let val = self.use_var_on_block(p, var);
             self.add_block_param_to_jump(p, block, index, val);

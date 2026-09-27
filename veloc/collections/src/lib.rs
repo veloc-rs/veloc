@@ -2,6 +2,8 @@
 #![no_std]
 extern crate alloc;
 
+pub mod graph;
+
 mod pool;
 pub use pool::{Pool, PoolId};
 

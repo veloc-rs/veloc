@@ -255,13 +255,13 @@ fn function_edits_keep_layout_and_successor_edges_in_sync() {
         .replace_inst(jump, |writer: veloc_mir::InstWriter<'_>| {
             writer.jump(dest.as_view())
         });
-    assert!(func.cfg().blocks()[old].preds.is_empty());
-    assert_eq!(func.cfg().blocks()[new].preds, [entry]);
-    assert_eq!(func.cfg().blocks()[entry].succs, [new]);
+    assert!(func.cfg().preds(old).is_empty());
+    assert_eq!(func.cfg().preds(new), [entry]);
+    assert_eq!(func.cfg().succs(entry), [new]);
     func.edit().erase_inst(jump);
     assert!(func.layout().inst_block(jump).is_none());
-    assert!(func.cfg().blocks()[new].preds.is_empty());
-    assert!(func.cfg().blocks()[entry].succs.is_empty());
+    assert!(func.cfg().preds(new).is_empty());
+    assert!(func.cfg().succs(entry).is_empty());
     let replacement = func.edit().append_inst(
         entry,
         |writer: veloc_mir::InstWriter<'_>| writer.jump(dest.as_view()),
@@ -306,18 +306,18 @@ fn function_edits_keep_layout_and_successor_edges_in_sync() {
     // Temporary edits may invalidate terminator placement; CFG still follows
     // the actual tail, and explicit validation runs once the edit is complete.
     let tail = func.edit().insert_after(replacement, |w| w.nop(), &[]);
-    assert!(func.cfg().blocks()[entry].succs.is_empty());
+    assert!(func.cfg().succs(entry).is_empty());
     func.edit().erase_inst(tail);
-    assert_eq!(func.cfg().blocks()[entry].succs, [new]);
+    assert_eq!(func.cfg().succs(entry), [new]);
 
     // Move a terminator away and back, updating both sides of cached CFG edges.
     func.edit().move_to_end(replacement, old);
-    assert!(func.cfg().blocks()[entry].succs.is_empty());
-    assert_eq!(func.cfg().blocks()[old].succs, [new]);
-    assert_eq!(func.cfg().blocks()[new].preds, [old]);
+    assert!(func.cfg().succs(entry).is_empty());
+    assert_eq!(func.cfg().succs(old), [new]);
+    assert_eq!(func.cfg().preds(new), [old]);
     func.edit().move_to_end(replacement, entry);
-    assert_eq!(func.cfg().blocks()[new].preds, [entry]);
-    assert!(func.cfg().blocks()[old].succs.is_empty());
+    assert_eq!(func.cfg().preds(new), [entry]);
+    assert!(func.cfg().succs(old).is_empty());
 
     func.edit().move_block_before(new, entry);
     assert_eq!(

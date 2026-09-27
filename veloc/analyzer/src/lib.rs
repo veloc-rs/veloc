@@ -8,3 +8,6 @@ pub mod manager;
 
 pub use liveness::*;
 pub use manager::*;
+
+/// MIR dominance analysis; the graph algorithm is shared with IR validation.
+pub type Dominators = graph::DominatorTree<veloc_mir::Block>;
