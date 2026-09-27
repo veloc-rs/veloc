@@ -1,11 +1,13 @@
 //! Select expressions at executable uses, then commit a dominance-valid plan.
-use super::{CostModel, graph::Graph};
+use super::{
+    CostModel,
+    graph::{Graph, InstKind},
+};
 use cranelift_entity::SecondaryMap;
 use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 use veloc_analyzer::Dominators;
-use veloc_mir::constant::ScalarConst;
 use veloc_mir::function::{FrozenExpressions, InstOrder};
 use veloc_mir::{Block, FuncBody, Inst, Value, ValueDef};
 
@@ -13,7 +15,6 @@ use veloc_mir::{Block, FuncBody, Inst, Value, ValueDef};
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Input {
     Existing(Value),
-    Constant(ScalarConst),
     Result { step: usize, index: usize },
 }
 
@@ -58,14 +59,14 @@ impl Extraction {
                 .recipe
                 .args
                 .iter()
-                .map(|arg| arg.value(&results, ir))
+                .map(|arg| arg.value(&results))
                 .collect();
             let inst = ir.place(step.before, step.recipe.source, &args);
             results.push(ir.body().dfg().inst_results(inst).into());
         }
         let mut changed = 0;
         for rewrite in self.rewrites {
-            let value = rewrite.input.value(&results, ir);
+            let value = rewrite.input.value(&results);
             if ir.body().dfg().operands(rewrite.inst)[rewrite.operand as usize] != value {
                 ir.replace_input(rewrite.inst, rewrite.operand, value);
                 changed += 1;
@@ -76,10 +77,9 @@ impl Extraction {
 }
 
 impl Input {
-    fn value(self, results: &[SmallVec<[Value; 2]>], ir: &mut FrozenExpressions<'_>) -> Value {
+    fn value(self, results: &[SmallVec<[Value; 2]>]) -> Value {
         match self {
             Self::Existing(value) => value,
-            Self::Constant(value) => ir.constant(value),
             Self::Result { step, index } => results[step][index],
         }
     }
@@ -253,8 +253,8 @@ struct Planner<'a> {
 
 impl Graph {
     fn price(&self, f: &FuncBody, value: Value, model: &dyn CostModel) -> usize {
-        if let Some(c) = self.constant(value) {
-            model.constant(c).max(1)
+        if let Some(c) = f.dfg().as_const(self.find(value)) {
+            c.as_scalar().map_or(1, |c| model.constant(c).max(1))
         } else if let Some(inst) = self.floating_inst(f, value) {
             let result = f.dfg().inst_results(inst)[0];
             model
@@ -289,8 +289,8 @@ impl Graph {
                 value,
                 rank: (usize::MAX, usize::MAX),
             });
-            if let Some(c) = self.constants[class] {
-                costs[class] = (model.constant(c).max(1), 0);
+            if f.dfg().as_const(class).is_some() {
+                costs[class] = (self.price(f, class, model), 0);
             } else {
                 pending.push_back(value);
                 queued[value] = true;
@@ -316,7 +316,7 @@ impl Graph {
                 costs[class] = (price, depth);
                 for &user in &self.users[class] {
                     for &result in f.dfg().inst_results(user) {
-                        if self.constants[self.find(result)].is_none() && !queued[result] {
+                        if f.dfg().as_const(self.find(result)).is_none() && !queued[result] {
                             queued[result] = true;
                             pending.push_back(result);
                         }
@@ -565,10 +565,10 @@ impl Planner<'_> {
         while let Some(input) = pending.pop() {
             *self.work = self.work.saturating_sub(1);
             let price = match input {
-                Input::Constant(c) => model.constant(c).max(1),
                 Input::Existing(value) => {
-                    if let Some(c) = self.body.dfg().as_scalar_const(value) {
-                        cost = cost.saturating_add(model.constant(c).max(1));
+                    if let Some(c) = self.body.dfg().as_const(value) {
+                        let price = c.as_scalar().map_or(1, |c| model.constant(c).max(1));
+                        cost = cost.saturating_add(price);
                         continue;
                     }
                     let ValueDef::Inst(inst) = self.body.dfg().value_def(value) else {
@@ -577,7 +577,7 @@ impl Planner<'_> {
                     if !seen.insert(inst) {
                         continue;
                     }
-                    if self.graph.floating[inst] {
+                    if self.graph.kinds[inst] == InstKind::Floating {
                         pending.extend(
                             self.body
                                 .dfg()
@@ -643,7 +643,8 @@ impl Planner<'_> {
         self.graph.args(self.body, a).iter().any(|&x| {
             // Sharing a pinned input such as a block parameter has no saving
             // in this model; it should not trigger expensive paired trials.
-            (self.graph.constant(x).is_some() || self.graph.floating_inst(self.body, x).is_some())
+            (self.body.dfg().as_const(self.graph.find(x)).is_some()
+                || self.graph.floating_inst(self.body, x).is_some())
                 && self
                     .graph
                     .args(self.body, b)
@@ -746,8 +747,8 @@ impl Planner<'_> {
                         stack.pop();
                         continue;
                     }
-                    if let Some(c) = self.graph.constant(class) {
-                        plan.bind(class, Input::Constant(c));
+                    if self.body.dfg().as_const(class).is_some() {
+                        plan.bind(class, Input::Existing(class));
                         self.active[class] = false;
                         stack.pop();
                         continue;
@@ -820,9 +821,6 @@ impl Planner<'_> {
                         && self.body.dfg().operands(source).iter().zip(&args).all(
                             |(&old, &new)| match new {
                                 Input::Existing(value) => value == old,
-                                Input::Constant(c) => {
-                                    self.body.dfg().as_scalar_const(old) == Some(c)
-                                }
                                 Input::Result { .. } => false,
                             },
                         );

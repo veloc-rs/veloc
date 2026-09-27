@@ -1,11 +1,9 @@
 // run: o1
-// check: $(zero=v\d+): i32 = const 0
-// check: : i32 = idiv-s v0, $zero
+// check: : i32 = idiv-s v0, i32(0)
 // not: imul
-// check: return $zero
+// check: return i32(0)
 local function trap(i32) -> i32
 block0(v0: i32):
-  v1: i32 = const 0
-  v2: i32 = idiv-s v0, v1
-  v3: i32 = imul v2, v1
+  v2: i32 = idiv-s v0, i32(0)
+  v3: i32 = imul v2, i32(0)
   return v3

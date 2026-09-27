@@ -19,10 +19,9 @@ local function bad() -> void
 block0():
   jump block2()
 block2():
-  v0: f32 = const 0x00000000
   jump block1()
 block1():
-  br v0, block3(), block3()
+  br f32(0x00000000), block3(), block3()
 block3():
   return
 
@@ -47,9 +46,8 @@ local function bad() -> void
 block0():
   jump block2()
 block1():
-  br v0, block3(), block3()
+  br f32(0x00000000), block3(), block3()
 block2():
-  v0: f32 = const 0x00000000
   jump block1()
 block3():
   return
@@ -75,10 +73,9 @@ local function bad() -> void
 block0():
   jump block2()
 block2():
-  v0: f32 = const 0x00000000
   jump block1()
 block1():
-  br-table v0, [], block3()
+  br-table f32(0x00000000), [], block3()
 block3():
   return
 
@@ -103,9 +100,8 @@ local function bad() -> void
 block0():
   jump block2()
 block1():
-  br-table v0, [], block3()
+  br-table f32(0x00000000), [], block3()
 block2():
-  v0: f32 = const 0x00000000
   jump block1()
 block3():
   return
@@ -132,10 +128,9 @@ local function bad() -> void
 block0():
   jump block2()
 block2():
-  v0: f32 = const 0x00000000
   jump block1()
 block1():
-  call-indirect v0() : () -> void
+  call-indirect f32(0x00000000)() : () -> void
   jump block3()
 block3():
   return
@@ -162,10 +157,9 @@ local function bad() -> void
 block0():
   jump block2()
 block1():
-  call-indirect v0() : () -> void
+  call-indirect f32(0x00000000)() : () -> void
   jump block3()
 block2():
-  v0: f32 = const 0x00000000
   jump block1()
 block3():
   return

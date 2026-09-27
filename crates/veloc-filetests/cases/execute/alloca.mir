@@ -5,8 +5,7 @@ local function main() -> i32
 block0():
   p: ptr = alloca size=128, align=64
   q: ptr = ptr-offset p, 64
-  x: i32 = const 42
-  store.align64 x, q, offset=0
+  store.align64 i32(42), q, offset=0
   y: i32 = load.align64 p, offset=64
   return y
 
@@ -16,15 +15,13 @@ block0():
 local function main() -> i32
 block0():
   p: ptr = alloca size=4, align=4
-  x: i32 = const 1
-  store x, p, offset=0
+  store i32(1), p, offset=0
   call mutate(p) : (ptr) -> void
   y: i32 = load p, offset=0
   return y
 local function mutate(ptr) -> void
 block0(p: ptr):
-  x: i32 = const 42
-  store x, p, offset=0
+  store i32(42), p, offset=0
   return
 
 // ----- distinct-objects
@@ -34,10 +31,8 @@ local function main() -> i32
 block0():
   p: ptr = alloca size=4, align=4
   q: ptr = alloca size=4, align=4
-  x: i32 = const 42
-  z: i32 = const 1
-  store x, p, offset=0
-  store z, q, offset=0
+  store i32(42), p, offset=0
+  store i32(1), q, offset=0
   y: i32 = load p, offset=0
   w: i32 = load q, offset=0
   sum: i32 = iadd y, w

@@ -203,7 +203,7 @@ impl Machine {
         self.matches.begin(*fuel);
         let result = queries.iter().try_for_each(|query| {
             let root = query.root;
-            if graph.constant(root).is_some() {
+            if body.dfg().as_const(root).is_some() {
                 return Ok(());
             }
             self.index.clear();
@@ -323,7 +323,12 @@ impl Machine {
                     otherwise,
                 } => {
                     let bits = PROGRAM.constants[constant] & mask;
-                    if graph.constants[self.slots[value]].map(|c| c.to_bits()) != Some(bits) {
+                    if body
+                        .dfg()
+                        .as_scalar_const(self.slots[value])
+                        .map(|c| c.to_bits())
+                        != Some(bits)
+                    {
                         reader.pc = otherwise;
                     }
                 }
@@ -334,7 +339,11 @@ impl Machine {
                 } => {
                     let bits = PROGRAM.constants[constant] & mask;
                     // Unknown is not evidence of inequality.
-                    if !graph.constants[self.slots[value]].is_some_and(|c| c.to_bits() != bits) {
+                    if !body
+                        .dfg()
+                        .as_scalar_const(self.slots[value])
+                        .is_some_and(|c| c.to_bits() != bits)
+                    {
                         reader.pc = otherwise;
                     }
                 }
@@ -361,7 +370,7 @@ impl Machine {
         for row in 0..self.matches.rows.len() {
             let matched = self.matches.rows[row];
             let root = graph.find(matched.root);
-            if graph.constant(root).is_some() {
+            if ir.body().dfg().as_const(root).is_some() {
                 continue;
             }
             let rule = &PROGRAM.rules[matched.rule];
@@ -417,7 +426,7 @@ impl Machine {
                     log::trace!("egraph rule {}", rule.name);
                 }
                 Op::SetConstant { constant: index } => {
-                    graph.set_const(ir.body(), root, constant(index));
+                    graph.fold_to(ir, root, constant(index));
                     log::trace!("egraph rule {}", rule.name);
                 }
                 Op::Return {} => return true,

@@ -25,14 +25,11 @@ whose syntax differs from LLVM FileCheck:
 
 ```text
 // run: simplify
-// check: $(sum=v\d+): i32 = const 7
 // not: iadd
-// check: return $sum
+// check: return i32(7)
 local function add() -> i32
 block0():
-  v0: i32 = const 3
-  v1: i32 = const 4
-  v2: i32 = iadd v0, v1
+  v2: i32 = iadd i32(3), i32(4)
   return v2
 ```
 

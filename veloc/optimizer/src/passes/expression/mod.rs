@@ -10,7 +10,7 @@ mod graph;
 mod matching;
 
 use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
-use graph::Graph;
+use graph::{Graph, InstKind};
 use veloc_analyzer::{AnalysisManager, Dominators};
 use veloc_mir::function::Expressions;
 use veloc_mir::{FuncBody, Inst};
@@ -156,7 +156,7 @@ impl<'a> EqualitySession<'a> {
             }
             for inst in f.layout().block_insts(block) {
                 graph.register_inst(f, inst);
-                if !graph.floating[inst] {
+                if graph.kinds[inst] != InstKind::Floating {
                     anchors.push(inst);
                 }
             }
@@ -189,13 +189,13 @@ impl<'a> EqualitySession<'a> {
             .iter()
             .copied()
             .filter(|&inst| {
-                graph.supported[inst]
+                graph.kinds[inst] != InstKind::Unsupported
                     && ir
                         .body()
                         .dfg()
                         .inst_results(inst)
                         .iter()
-                        .all(|&v| graph.constants[graph.find(v)].is_some())
+                        .all(|&v| ir.body().dfg().as_const(graph.find(v)).is_some())
             })
             .collect();
         let mut ir = ir.freeze();
@@ -266,7 +266,12 @@ fn optimize_function(
     metrics: &mut Metrics,
 ) -> bool {
     let mut session = EqualitySession::new(f, budget);
-    if !session.graph.supported.values().any(|&supported| supported) {
+    if !session
+        .graph
+        .kinds
+        .values()
+        .any(|&kind| kind != InstKind::Unsupported)
+    {
         return false;
     }
     let mut fuel = budget.match_steps;
@@ -302,19 +307,75 @@ mod tests {
     use veloc_types::TypeInfo;
 
     #[test]
+    fn constants_remain_roots_and_wake_new_users() {
+        let mut body = FuncBody::new(&[Type::I32; 7]);
+        let mut graph = Graph::new();
+        for index in 0..7 {
+            graph.register_value(&body, Value(index));
+        }
+        // Form a larger nonconstant class before attaching it to a literal.
+        graph.union(&body, Value(0), Value(1));
+        graph.union(&body, Value(2), Value(0));
+        let mut ir = body.expressions();
+        let sum = graph
+            .build(&mut ir, Op::IAdd, &[Value(2), Value(4)], Type::I32)
+            .unwrap();
+        let one = graph.literal(&mut ir, ScalarConst::from(1i32)).unwrap();
+
+        graph.union(ir.body(), Value(2), one);
+        for index in 0..3 {
+            assert_eq!(graph.find(Value(index)), one);
+        }
+        // Both argument orders preserve the literal root. The last merge must
+        // wake the addition even though this constant root was already known.
+        graph.union(ir.body(), one, Value(3));
+        graph.union(ir.body(), Value(4), one);
+        graph.union(ir.body(), Value(0), Value(4));
+        for index in 0..5 {
+            assert_eq!(graph.find(Value(index)), one);
+        }
+        let mut fuel = 100;
+        graph.prepare(&mut ir, &mut fuel);
+        let two = ir.constant(ScalarConst::from(2i32).into());
+        assert_eq!(graph.find(sum), two);
+        assert_eq!(graph.find(one), one);
+
+        // Finish one matching round with a known zero and an unrelated parent.
+        // Only the subsequent merge can reveal the parent's x + 0 identity.
+        let zero = graph.literal(&mut ir, ScalarConst::from(0i32)).unwrap();
+        let parent = graph
+            .build(&mut ir, Op::IAdd, &[Value(5), Value(6)], Type::I32)
+            .unwrap();
+        let mut fuel = Budget::DEFAULT.match_steps;
+        super::saturate(&mut graph, &mut ir, Budget::DEFAULT.rounds, &mut fuel);
+        graph.union(ir.body(), Value(6), zero);
+        super::saturate(&mut graph, &mut ir, Budget::DEFAULT.rounds, &mut fuel);
+        assert_eq!(graph.find(parent), graph.find(Value(5)));
+    }
+
+    #[test]
+    #[should_panic(expected = "rewrite equated distinct constants")]
+    fn distinct_constants_cannot_be_equated() {
+        let mut body = FuncBody::new(&[]);
+        let mut ir = body.expressions();
+        let mut graph = Graph::new();
+        let one = graph.literal(&mut ir, ScalarConst::from(1i32)).unwrap();
+        let two = graph.literal(&mut ir, ScalarConst::from(2i32)).unwrap();
+        graph.union(ir.body(), one, two);
+    }
+
+    #[test]
     fn cross_block_graph_preserves_effects_and_ssa() {
         let parsed = veloc_mir::ModuleParser::new()
             .parse(
                 r#"
 local function cross(i64, ptr) -> i64
 block0(v0: i64, v1: ptr):
-  v2: i64 = const 3
-  v3: i64 = iadd v0, v2
+  v3: i64 = iadd v0, i64(3)
   jump block1()
 block1():
   v4: i64 = load.volatile v1, offset=0
-  v5: i64 = const 4
-  v6: i64 = iadd v3, v5
+  v6: i64 = iadd v3, i64(4)
   v7: i64 = iadd v6, v4
   return v7
 "#,
@@ -422,8 +483,7 @@ block2():
                     r#"
 local function identity(i64) -> i64
 block0(v0: i64):
-  v1: i64 = const 0
-  v2: i64 = iadd v0, v1
+  v2: i64 = iadd v0, i64(0)
   return v2
 "#,
                 )
@@ -462,17 +522,21 @@ block0(v0: i64):
                 r#"
 local function shared(i64, ptr) -> i64
 block0(v0: i64, v1: ptr):
-  v2: i64 = const 6
-  v3: i64 = const 9
-  v4: i64 = imul v0, v2
+  v4: i64 = imul v0, i64(6)
   store v4, v1, offset=0
-  v5: i64 = imul v0, v3
+  v5: i64 = imul v0, i64(9)
   return v5
 "#,
             )
             .unwrap();
         module.validate().unwrap();
         let body = module.body_mut(veloc_mir::FuncId(0)).unwrap();
+        let roots: Vec<_> = body
+            .layout()
+            .block_insts(body.entry_block())
+            .filter(|&inst| body.dfg().opcode(inst) == Op::IMul)
+            .map(|inst| body.dfg().inst_results(inst)[0])
+            .collect();
         let mut session = EqualitySession::new(body, Budget::DEFAULT);
         let graph = &mut session.graph;
         let ir = &mut session.ir;
@@ -488,8 +552,8 @@ block0(v0: i64, v1: ptr):
         let nine = graph
             .build(ir, Op::IAdd, &[six, shared], Type::I64)
             .unwrap();
-        graph.union(ir.body(), Value(4), six);
-        graph.union(ir.body(), Value(5), nine);
+        graph.union(ir.body(), roots[0], six);
+        graph.union(ir.body(), roots[1], nine);
         graph.rebuild(ir.body());
 
         // Each original multiply costs 6 with its literal: total 12. Changing

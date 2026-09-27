@@ -315,12 +315,12 @@ impl Symbols {
         Ok(block)
     }
 
-    // References reserve the final Value ID. Definitions fill that same slot,
-    // so resolving a forward reference never rewrites its uses.
+    // SSA references reserve their final slot; definitions fill it later.
     fn reference(&mut self, name: &str, func: &mut FuncBody, location: Location) -> Value {
         if let Some(&value) = self.values.get(name) {
             return value;
         }
+        self.next_value = self.next_value.max(func.dfg().values().len() as u32);
         let value = if let Some(index) = parse_value_idx(name) {
             if let Some(&value) = self.numbered.get(&index) {
                 value
@@ -329,6 +329,11 @@ impl Symbols {
                 // The spelling identifies a value, not a preallocated DFG slot.
                 let value = if (index as usize) < func.params().len()
                     || self.definitions.contains_key(&Value(index))
+                    || func
+                        .dfg()
+                        .values()
+                        .get(Value(index))
+                        .is_some_and(|v| v.ty != Type::INVALID)
                 {
                     Value(self.next_value)
                 } else {
@@ -469,16 +474,6 @@ pub(super) struct OperandParser<'a> {
 impl OperandParser<'_> {
     fn instruction(&mut self, input: &mut Cursor<'_>, block: Block) -> ParseResult<()> {
         let results = self.parse_results(input)?;
-        if input.is("const") {
-            use super::atom::AtomCodec;
-            input.keyword("const")?;
-            let [(value, ty)] = results.as_slice() else {
-                return Err(input.error("constant declaration requires one typed value"));
-            };
-            let constant = crate::Constant::parse(self, input, Some(*ty))?;
-            self.func.edit().bind_constant(*value, constant);
-            return Ok(());
-        }
         let (opcode, flags) = parse_instruction_header(input)?;
         let inst = self.parse(opcode, flags, input, results.first().map(|(_, ty)| *ty))?;
         self.func.edit().finish_parsed_inst(block, inst, &results);
@@ -512,7 +507,26 @@ impl OperandParser<'_> {
     }
 
     pub(super) fn value(&mut self, input: &mut Cursor<'_>) -> ParseResult<Value> {
+        use super::atom::AtomCodec;
         let location = input.location();
+        if input.peek_kind(1) == Kind::Less
+            || (Type::from_scalar_name(input.text()).is_some()
+                && input.peek_kind(1) == Kind::LParen)
+        {
+            let ty = parse_type(input, self.module)?;
+            input.expect(Kind::LParen)?;
+            let constant = crate::Constant::parse(self, input, Some(ty))?;
+            input.expect(Kind::RParen)?;
+            return Ok(self.func.edit().constant(constant));
+        }
+        if input
+            .text()
+            .starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+')
+            || input.is("true")
+            || input.is("false")
+        {
+            return Err(input.error("literal requires an explicit type, such as i32(7)"));
+        }
         let name = input.word().map_err(|e| e.context("invalid SSA value"))?;
         Ok(self.symbols.reference(name, self.func, location))
     }
@@ -838,6 +852,38 @@ mod tests {
     use crate::text::atom::{AtomCodec, Bytes, Decimal, IntegerBits};
     use crate::text::printer::InstPrinter;
     use core::{borrow::Borrow, fmt::Debug};
+
+    #[test]
+    fn typed_literals_share_values_and_do_not_alias_ssa_symbols() {
+        let module = ModuleParser::new()
+            .parse(
+                r#"
+local function literals() -> (i32, i32, i32<4>, i32<4>)
+block0():
+  v0: i32 = iadd i32(7), i32(7)
+  v1: i32 = iadd v0, i32(7)
+  return v0, v1, i32<4>(splat(7)), i32<4>(0x07000000070000000700000007000000)
+"#,
+            )
+            .unwrap();
+        module.validate().unwrap();
+        let body = module.function(FuncId(0)).body.unwrap();
+        let insts: Vec<_> = body.layout().block_insts(body.entry_block()).collect();
+        let first = body.dfg().operands(insts[0]);
+        assert_eq!(first[0], first[1]);
+        assert_eq!(body.dfg().operands(insts[1])[1], first[0]);
+        assert_eq!(
+            body.dfg().operands(insts[1])[0],
+            body.dfg().inst_results(insts[0])[0]
+        );
+        let returned = body.dfg().operands(insts[2]);
+        assert_eq!(returned[2], returned[3]);
+        let printed = module.to_string();
+        assert!(!printed.contains(" = const "));
+        let reparsed = ModuleParser::new().parse(&printed).unwrap();
+        reparsed.validate().unwrap();
+        assert_eq!(printed, reparsed.to_string());
+    }
 
     fn with_parser(test: impl FnOnce(&mut OperandParser<'_>)) {
         let mut func = FuncBody::new(&[]);

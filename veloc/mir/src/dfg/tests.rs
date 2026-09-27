@@ -32,11 +32,14 @@ fn names_only_allocate_for_named_values() {
 fn constants_own_and_share_their_bytes() {
     let mut source = DataFlowGraph::new();
     let ty = crate::Type::I8X16.as_vector().unwrap();
-    let constant: crate::Constant = crate::VectorConst::dense(ty, alloc::vec![7u8; 16]).into();
+    let constant: crate::Constant =
+        crate::VectorConst::dense(ty, (0u8..16).collect::<alloc::vec::Vec<_>>()).into();
     let literal = source.constant(constant.clone());
     assert_eq!(
         literal,
-        source.constant(crate::VectorConst::dense(ty, alloc::vec![7u8; 16]).into())
+        source.constant(
+            crate::VectorConst::dense(ty, (0u8..16).collect::<alloc::vec::Vec<_>>()).into()
+        )
     );
 
     let inst = source.writer().nop();
@@ -64,7 +67,31 @@ fn constants_own_and_share_their_bytes() {
         .unwrap()
         .bytes()
         .unwrap();
-    assert_eq!(bytes, &[7; 16]);
+    assert_eq!(bytes, &(0u8..16).collect::<alloc::vec::Vec<_>>());
     assert_eq!(bytes.as_ptr(), original.as_ptr());
     assert_eq!(bytes.as_ptr(), copied.as_ptr());
+}
+
+#[test]
+fn constant_identity_preserves_type_and_exact_bits() {
+    let mut dfg = DataFlowGraph::new();
+    let scalar = crate::ScalarConst::from(7i32);
+    let a = dfg.constant(scalar.into());
+    assert_eq!(a, dfg.constant(scalar.into()));
+    assert_ne!(a, dfg.constant(crate::ScalarConst::from(7i64).into()));
+
+    let ty = Type::I32X4.as_vector().unwrap();
+    let dense = crate::VectorConst::dense(ty, [7i32.to_le_bytes(); 4].concat());
+    let splat = crate::VectorConst::splat(scalar, 4, false).unwrap();
+    assert_eq!(dfg.constant(dense.into()), dfg.constant(splat.into()));
+
+    let positive = crate::ScalarConst::from_bits(Type::F64, 0).unwrap();
+    let negative = crate::ScalarConst::from_bits(Type::F64, 1u64 << 63).unwrap();
+    assert_ne!(dfg.constant(positive.into()), dfg.constant(negative.into()));
+    for bits in [0x7ff8000000000001, 0x7ff8000000000002] {
+        let nan = crate::ScalarConst::from_bits(Type::F64, bits).unwrap();
+        let value = dfg.constant(nan.into());
+        assert_eq!(value, dfg.constant(nan.into()));
+        assert_eq!(dfg.as_scalar_const(value).unwrap().to_bits(), bits);
+    }
 }

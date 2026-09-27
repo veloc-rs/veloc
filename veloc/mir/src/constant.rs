@@ -208,10 +208,39 @@ pub struct VectorConst {
 }
 
 impl VectorConst {
+    /// Construct from lane bytes, using splat storage when all valid lanes agree.
     pub fn dense(ty: VectorType, bytes: impl Into<Arc<[u8]>>) -> Self {
+        let bytes = bytes.into();
+        // Canonicalize valid repeated lanes, preserving malformed payloads for
+        // the validator rather than silently turning them into valid splats.
+        let width = ty
+            .element_type()
+            .as_type()
+            .element_bits()
+            .unwrap()
+            .div_ceil(8) as usize;
+        if !ty.is_scalable()
+            && width <= 8
+            && bytes.len() == width * ty.lane_count() as usize
+            && !bytes.is_empty()
+            && bytes
+                .chunks_exact(width)
+                .all(|lane| lane == &bytes[..width])
+        {
+            let mut bits = [0; 8];
+            bits[..width].copy_from_slice(&bytes[..width]);
+            if let Some(value) =
+                ScalarConst::from_bits(ty.element_type().as_type(), u64::from_le_bytes(bits))
+            {
+                return Self {
+                    ty,
+                    data: ConstData::Splat(value.to_bits()),
+                };
+            }
+        }
         Self {
             ty,
-            data: ConstData::Dense(bytes.into()),
+            data: ConstData::Dense(bytes),
         }
     }
 

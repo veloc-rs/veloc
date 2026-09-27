@@ -1,61 +1,66 @@
 // ----- dense
 // run: roundtrip
-// check: v0: i32<4> = const 0x01000000feffffff0300000004000000
+// check: i32<4>(0x01000000feffffff0300000004000000)
 local function dense() -> i32<4>
 block0():
-  v0: i32<4> = const 0x01000000feffffff0300000004000000
-  return v0
+  return i32<4>(0x01000000feffffff0300000004000000)
 
 // ----- splats
 // run: roundtrip
-// check: v0: i32<4> = const splat(-7)
-// check: v1: f32<scalable 4> = const splat(0x7fa12345)
-// check: v2: mask<4> = const splat(true)
-// check: v3: f64<2> = const splat(0x8000000000000000)
+// check: i32<4>(splat(-7))
+// check: f32<scalable 4>(splat(0x7fa12345))
+// check: mask<4>(splat(true))
+// check: f64<2>(splat(0x8000000000000000))
 local function splats() -> (i32<4>, f32<scalable 4>, bool<4>, f64<2>)
 block0():
-  v0: i32<4> = const splat(-7)
-  v1: f32<scalable 4> = const splat(0x7fa12345)
-  v2: bool<4> = const splat(true)
-  v3: f64<2> = const splat(0x8000000000000000)
-  return v0, v1, v2, v3
+  return i32<4>(splat(-7)), f32<scalable 4>(splat(0x7fa12345)), bool<4>(splat(true)), f64<2>(splat(0x8000000000000000))
 
 // ----- scalable-dense
 // run: validate-error
 // check: dense vector constant requires a fixed type
 local function bad() -> void
 block0():
-  v0: i32<scalable 4> = const 0x00000000000000000000000000000000
-  return
+  return i32<scalable 4>(0x00000000000000000000000000000000)
 
 // ----- invalid-boolean-lane
 // run: validate-error
 // check: boolean constant lanes must be zero or one
 local function bad() -> void
 block0():
-  v0: bool<4> = const 0x00010200
-  return
+  return bool<4>(0x00010200)
 
-// ----- missing-result
+// ----- missing-literal-type
 // run: parse-error
-// check: constant declaration requires one typed value
+// check: literal requires an explicit type
 local function bad() -> void
 block0():
-  const splat(7)
-  return
+  return 7
 
 // ----- scalar-result
 // run: parse-error
-// check: vector constant requires a vector result type
+// check: invalid integer constant
 local function bad() -> void
 block0():
-  v0: i32 = const splat(7)
-  return
+  return i32(splat(7))
 
 // ----- invalid-float-bits
 // run: parse-error
 // check: f32 bit pattern does not fit in 32 bits
 local function bad() -> void
 block0():
-  v0: f32<4> = const splat(0x100000000)
-  return
+  return f32<4>(splat(0x100000000))
+
+// ----- canonical-dense-and-splat
+// run: roundtrip
+// not: = const
+// check: return i32<4>(splat(7)), i32<4>(splat(7))
+local function same() -> (i32<4>, i32<4>)
+block0():
+  return i32<4>(0x07000000070000000700000007000000), i32<4>(splat(7))
+
+// ----- repeated-invalid-boolean-lanes
+// run: validate-error
+// check: boolean constant lanes must be zero or one
+local function bad() -> bool<4>
+block0():
+  return bool<4>(0x02020202)

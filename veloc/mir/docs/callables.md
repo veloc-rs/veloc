@@ -13,11 +13,9 @@ The enclosing function can return different types from those of the callable.
 ```text
 local function main() -> i32
 block0():
-  v0: i32 = const 20
-  v1: shared<(i32) -> i32> = closure-shared add(v0) : (i32, i32) -> i32
-  v2: i32 = const 1
-  v3: i32 = call-value v1(v2)
-  v4: i32 = call-value v1(v2)
+  v1: shared<(i32) -> i32> = closure-shared add(i32(20)) : (i32, i32) -> i32
+  v3: i32 = call-value v1(i32(1))
+  v4: i32 = call-value v1(i32(1))
   v5: i32 = iadd v3, v4
   return v5
 

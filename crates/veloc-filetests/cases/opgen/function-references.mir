@@ -65,5 +65,4 @@ block0():
 
 local function later() -> i32
 block0():
-  v0: i32 = const 7
-  return v0
+  return i32(7)

@@ -40,13 +40,9 @@ impl<'a> FuncEditor<'a> {
         self.body
     }
 
-    /// Intern a position-independent literal. Dense bytes must belong to this body.
+    /// Intern a position-independent literal, reusing its canonical Value.
     pub fn constant(&mut self, value: crate::Constant) -> Value {
         self.body.dfg.constant(value)
-    }
-
-    pub(crate) fn bind_constant(&mut self, value: Value, constant: crate::Constant) {
-        self.body.dfg.bind_constant(value, constant);
     }
 
     pub fn at_end<'ctx>(

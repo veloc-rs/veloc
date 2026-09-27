@@ -237,24 +237,6 @@ impl DataFlowGraph {
         value
     }
 
-    /// Resolve a textual definition in its reserved slot, including forward uses.
-    pub(crate) fn bind_constant(&mut self, value: Value, constant: Constant) {
-        let ty = constant.ty();
-        let id = if let Some(&other) = self.literals.get(&constant) {
-            let ValueDef::Const(id) = self.value_def(other) else {
-                unreachable!()
-            };
-            id
-        } else {
-            self.literals.insert(constant.clone(), value);
-            self.constants.push(constant)
-        };
-        self.values[value] = ValueData {
-            ty,
-            def: ValueDef::Const(id),
-        };
-    }
-
     fn clear_inst(&mut self, inst: Inst) {
         self.operands
             .release(core::mem::take(&mut self.instructions[inst].operands));

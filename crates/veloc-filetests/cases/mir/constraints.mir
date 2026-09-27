@@ -8,11 +8,10 @@ block0(v0: f32, v1: f32):
 
 // ----- vector-constant-size
 // run: validate-error
-// check: dense vector constant byte count must match its type
+// check: byte count must match its fixed vector type
 local function bad() -> void
 block0():
-  v0: i32<4> = const 0x00000000
-  return
+  return i32<4>(0x00000000)
 
 // ----- pointer-scale
 // run: validate-error
@@ -35,8 +34,7 @@ block0(v0: ptr, v1: ptr):
 // check: mask length
 local function bad(i32<4>, i32<4>) -> void
 block0(v0: i32<4>, v1: i32<4>):
-  v3: i32<2> = const 0x0000000001000000
-  v2: i32<4> = shuffle v0, v1, v3
+  v2: i32<4> = shuffle v0, v1, i32<2>(0x0000000001000000)
   return
 
 // ----- shuffle-selector
@@ -44,8 +42,7 @@ block0(v0: i32<4>, v1: i32<4>):
 // check: selector is out of range
 local function bad(i32<4>, i32<4>) -> void
 block0(v0: i32<4>, v1: i32<4>):
-  v3: i32<4> = const 0x00000000010000000200000008000000
-  v2: i32<4> = shuffle v0, v1, v3
+  v2: i32<4> = shuffle v0, v1, i32<4>(0x00000000010000000200000008000000)
   return
 
 // ----- shuffle-scalable
@@ -53,8 +50,7 @@ block0(v0: i32<4>, v1: i32<4>):
 // check: fixed-width vector
 local function bad(i32<scalable 4>, i32<scalable 4>) -> void
 block0(v0: i32<scalable 4>, v1: i32<scalable 4>):
-  v3: i32<4> = const 0x00000000010000000200000003000000
-  v2: i32<scalable 4> = shuffle v0, v1, v3
+  v2: i32<scalable 4> = shuffle v0, v1, i32<4>(0x00000000010000000200000003000000)
   return
 
 // ----- conversion-lane-count
@@ -102,8 +98,7 @@ block0(v0: i32<4>, v1: i32<4>, v2: i32<4>):
 // check: selector is out of range
 local function bad(i32<4>, i32<4>) -> void
 block0(v0: i32<4>, v1: i32<4>):
-  v2: i32<4> = const splat(-1)
-  v3: i32<4> = shuffle v0, v1, v2
+  v3: i32<4> = shuffle v0, v1, i32<4>(splat(-1))
   return
 
 // ----- shuffle-result-element
@@ -111,8 +106,7 @@ block0(v0: i32<4>, v1: i32<4>):
 // check: element types must match
 local function bad(i32<4>, i32<4>) -> void
 block0(v0: i32<4>, v1: i32<4>):
-  v2: i32<2> = const 0x0000000001000000
-  v3: f32<2> = shuffle v0, v1, v2
+  v3: f32<2> = shuffle v0, v1, i32<2>(0x0000000001000000)
   return
 
 // ----- shuffle-floating-mask
@@ -120,6 +114,5 @@ block0(v0: i32<4>, v1: i32<4>):
 // check: Pattern
 local function bad(i32<4>, i32<4>) -> void
 block0(v0: i32<4>, v1: i32<4>):
-  v2: f32<4> = const splat(0.0)
-  v3: i32<4> = shuffle v0, v1, v2
+  v3: i32<4> = shuffle v0, v1, f32<4>(splat(0.0))
   return

@@ -11,8 +11,8 @@ block0(v0: ptr):
 // check: already-defined
 local function bad() -> i32
 block0():
-  value: i32 = const 1
-  value: i32 = const 2
+  value: i32 = iadd i32(1), i32(1)
+  value: i32 = iadd i32(2), i32(2)
   return value
 
 // ----- address-mode-1
@@ -173,8 +173,7 @@ import function callee(i32) -> i32
 // check: integer
 local function bad() -> void
 block0():
-  v5: i32 = const nonsense
-  return
+  return i32(nonsense)
 import function callee(i32) -> i32
 
 // ----- payload-5
@@ -182,8 +181,7 @@ import function callee(i32) -> i32
 // check: true
 local function bad() -> void
 block0():
-  v7: bool = const maybe
-  return
+  return bool(maybe)
 import function callee(i32) -> i32
 
 // ----- payload-6
@@ -191,8 +189,7 @@ import function callee(i32) -> i32
 // check: even
 local function bad() -> void
 block0():
-  v8: i32<4> = const 0x123
-  return
+  return i32<4>(0x123)
 import function callee(i32) -> i32
 
 // ----- payload-7

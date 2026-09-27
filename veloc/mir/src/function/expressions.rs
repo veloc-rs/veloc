@@ -76,10 +76,6 @@ impl FrozenExpressions<'_> {
         self.expressions.body
     }
 
-    pub fn constant(&mut self, value: crate::ScalarConst) -> Value {
-        self.expressions.constant(value.into())
-    }
-
     pub fn place(&mut self, before: Inst, source: Inst, args: &[Value]) -> Inst {
         let body = &mut self.expressions.body;
         for &value in args {

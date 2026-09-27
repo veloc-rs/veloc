@@ -571,18 +571,14 @@ export function rotate(i64, i64, i64, i64) -> i64
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
   jump block1(v0, v1, v2, v3)
 block1(v4: i64, v5: i64, v6: i64, v7: i64):
-  v8: i64 = const 0
-  v9: bool = icmp eq v7, v8
+  v9: bool = icmp eq v7, i64(0)
   br v9, block2(), block3()
 block3():
-  v10: i64 = const 1
-  v11: i64 = isub v7, v10
+  v11: i64 = isub v7, i64(1)
   jump block1(v5, v6, v4, v11)
 block2():
-  v12: i64 = const 100
-  v13: i64 = imul v4, v12
-  v14: i64 = const 10
-  v15: i64 = imul v5, v14
+  v13: i64 = imul v4, i64(100)
+  v15: i64 = imul v5, i64(10)
   v16: i64 = iadd v13, v15
   v17: i64 = iadd v16, v6
   return v17
@@ -591,19 +587,15 @@ export function chain(i64, i64, i64, i64) -> i64
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
   jump block1(v0, v1, v2, v3)
 block1(v4: i64, v5: i64, v6: i64, v7: i64):
-  v8: i64 = const 0
-  v9: bool = icmp eq v7, v8
+  v9: bool = icmp eq v7, i64(0)
   br v9, block2(), block3()
 block3():
-  v10: i64 = const 1
-  v11: i64 = isub v7, v10
-  v12: i64 = iadd v6, v10
+  v11: i64 = isub v7, i64(1)
+  v12: i64 = iadd v6, i64(1)
   jump block1(v5, v6, v12, v11)
 block2():
-  v13: i64 = const 100
-  v14: i64 = imul v4, v13
-  v15: i64 = const 10
-  v16: i64 = imul v5, v15
+  v14: i64 = imul v4, i64(100)
+  v16: i64 = imul v5, i64(10)
   v17: i64 = iadd v14, v16
   v18: i64 = iadd v17, v6
   return v18
@@ -628,11 +620,8 @@ int main(void) {
 fn ssa_edges_execute_spilled_cycles_and_duplicate_targets() {
     const N: usize = 40;
     let mut source = String::from("export function rotate_spilled(i64) -> i64\nblock0(v0: i64):\n");
-    for i in 1..=N {
-        source += &format!("  v{i}: i64 = const {i}\n");
-    }
     let initial = (1..=N)
-        .map(|i| format!("v{i}"))
+        .map(|i| format!("i64({i})"))
         .collect::<Vec<_>>()
         .join(", ");
     let params = (N + 1..=2 * N + 1)
@@ -640,45 +629,42 @@ fn ssa_edges_execute_spilled_cycles_and_duplicate_targets() {
         .collect::<Vec<_>>()
         .join(", ");
     source += &format!(
-        "  jump block1({initial}, v0)\nblock1({params}):\n  v82: i64 = const 0\n  v83: bool = icmp eq v81, v82\n  br v83, block2(), block3()\nblock3():\n  v84: i64 = const 1\n  v85: i64 = isub v81, v84\n"
+        "  jump block1({initial}, v0)\nblock1({params}):\n  v83: bool = icmp eq v81, i64(0)\n  br v83, block2(), block3()\nblock3():\n  v85: i64 = isub v81, i64(1)\n"
     );
     let rotation = (N + 2..=2 * N)
         .map(|i| format!("v{i}"))
         .chain([format!("v{}", N + 1)])
         .collect::<Vec<_>>()
         .join(", ");
-    source += &format!("  jump block1({rotation}, v85)\nblock2():\n  v86: i64 = const 0\n");
-    let mut sum = 86;
+    source += &format!("  jump block1({rotation}, v85)\nblock2():\n");
+    let mut sum = String::from("i64(0)");
     for i in 0..N {
         let weight = 87 + i * 3;
         let product = weight + 1;
         let next = weight + 2;
         source += &format!(
-            "  v{weight}: i64 = const {}\n  v{product}: i64 = imul v{}, v{weight}\n  v{next}: i64 = iadd v{sum}, v{product}\n",
+            "  v{product}: i64 = imul i64({}), v{}\n  v{next}: i64 = iadd {sum}, v{product}\n",
             i + 1,
             N + 1 + i
         );
-        sum = next;
+        sum = format!("v{next}");
     }
-    source += &format!("  return v{sum}\n");
+    source += &format!("  return {sum}\n");
     source += r#"
 export function entry_loop(i64, i64) -> i64
 block0(v0: i64, v1: i64):
-  v2: i64 = const 0
-  v3: bool = icmp eq v0, v2
+  v3: bool = icmp eq v0, i64(0)
   br v3, block1(), block2()
 block1():
   return v1
 block2():
-  v4: i64 = const 1
-  v5: i64 = isub v0, v4
-  v6: i64 = iadd v1, v4
+  v5: i64 = isub v0, i64(1)
+  v6: i64 = iadd v1, i64(1)
   jump block0(v5, v6)
 
 export function same_target(i64, i64, i64) -> i64
 block0(v0: i64, v1: i64, v2: i64):
-  v3: i64 = const 0
-  v4: bool = icmp eq v0, v3
+  v4: bool = icmp eq v0, i64(0)
   br v4, block1(v1, v2), block1(v2, v1)
 block1(v5: i64, v6: i64):
   v7: i64 = isub v5, v6
@@ -788,15 +774,13 @@ fn loops_branches_and_stack_memory() {
         r#"
 export function sum(i64) -> i64
 block0(v0: i64):
-  v1: i64 = const 0
-  v2: i64 = const 1
-  jump block1(v0, v1)
+  jump block1(v0, i64(0))
 block1(v3: i64, v4: i64):
-  v5: bool = icmp eq v3, v1
+  v5: bool = icmp eq v3, i64(0)
   br v5, block3(v4), block2()
 block2():
   v6: i64 = iadd v3, v4
-  v7: i64 = isub v3, v2
+  v7: i64 = isub v3, i64(1)
   jump block1(v7, v6)
 block3(v8: i64):
   return v8
@@ -824,11 +808,8 @@ fn conditional_edges_do_not_depend_on_block_layout() {
         r#"
 export function choose(i64) -> i64
 block0(v0: i64):
-  v1: i64 = const 0
-  v2: i64 = const 11
-  v3: i64 = const 22
-  v4: bool = icmp eq v0, v1
-  br v4, block2(v2), block3(v3)
+  v4: bool = icmp eq v0, i64(0)
+  br v4, block2(i64(11)), block3(i64(22))
 block1():
   unreachable
 block2(v5: i64):
@@ -853,8 +834,7 @@ export function memory_order(ptr, i32) -> i32
 block0(v0: ptr, v1: i32):
   store.volatile.align4 v1, v0, offset=4
   v2: i32 = load.volatile.align4 v0, offset=4
-  v3: i32 = const 1
-  v4: i32 = iadd v2, v3
+  v4: i32 = iadd v2, i32(1)
   store.volatile.align4 v4, v0, offset=4
   return v2
 "#,
@@ -880,13 +860,7 @@ fn calls_and_high_register_pressure() {
         "import function smash(i64) -> i64\nexport function pressure(i64) -> i64\nblock0(v0: i64):\n",
     );
     for i in 0..24 {
-        source += &format!(
-            "  v{}: i64 = const {}\n  v{}: i64 = imul v0, v{}\n",
-            2 * i + 1,
-            i + 3,
-            2 * i + 2,
-            2 * i + 1
-        );
+        source += &format!("  v{}: i64 = imul v0, i64({})\n", 2 * i + 2, i + 3);
     }
     source += "  v49: i64 = call smash(v0) : (i64) -> i64\n";
     for i in 0..24 {
@@ -1107,8 +1081,7 @@ block0(v0: i32, v1: i64, v2: i64):
 block1(v3: i64):
   return v3
 block2(v4: i64):
-  v5: i64 = const 1
-  v6: i64 = iadd v4, v5
+  v6: i64 = iadd v4, i64(1)
   return v6
 export function fallback(i32, i64) -> i64
 block0(v0: i32, v1: i64):

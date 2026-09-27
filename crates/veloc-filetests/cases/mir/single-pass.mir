@@ -13,12 +13,10 @@ block0():
   return v2
 local function middle() -> i32
 block0():
-  v0: i32 = const 2
-  return v0
+  return i32(2)
 local function last() -> i32
 block0():
-  v0: i32 = const 3
-  return v0
+  return i32(3)
 
 // ----- numeric-functions-use-declaration-order
 // run: roundtrip
@@ -32,12 +30,10 @@ block0():
   return v2
 local function middle() -> i32
 block0():
-  v0: i32 = const 2
-  return v0
+  return i32(2)
 local function last() -> i32
 block0():
-  v0: i32 = const 3
-  return v0
+  return i32(3)
 
 // ----- numeric-looking-name-takes-precedence
 // run: roundtrip
@@ -48,8 +44,7 @@ block0():
   return v0
 local function func0() -> i32
 block0():
-  v0: i32 = const 7
-  return v0
+  return i32(7)
 
 // ----- forward-block-parameter-and-result-chain
 // run: roundtrip
@@ -178,15 +173,13 @@ block0(v0: i32):
 
 // ----- bare-names-do-not-capture-later-numbered-values
 // run: roundtrip
-// check: constant.v1: i32 = const 1
-// check: sum.v2: i32 = iadd v3, constant.v1
-// check: block2(v3: i32):
+// check: sum.$(id1=v\d+): i32 = iadd $(id2=v\d+), i32(1)
+// check: block2($id2: i32):
 local function main(i32) -> i32
 block0(arg: i32):
-  constant: i32 = const 1
   jump block2(arg)
 block1():
-  sum: i32 = iadd v1, constant
+  sum: i32 = iadd v1, i32(1)
   return sum
 block2(v1: i32):
   jump block1()

@@ -1160,11 +1160,12 @@ they do not emit an instruction. Operands and use-def links still use `Value`.
 Exact scalar bits distinguish signed zero and NaN payloads. Vector literals use
 splat descriptors or interned dense bytes.
 
-Text declares literals as `v1: i32 = const 42`. Such declarations have function
-scope and do not occupy a position in a block. The printer groups used literals
-after the entry header; the parser also permits forward references. Ordinary
-operation definitions still require SSA dominance. Literal payload validation
-belongs to MIR value validation, rather than an instruction's OpSpec contract.
+Text uses typed operands: `i32(42)`, `bool(true)`, `f32(0x80000000)`,
+and `i32<4>(splat(7))`. Constants have no textual definitions or forward
+references: each occurrence resolves directly to its canonical DFG Value.
+Ordinary operation definitions still require SSA dominance. Literal payload
+validation belongs to MIR value validation, rather than an instruction's
+OpSpec contract.
 
 Equality rules match constant facts directly. Extraction returns literal values
 without creating scheduled copies. Lowering chooses block-local materializations;

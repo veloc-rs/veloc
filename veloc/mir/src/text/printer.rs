@@ -10,11 +10,19 @@ use crate::{
 };
 use core::fmt::{Display, Formatter, Result, Write};
 
-/// A stable SSA spelling: optional human hint followed by the entity number.
+/// An operand: a typed literal or an SSA name with an optional human hint.
 pub struct ValueFmt<'a>(&'a DataFlowGraph, Value);
 
 impl Display for ValueFmt<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        if let Some(constant) = self.0.as_const(self.1) {
+            use super::atom::AtomCodec;
+            let printer = InstPrinter::new(self.0, None);
+            let ty = constant.ty();
+            write!(f, "{ty}(")?;
+            crate::Constant::print(&printer, f, constant, Some(ty))?;
+            return f.write_char(')');
+        }
         let name = self.0.value_name(self.1);
         if name.is_empty() {
             write!(f, "v{}", self.1.0)
@@ -248,23 +256,6 @@ impl<'a> FuncPrinter<'a> {
 
     fn fmt_block(&self, f: &mut dyn Write, body: &crate::FuncBody, block: crate::Block) -> Result {
         self.fmt_block_header(f, body, block)?;
-        // Declarations have function scope, not an instruction position. Emit
-        // each used literal once; forward uses and layout order are irrelevant.
-        if block == body.entry_block() {
-            use super::atom::AtomCodec;
-            let printer = InstPrinter::new(body.dfg(), Some(self.module));
-            for (value, _) in body.dfg().values() {
-                if let Some(constant) = body.dfg().as_const(value)
-                    && body.dfg().uses(value).next().is_some()
-                {
-                    f.write_str("  ")?;
-                    printer.fmt_definition(f, value)?;
-                    f.write_str(" = const ")?;
-                    crate::Constant::print(&printer, f, constant, Some(constant.ty()))?;
-                    writeln!(f)?;
-                }
-            }
-        }
         for inst in body.layout().block_insts(block) {
             f.write_str("  ")?;
             InstPrinter::new(body.dfg(), Some(self.module)).fmt_inst_with_results(f, inst)?;

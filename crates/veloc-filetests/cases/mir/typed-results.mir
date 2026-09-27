@@ -1,24 +1,20 @@
 // ----- explicit-types-and-names
 // run: roundtrip
-// check: global.v1: i32 = const 1
-// check: ss0.v2: i32 = iadd input.v0, global.v1
-// check: (sum.v3: i32, overflow.v4: bool) = iadd-with-overflow ss0.v2, global.v1
-// check: return sum.v3, overflow.v4
+// check: ss0.$(id1=v\d+): i32 = iadd input.$(id0=v\d+), i32(1)
+// check: (sum.$(id3=v\d+): i32, overflow.$(id4=v\d+): bool) = iadd-with-overflow ss0.$id1, i32(1)
+// check: return sum.$id3, overflow.$id4
 local function names(i32) -> (i32, bool)
 block0(input: i32):
-  global: i32 = const 1
-  ss0: i32 = iadd input, global
-  (sum: i32, overflow: bool) = iadd-with-overflow ss0, global
+  ss0: i32 = iadd input, i32(1)
+  (sum: i32, overflow: bool) = iadd-with-overflow ss0, i32(1)
   return sum, overflow
 
 // ----- result-types-are-not-inferred-or-overwritten
 // run: parse
-// check: v1: i32 = const 1
-// check: v0: i64 = iadd v1, v1
+// check: $(id0=v\d+): i64 = iadd i32(1), i32(1)
 local function bad() -> i64
 block0():
-  v0: i64 = iadd v1, v1
-  v1: i32 = const 1
+  v0: i64 = iadd i32(1), i32(1)
   return v0
 
 // ----- result-types-are-checked-by-validator
@@ -28,8 +24,7 @@ block0():
 // check: got: I64
 local function bad() -> i64
 block0():
-  v0: i64 = iadd v1, v1
-  v1: i32 = const 1
+  v0: i64 = iadd i32(1), i32(1)
   return v0
 
 // ----- second-result-type-is-preserved
@@ -55,7 +50,7 @@ block0(v0: i32):
 // check: expected Colon
 local function bad() -> bool
 block0():
-  v0 = const true
+  v0 = icmp eq i32(1), i32(1)
   return v0
 
 // ----- every-result-needs-a-type
@@ -66,13 +61,12 @@ block0(v0: i32):
   (v1: i32, v2) = iadd-with-overflow v0, v0
   return v1, v2
 
-// ----- literal-needs-a-declaration
+// ----- literal-requires-explicit-type
 // run: parse-error
-// check: constant declaration requires one typed value
+// check: literal requires an explicit type
 local function bad() -> void
 block0():
-  const true
-  return
+  return true
 
 // ----- extra-result-belongs-to-validator
 // run: validate-error
@@ -105,7 +99,7 @@ import function callee() -> i32
 // check: unknown type `i33`
 local function bad() -> i32
 block0():
-  v0: i33 = const 1
+  v0: i33 = iadd i32(1), i32(1)
   return v0
 
 // ----- duplicate-result-declaration
