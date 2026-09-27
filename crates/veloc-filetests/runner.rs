@@ -5,7 +5,7 @@ mod compiler;
 use filecheck::{CheckerBuilder, NO_VARIABLES};
 use libtest_mimic::{Arguments, Trial};
 use veloc_mir::{Module, ModuleParser, TypeInfo};
-use veloc_optimizer::{Metrics, PassManager, passes::expression};
+use veloc_optimizer::{DcePass, ExpressionPass, OptConfig, PassManager, passes::expression};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -363,18 +363,15 @@ fn roundtrip(module: &Module) -> Result<String> {
 
 fn simplify(module: Module) -> Result<Module> {
     let mut data = module;
-    for function in data.bodies_mut().map(|(_, body)| body) {
-        let mut metrics = Metrics::default();
-        expression::run(function, expression::Budget::DEFAULT, false, &mut metrics);
-        let before = format!("{function:?}");
-        if expression::run(function, expression::Budget::DEFAULT, false, &mut metrics)
-            || format!("{function:?}") != before
-        {
-            return Err(format!(
-                "{}: simplify did not reach a fixed point",
-                "function"
-            ));
-        }
+    let mut passes = PassManager::new(OptConfig::default());
+    passes.add_function_pass(ExpressionPass {
+        budget: expression::Budget::DEFAULT,
+    });
+    passes.add_function_pass(DcePass);
+    passes.run_on_module(&mut data);
+    let before = data.to_string();
+    if passes.run_on_module(&mut data) || data.to_string() != before {
+        return Err("simplify pipeline did not reach a fixed point".into());
     }
     Ok(data)
 }

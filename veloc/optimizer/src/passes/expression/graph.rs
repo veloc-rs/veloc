@@ -117,7 +117,8 @@ pub(super) enum InstKind {
     /// Can be analyzed, but cannot be moved or speculated.
     Pinned,
     Floating,
-    /// No longer indexed. Keep its definition only until executable uses commit.
+    /// Completely replaced; execution may be erased after candidate references
+    /// are released. No longer participates in search or extraction.
     Folded,
 }
 
@@ -444,8 +445,14 @@ impl Graph {
                 .iter()
                 .all(|&v| f.dfg().as_const(self.find(v)).is_some());
             let mut key = self.key(f, inst);
-            let reduced = if known { None } else { self.reduce(f, &key) };
-            if known || reduced.is_some() {
+            // A known value alone cannot discharge a pinned operation's trap.
+            // Evaluate its actual inputs before granting permission to erase it.
+            let reduced = if known && self.kinds[inst] == InstKind::Floating {
+                None
+            } else {
+                self.reduce(f, &key)
+            };
+            if (known && self.kinds[inst] == InstKind::Floating) || reduced.is_some() {
                 if let Some(reduced) = reduced {
                     assert_eq!(reduced.len(), results.len(), "fold result arity");
                     for (&value, fold) in results.iter().zip(reduced) {
@@ -462,6 +469,8 @@ impl Graph {
                 }
                 if self.kinds[inst] == InstKind::Floating {
                     self.discard(ir.body(), inst);
+                } else {
+                    self.kinds[inst] = InstKind::Folded;
                 }
                 continue;
             }
@@ -668,10 +677,11 @@ fn can_analyze(f: &FuncBody, inst: Inst) -> bool {
     let view = f.dfg().inst(inst);
     let results = f.dfg().inst_results(inst);
     !results.is_empty()
-        && results
-            .iter()
-            .all(|&v| ScalarConst::from_bits(f.dfg().value_type(v), 0).is_some())
-        && crate::evaluate::can_fold(view.opcode())
+        && (matching::can_fold(view.opcode())
+            || (results
+                .iter()
+                .all(|&v| ScalarConst::from_bits(f.dfg().value_type(v), 0).is_some())
+                && crate::evaluate::can_fold(view.opcode())))
         && view.memory_effect().is_none()
         && !view.is_terminator()
         && !view.opcode().transfers_ownership()

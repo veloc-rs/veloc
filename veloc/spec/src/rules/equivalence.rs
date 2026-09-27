@@ -276,11 +276,23 @@ fn local_folds(
     opcode: &str,
     types: &str,
 ) -> String {
-    let mut code = format!(
+    let local_ops = groups
+        .iter()
+        .filter(|(_, rules)| rules.iter().any(CheckedRule::is_local))
+        .map(|(name, _)| format!("{opcode}::{name}"))
+        .collect::<Vec<_>>();
+    let supported = if local_ops.is_empty() {
+        "false".to_owned()
+    } else {
+        format!("matches!(opcode, {})", local_ops.join(" | "))
+    };
+    let mut code =
+        format!("pub(super) const fn can_fold(opcode: {opcode}) -> bool {{ {supported} }}\n");
+    code.push_str(&format!(
         "#[allow(unused_variables, unused_mut)]\n\
          pub(super) fn fold(opcode: {opcode}, ty: {types}, args: &[Value], mut constant: impl FnMut(Value) -> Option<ScalarConst>) -> Option<crate::evaluate::Fold> {{\n\
          match opcode {{\n"
-    );
+    ));
     for (name, rules) in groups {
         let rules: Vec<_> = rules.iter().filter(|r| r.is_local()).collect();
         if rules.is_empty() {

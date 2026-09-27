@@ -21,7 +21,7 @@ pub mod isel;
 pub mod verify;
 
 pub use backend::Backend;
-pub use driver::{CodegenOptions, CodegenPipeline, CodegenStats};
+pub use driver::{CodegenOptions, CodegenPipeline};
 pub use target::{
     CallConv, RewriteResult, SelectResult, TargetArch, TargetConfig, TargetEmitter,
     TargetFrameLowering, TargetInstructionSelector, TargetLegalizer, TargetMachine,

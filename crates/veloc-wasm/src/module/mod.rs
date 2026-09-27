@@ -190,97 +190,139 @@ impl Module {
     }
 
     pub fn new(engine: &Engine, wasm_bin: &[u8]) -> Result<Self> {
-        Validator::new().validate_all(wasm_bin)?;
-        let mut metadata = WasmMetadata::collect(wasm_bin)?;
-        let mut ir = veloc::mir::ModuleBuilder::new();
-
-        let mut ir_sig_ids = Vec::with_capacity(metadata.signatures.len());
-        for i in 0..metadata.signatures.len() {
-            ir_sig_ids.push(metadata.signatures[i].intern_veloc_sig(&mut ir));
-        }
-
-        let mut strategy = engine.strategy();
-        if strategy == Strategy::Auto {
-            strategy = Strategy::Jit;
-        }
-        let hardware_memory_checks = engine.config().hardware_memory_checks;
-        if hardware_memory_checks {
-            if strategy != Strategy::Interpreter {
-                return Err(crate::error::Error::Unsupported(
-                    "hardware memory checks require the interpreter strategy".into(),
-                ));
+        use veloc_profile::{Config, Mode, Profile};
+        let profile = Profile::new(Config {
+            mode: if engine.config().trace_file.is_some() {
+                Mode::Trace
+            } else if engine.config().print_stats {
+                Mode::Summary
+            } else {
+                Mode::Off
+            },
+            details: engine.config().trace_details,
+            ..Config::default()
+        });
+        profile.metadata("strategy", || format!("{:?}", engine.strategy()));
+        profile.metadata("target", || {
+            format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
+        });
+        profile.metadata("input_bytes", || wasm_bin.len().to_string());
+        profile.metadata("opt_level", || engine.config().opt_level.to_string());
+        let result = profile.measure("wasm.compile", 0, || {
+            Self::compile(engine, wasm_bin, &profile)
+        });
+        if profile.enabled() {
+            let report = profile.report();
+            if engine.config().print_stats {
+                eprintln!("{report}");
             }
-            crate::trap::install()?;
+            if let Some(path) = &engine.config().trace_file {
+                if let Err(error) = std::fs::write(path, report.chrome_trace()) {
+                    eprintln!("Failed to write trace to {path:?}: {error}");
+                }
+            }
         }
+        result
+    }
 
-        // 1. Declare runtime functions and offsets
-        let runtime = RuntimeFunctions::declare(&mut ir);
-        let offsets = VMOffsets::new(
-            metadata.num_imported_memories as u32,
-            metadata.num_imported_tables as u32,
-            metadata.num_imported_globals as u32,
-            (metadata.memories.len() - metadata.num_imported_memories) as u32,
-            (metadata.tables.len() - metadata.num_imported_tables) as u32,
-            (metadata.globals.len() - metadata.num_imported_globals) as u32,
-            metadata.functions.len() as u32,
-            metadata.signatures.len() as u32,
-        );
+    fn compile(engine: &Engine, wasm_bin: &[u8], profile: &veloc_profile::Profile) -> Result<Self> {
+        let (metadata, mut ir, offsets, init_func_id, strategy) =
+            profile.measure("wasm.translate", 0, || {
+                profile.measure("wasm.validate", 0, || {
+                    Validator::new().validate_all(wasm_bin)
+                })?;
+                let mut metadata = WasmMetadata::collect(wasm_bin)?;
+                let mut ir = veloc::mir::ModuleBuilder::new();
 
-        // 2. Generate function declarations and trampolines
-        generate_trampolines(&mut ir, &mut metadata);
-        if matches!(strategy, Strategy::Jit | Strategy::FastJit) {
-            host::generate(&mut ir, &metadata);
-        }
+                let mut ir_sig_ids = Vec::with_capacity(metadata.signatures.len());
+                for i in 0..metadata.signatures.len() {
+                    ir_sig_ids.push(metadata.signatures[i].intern_veloc_sig(&mut ir));
+                }
 
-        // 3. Generate __veloc_init function
-        let init_func_id = generate_veloc_init(&mut ir, &metadata, &offsets, &runtime);
+                let mut strategy = engine.strategy();
+                if strategy == Strategy::Auto {
+                    strategy = Strategy::Jit;
+                }
+                let hardware_memory_checks = engine.config().hardware_memory_checks;
+                if hardware_memory_checks {
+                    if strategy != Strategy::Interpreter {
+                        return Err(crate::error::Error::Unsupported(
+                            "hardware memory checks require the interpreter strategy".into(),
+                        ));
+                    }
+                    crate::trap::install()?;
+                }
 
-        // 4. Translate Wasm bytecode to IR
-        let mut func_count = 0;
-        let parser = Parser::new(0);
-        for payload in parser.parse_all(wasm_bin) {
-            let payload = payload?;
-
-            if let Payload::CodeSectionEntry(body) = payload {
-                let global_idx = metadata.num_imported_funcs + func_count;
-                let ty_idx = metadata.functions[global_idx].type_index;
-                let sig = &metadata.signatures[ty_idx as usize];
-
-                let params: Vec<VelocType> =
-                    sig.params.iter().map(|&p| valtype_to_veloc(p)).collect();
-                let returns: Vec<VelocType> =
-                    sig.results.iter().map(|&r| valtype_to_veloc(r)).collect();
-
-                let func_id = metadata.functions[global_idx].func_id;
-
-                let mut builder = ir.define(func_id);
-                let mut translator = WasmTranslator::new(
-                    &mut builder,
-                    returns,
-                    &metadata,
-                    &ir_sig_ids,
-                    offsets,
-                    runtime,
-                    engine.config().ir_names,
+                // 1. Declare runtime functions and offsets
+                let runtime = RuntimeFunctions::declare(&mut ir);
+                let offsets = VMOffsets::new(
+                    metadata.num_imported_memories as u32,
+                    metadata.num_imported_tables as u32,
+                    metadata.num_imported_globals as u32,
+                    (metadata.memories.len() - metadata.num_imported_memories) as u32,
+                    (metadata.tables.len() - metadata.num_imported_tables) as u32,
+                    (metadata.globals.len() - metadata.num_imported_globals) as u32,
+                    metadata.functions.len() as u32,
+                    metadata.signatures.len() as u32,
                 );
-                translator.hardware_memory_checks = hardware_memory_checks;
-                translator.translate(body, &params)?;
 
-                func_count += 1;
-            }
-        }
+                // 2. Generate function declarations and trampolines
+                generate_trampolines(&mut ir, &mut metadata);
+                if matches!(strategy, Strategy::Jit | Strategy::FastJit) {
+                    host::generate(&mut ir, &metadata);
+                }
 
-        if engine.config().verify_ir {
-            if let Err(e) = ir.validate() {
-                println!("IR Validation error: {}", e);
-                return Err(crate::error::Error::Message(format!(
-                    "IR validation failed: {}",
-                    e
-                )));
-            }
-        }
+                // 3. Generate __veloc_init function
+                let init_func_id = generate_veloc_init(&mut ir, &metadata, &offsets, &runtime);
 
-        let mut ir = ir.build();
+                // 4. Translate Wasm bytecode to IR
+                let mut func_count = 0;
+                let parser = Parser::new(0);
+                for payload in parser.parse_all(wasm_bin) {
+                    let payload = payload?;
+
+                    if let Payload::CodeSectionEntry(body) = payload {
+                        let global_idx = metadata.num_imported_funcs + func_count;
+                        let ty_idx = metadata.functions[global_idx].type_index;
+                        let sig = &metadata.signatures[ty_idx as usize];
+
+                        let params: Vec<VelocType> =
+                            sig.params.iter().map(|&p| valtype_to_veloc(p)).collect();
+                        let returns: Vec<VelocType> =
+                            sig.results.iter().map(|&r| valtype_to_veloc(r)).collect();
+
+                        let func_id = metadata.functions[global_idx].func_id;
+
+                        let mut builder = ir.define(func_id);
+                        let mut translator = WasmTranslator::new(
+                            &mut builder,
+                            returns,
+                            &metadata,
+                            &ir_sig_ids,
+                            offsets,
+                            runtime,
+                            engine.config().ir_names,
+                        );
+                        translator.hardware_memory_checks = hardware_memory_checks;
+                        translator.translate(body, &params)?;
+
+                        func_count += 1;
+                    }
+                }
+
+                if engine.config().verify_ir {
+                    if let Err(e) = ir.validate() {
+                        println!("IR Validation error: {}", e);
+                        return Err(crate::error::Error::Message(format!(
+                            "IR validation failed: {}",
+                            e
+                        )));
+                    }
+                }
+
+                let ir = ir.build();
+                Ok::<_, crate::error::Error>((metadata, ir, offsets, init_func_id, strategy))
+            })?;
 
         // 5. Run optimizations
         if engine.config().opt_level > 0 {
@@ -290,7 +332,7 @@ impl Module {
                 .iter()
                 .map(|s| s.as_str())
                 .collect();
-            let config = OptConfig::with_debug_tags(engine.config().print_stats, &tags)?;
+            let config = OptConfig::with_debug_tags(&tags)?;
 
             let mut pm = if engine.config().opt_level == 1 {
                 let mut pm = PassManager::new(config);
@@ -307,17 +349,8 @@ impl Module {
                 PassManager::new(config)
             };
 
+            pm = pm.with_profile(profile.clone());
             pm.run_on_module(&mut ir);
-
-            // 如果配置了 trace_file，则直接输出
-            if let Some(ref path) = engine.config().trace_file {
-                let json = pm.stats.dump_chrome_trace();
-                if let Err(e) = std::fs::write(path, json) {
-                    eprintln!("Failed to write trace to {:?}: {}", path, e);
-                } else {
-                    println!("Chrome trace written to {:?}", path);
-                }
-            }
         }
 
         if engine.config().dump_ir {
@@ -334,65 +367,52 @@ impl Module {
 
         let artifact = if matches!(strategy, Strategy::Jit | Strategy::FastJit) {
             let object_data = if strategy == Strategy::FastJit {
-                veloc_fastjit::compile_object(&ir)
+                veloc_fastjit::compile_object_with_profile(&ir, profile)
                     .map_err(|e| crate::error::Error::Compile(format!("Fast JIT: {e}")))?
             } else {
                 let pipeline = veloc::codegen::CodegenPipeline::with_options(
                     engine.backend().target(),
                     engine.config().codegen.clone(),
-                );
-                if engine.config().print_stats {
-                    let (object, stats) = pipeline
-                        .compile_object_with_stats(&ir)
-                        .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {e}")))?;
-                    eprintln!(
-                        "Codegen: {} -> {} -> {} -> {} instructions, {} code bytes",
-                        stats.initial_inst_count,
-                        stats.legalized_inst_count,
-                        stats.selected_inst_count,
-                        stats.final_inst_count,
-                        stats.code_bytes
-                    );
-                    for (pass, time) in stats.pass_times {
-                        eprintln!("  {pass}: {:.3} ms", time.as_secs_f64() * 1000.0);
-                    }
-                    object
-                } else {
-                    pipeline
-                        .compile_object(&ir)
-                        .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {e}")))?
-                }
+                )
+                .with_profile(profile.clone());
+                pipeline
+                    .compile_object(&ir)
+                    .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {e}")))?
             };
 
             // Load JIT object and relocate
-            let mut loader = Loader::new();
-            let lib = loader.load_object(ElfBinary::new("wasm_module", &object_data))?;
-            let loaded = lib
-                .relocator()
-                .pre_find_fn(|name| match name {
-                    "wasm_host_call" => Some(host::wasm_host_call as *const ()),
-                    "wasm_trap_handler" => Some(runtime::wasm_trap_handler as *const ()),
-                    "wasm_memory_size" => Some(runtime::wasm_memory_size as *const ()),
-                    "wasm_memory_grow" => Some(runtime::wasm_memory_grow as *const ()),
-                    "wasm_table_size" => Some(runtime::wasm_table_size as *const ()),
-                    "wasm_table_grow" => Some(runtime::wasm_table_grow as *const ()),
-                    "wasm_table_fill" => Some(runtime::wasm_table_fill as *const ()),
-                    "wasm_table_copy" => Some(runtime::wasm_table_copy as *const ()),
-                    "wasm_table_init" => Some(runtime::wasm_table_init as *const ()),
-                    "wasm_elem_drop" => Some(runtime::wasm_elem_drop as *const ()),
-                    "wasm_memory_init" => Some(runtime::wasm_memory_init as *const ()),
-                    "wasm_data_drop" => Some(runtime::wasm_data_drop as *const ()),
-                    "wasm_memory_copy" => Some(runtime::wasm_memory_copy as *const ()),
-                    "wasm_memory_fill" => Some(runtime::wasm_memory_fill as *const ()),
-                    "wasm_init_table_element" => {
-                        Some(runtime::wasm_init_table_element as *const ())
-                    }
-                    "wasm_init_memory_data" => Some(runtime::wasm_init_memory_data as *const ()),
-                    "wasm_init_table" => Some(runtime::wasm_init_table as *const ()),
-                    _ => None,
-                })
-                .relocate()?;
-            ModuleArtifact::Jit(loaded)
+            profile.measure("jit.link", 0, || {
+                let mut loader = Loader::new();
+                let lib = loader.load_object(ElfBinary::new("wasm_module", &object_data))?;
+                let loaded = lib
+                    .relocator()
+                    .pre_find_fn(|name| match name {
+                        "wasm_host_call" => Some(host::wasm_host_call as *const ()),
+                        "wasm_trap_handler" => Some(runtime::wasm_trap_handler as *const ()),
+                        "wasm_memory_size" => Some(runtime::wasm_memory_size as *const ()),
+                        "wasm_memory_grow" => Some(runtime::wasm_memory_grow as *const ()),
+                        "wasm_table_size" => Some(runtime::wasm_table_size as *const ()),
+                        "wasm_table_grow" => Some(runtime::wasm_table_grow as *const ()),
+                        "wasm_table_fill" => Some(runtime::wasm_table_fill as *const ()),
+                        "wasm_table_copy" => Some(runtime::wasm_table_copy as *const ()),
+                        "wasm_table_init" => Some(runtime::wasm_table_init as *const ()),
+                        "wasm_elem_drop" => Some(runtime::wasm_elem_drop as *const ()),
+                        "wasm_memory_init" => Some(runtime::wasm_memory_init as *const ()),
+                        "wasm_data_drop" => Some(runtime::wasm_data_drop as *const ()),
+                        "wasm_memory_copy" => Some(runtime::wasm_memory_copy as *const ()),
+                        "wasm_memory_fill" => Some(runtime::wasm_memory_fill as *const ()),
+                        "wasm_init_table_element" => {
+                            Some(runtime::wasm_init_table_element as *const ())
+                        }
+                        "wasm_init_memory_data" => {
+                            Some(runtime::wasm_init_memory_data as *const ())
+                        }
+                        "wasm_init_table" => Some(runtime::wasm_init_table as *const ()),
+                        _ => None,
+                    })
+                    .relocate()?;
+                Ok::<_, crate::error::Error>(ModuleArtifact::Jit(loaded))
+            })?
         } else {
             ModuleArtifact::Interpreter(Arc::new(ir))
         };

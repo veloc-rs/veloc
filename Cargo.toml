@@ -19,6 +19,7 @@ members = [
 	"veloc/encoder",
 	"veloc/analyzer",
 	"veloc/optimizer",
+	"veloc/profile",
 	"veloc/spec",
 	"veloc/semantics",
 ]
@@ -36,6 +37,7 @@ veloc-bytecode = { path = "veloc/bytecode" }
 veloc-mir = { path = "veloc/mir" }
 veloc-lir = { path = "veloc/lir" }
 veloc-optimizer = { path = "veloc/optimizer" }
+veloc-profile = { path = "veloc/profile" }
 veloc-interpreter = { path = "veloc/interpreter" }
 veloc-codegen = { path = "veloc/codegen" }
 veloc-fastjit = { path = "veloc/fastjit" }

@@ -42,11 +42,15 @@ struct Args {
     #[arg(short = 'O', long, default_value = "1")]
     opt_level: u8,
 
-    /// Output chrome trace JSON to file
+    /// Output the full compilation timeline as Chrome/Perfetto trace JSON
     #[arg(long)]
     trace_file: Option<PathBuf>,
 
-    /// Print optimization pass statistics
+    /// Include optimization remarks and LIR snapshots (may increase compilation time)
+    #[arg(long, requires = "trace_file")]
+    trace_details: bool,
+
+    /// Print compilation phase timings and metrics (optimizer, codegen and linking)
     #[arg(long)]
     print_stats: bool,
 
@@ -116,6 +120,7 @@ fn main() -> Result<()> {
         opt_level: args.opt_level,
         output_ir: args.output_ir,
         trace_file: args.trace_file,
+        trace_details: args.trace_details,
         print_stats: args.print_stats,
         opt_debug: args.opt_debug,
     };

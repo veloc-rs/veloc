@@ -305,6 +305,7 @@ pub struct StackFrameSummary {
 /// 函数级分析上下文。
 #[derive(Debug, Clone, Default)]
 pub struct FunctionAnalysisCtx {
+    profile: veloc_profile::Profile,
     revision: u64,
     last_changed_revision: [u64; CHANGE_KIND_COUNT],
     cfg: Option<AnalysisCache<CfgInfo>>,
@@ -317,6 +318,11 @@ pub struct FunctionAnalysisCtx {
 }
 
 impl FunctionAnalysisCtx {
+    pub fn with_profile(mut self, profile: veloc_profile::Profile) -> Self {
+        self.profile = profile;
+        self
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -349,10 +355,14 @@ impl FunctionAnalysisCtx {
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
+            let scope = self.profile.scope("analysis.cfg", 0);
             self.cfg = Some(AnalysisCache::new(
                 self.revision,
                 compute_cfg(mfunc, target),
             ));
+            scope.success();
+        } else {
+            self.profile.count("analysis.cfg.cache_hits", 1);
         }
         &self.cfg.as_ref().unwrap().value
     }
@@ -372,10 +382,14 @@ impl FunctionAnalysisCtx {
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
+            let scope = self.profile.scope("analysis.dominators", 0);
             self.cfg(mfunc, target);
             let value =
                 DominatorTree::compute(&self.cfg.as_ref().unwrap().value, mfunc.entry_block());
             self.dominators = Some(AnalysisCache::new(self.revision, value));
+            scope.success();
+        } else {
+            self.profile.count("analysis.dominators.cache_hits", 1);
         }
         &self.dominators.as_ref().unwrap().value
     }
@@ -395,9 +409,13 @@ impl FunctionAnalysisCtx {
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
+            let scope = self.profile.scope("analysis.post_dominators", 0);
             self.cfg(mfunc, target);
             let value = PostDominatorTree::compute(&self.cfg.as_ref().unwrap().value);
             self.post_dominators = Some(AnalysisCache::new(self.revision, value));
+            scope.success();
+        } else {
+            self.profile.count("analysis.post_dominators.cache_hits", 1);
         }
         &self.post_dominators.as_ref().unwrap().value
     }
@@ -418,9 +436,13 @@ impl FunctionAnalysisCtx {
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
+            let scope = self.profile.scope("analysis.liveness", 0);
             self.cfg(mfunc, target);
             let value = compute_liveness(mfunc, &self.cfg.as_ref().unwrap().value);
             self.liveness = Some(AnalysisCache::new(self.revision, value));
+            scope.success();
+        } else {
+            self.profile.count("analysis.liveness.cache_hits", 1);
         }
         &self.liveness.as_ref().unwrap().value
     }
@@ -440,6 +462,7 @@ impl FunctionAnalysisCtx {
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
+            let scope = self.profile.scope("analysis.loop_info", 0);
             self.cfg(mfunc, target);
             self.dominators(mfunc, target);
             let value = LoopInfo::compute(
@@ -447,6 +470,9 @@ impl FunctionAnalysisCtx {
                 &self.dominators.as_ref().unwrap().value,
             );
             self.loop_info = Some(AnalysisCache::new(self.revision, value));
+            scope.success();
+        } else {
+            self.profile.count("analysis.loop_info.cache_hits", 1);
         }
         &self.loop_info.as_ref().unwrap().value
     }
@@ -467,9 +493,14 @@ impl FunctionAnalysisCtx {
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
+            let scope = self.profile.scope("analysis.register_pressure", 0);
             self.liveness(mfunc, target);
             let value = compute_register_pressure(mfunc, &self.liveness.as_ref().unwrap().value);
             self.register_pressure = Some(AnalysisCache::new(self.revision, value));
+            scope.success();
+        } else {
+            self.profile
+                .count("analysis.register_pressure.cache_hits", 1);
         }
         &self.register_pressure.as_ref().unwrap().value
     }
@@ -481,6 +512,7 @@ impl FunctionAnalysisCtx {
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
+            let scope = self.profile.scope("analysis.stack_frame_summary", 0);
             self.stack_frame_summary = Some(AnalysisCache::new(
                 self.revision,
                 StackFrameSummary {
@@ -493,6 +525,10 @@ impl FunctionAnalysisCtx {
                     slot_count: mfunc.stack_frame.slots().len(),
                 },
             ));
+            scope.success();
+        } else {
+            self.profile
+                .count("analysis.stack_frame_summary.cache_hits", 1);
         }
         &self.stack_frame_summary.as_ref().unwrap().value
     }

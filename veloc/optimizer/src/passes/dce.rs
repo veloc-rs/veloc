@@ -1,17 +1,15 @@
-use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
-use hashbrown::HashSet;
+use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::function::FuncBody;
 use veloc_mir::inst::Inst;
 use veloc_mir::text::printer::InstPrinter;
-use veloc_mir::types::ValueDef;
 
 const DCE: &str = "dce";
 
 pub struct DcePass;
 
 impl FunctionPass for DcePass {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DcePass"
     }
 
@@ -19,10 +17,46 @@ impl FunctionPass for DcePass {
         &self,
         am: &mut AnalysisManager<'_>,
         config: &OptConfig,
-        metrics: &mut Metrics,
+        metrics: &Profile,
     ) -> PreservedAnalyses {
-        let changed = run_dce(am.function_mut(), config.is_debug_enabled(DCE), metrics);
-        if changed {
+        let func = am.function_mut();
+        let print_removed = config.is_debug_enabled(DCE);
+        // Candidate sessions must have released their temporary uses before DCE.
+        // Seed once; subsequent checks only visit definitions losing a use.
+        let mut work: Vec<Inst> = func
+            .layout()
+            .block_order()
+            .flat_map(|block| func.layout().block_insts(block))
+            .filter(|&inst| is_dead(func, inst))
+            .collect();
+        let mut removed = 0;
+        let mut text = String::new();
+        while let Some(inst) = work.pop() {
+            // Repeated operands or users may enqueue the same definition. Layout
+            // membership guards erased IDs without a second membership table.
+            if func.layout().inst_block(inst).is_none() || !is_dead(func, inst) {
+                continue;
+            }
+            if print_removed {
+                text.clear();
+                let printer = InstPrinter::new(func.dfg(), None);
+                if printer.fmt_inst_with_results(&mut text, inst).is_ok() {
+                    log::info!("[DCE] Removing: {}", text);
+                }
+            }
+            // Save definitions before erasure clears operands and updates use-def.
+            // They are examined only after this instruction's uses are removed.
+            work.extend(
+                func.dfg()
+                    .operands(inst)
+                    .iter()
+                    .filter_map(|&value| func.dfg().value_inst(value)),
+            );
+            func.edit().erase_inst(inst);
+            removed += 1;
+        }
+        if removed != 0 {
+            metrics.count("dce.removed_insts", removed);
             PreservedAnalyses::none()
         } else {
             PreservedAnalyses::all()
@@ -30,52 +64,11 @@ impl FunctionPass for DcePass {
     }
 }
 
-pub fn run_dce(func: &mut FuncBody, print_removed: bool, metrics: &mut Metrics) -> bool {
-    let mut live_insts = HashSet::new();
-    let mut worklist: Vec<Inst> = Vec::new();
-
-    // 1. Identify roots: instructions with side effects
-    for block in func.layout().block_order() {
-        for inst in func.layout().block_insts(block) {
-            if !func.dfg().inst(inst).can_erase() && live_insts.insert(inst) {
-                worklist.push(inst);
-            }
-        }
-    }
-
-    // 2. Propagate liveness back through use-def chains
-    while let Some(inst) = worklist.pop() {
-        for &val in func.dfg().operands(inst) {
-            if let ValueDef::Inst(def_inst) = func.dfg().values()[val].def
-                && live_insts.insert(def_inst)
-            {
-                worklist.push(def_inst);
-            }
-        }
-    }
-
-    // 3. Collect dead instructions first, then process them
-    let dead_insts: Vec<Inst> = func
-        .layout()
-        .block_order()
-        .flat_map(|block| func.layout().block_insts(block))
-        .filter(|inst| !live_insts.contains(inst))
-        .collect();
-
-    for &inst in &dead_insts {
-        if print_removed {
-            let printer = InstPrinter::new(func.dfg(), None);
-            let mut buf = String::new();
-            if let Ok(()) = printer.fmt_inst_with_results(&mut buf, inst) {
-                log::info!("[DCE] Removing: {}", buf);
-            }
-        }
-    }
-
-    if !dead_insts.is_empty() {
-        func.edit().erase_insts(&dead_insts);
-        metrics.add("dce.removed_insts", dead_insts.len() as u64);
-    }
-
-    !dead_insts.is_empty()
+fn is_dead(func: &FuncBody, inst: Inst) -> bool {
+    func.dfg().inst(inst).can_erase()
+        && func
+            .dfg()
+            .inst_results(inst)
+            .iter()
+            .all(|&value| func.dfg().uses(value).next().is_none())
 }

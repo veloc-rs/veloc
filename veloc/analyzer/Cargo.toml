@@ -3,7 +3,11 @@ name = "veloc-analyzer"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+profile = ["dep:veloc-profile"]
+
 [dependencies]
+veloc-profile = { workspace = true, optional = true }
 veloc-collections = { workspace = true }
 veloc-mir = { workspace = true }
 bitvec = { workspace = true }

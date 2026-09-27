@@ -31,9 +31,7 @@ impl FunctionPass for SchedulePass {
             return Ok(PassEffect::NONE);
         }
         let changed = schedule(f, ctx.target, ctx.function_analyses);
-        if ctx.options.collect_stats {
-            ctx.stats.scheduled_regions += changed;
-        }
+        ctx.profile.count("scheduled_regions", changed as u64);
         Ok(if changed == 0 {
             PassEffect::NONE
         } else {

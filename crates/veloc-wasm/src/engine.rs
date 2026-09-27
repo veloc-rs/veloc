@@ -33,7 +33,9 @@ pub struct Config {
     pub output_ir: Option<PathBuf>,
     /// Chrome Trace 输出文件路径
     pub trace_file: Option<PathBuf>,
-    /// 是否打印优化统计信息
+    /// Include bounded optimization remarks and LIR snapshots in the trace.
+    pub trace_details: bool,
+    /// Print compilation timings and metrics
     pub print_stats: bool,
     /// 优化调试标签
     pub opt_debug: Vec<String>,
@@ -52,6 +54,7 @@ impl Default for Config {
             fast_egraph: false,
             output_ir: None,
             trace_file: None,
+            trace_details: false,
             print_stats: false,
             opt_debug: Vec::new(),
         }

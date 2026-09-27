@@ -43,13 +43,22 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Compile a MIR module for the host's x86-64 System V ABI.
 /// Unsupported operations are reported so another tier can be selected.
 pub fn compile_object(module: &veloc_mir::Module) -> Result<Vec<u8>> {
-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-    {
-        image::compile::<x86_64::Target>(module)
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
-    {
-        let _ = module;
-        Err(Error::Unsupported("host architecture".into()))
-    }
+    compile_object_with_profile(module, &veloc_profile::Profile::default())
+}
+
+pub fn compile_object_with_profile(
+    module: &veloc_mir::Module,
+    profile: &veloc_profile::Profile,
+) -> Result<Vec<u8>> {
+    profile.measure("fastjit", 0, || {
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        {
+            image::compile::<x86_64::Target>(module, profile)
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
+        {
+            let _ = module;
+            Err(Error::Unsupported("host architecture".into()))
+        }
+    })
 }

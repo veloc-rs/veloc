@@ -106,6 +106,7 @@ fn run_once(
             fast_egraph: false,
             output_ir: None,
             trace_file: None,
+            trace_details: false,
             print_stats: false,
             opt_debug: Vec::new(),
         };

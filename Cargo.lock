@@ -822,6 +822,7 @@ dependencies = [
  "cranelift-entity",
  "veloc-collections",
  "veloc-mir",
+ "veloc-profile",
 ]
 
 [[package]]
@@ -848,6 +849,7 @@ dependencies = [
  "veloc-encoder",
  "veloc-lir",
  "veloc-mir",
+ "veloc-profile",
  "veloc-spec",
  "veloc-types",
 ]
@@ -872,6 +874,7 @@ version = "0.1.0"
 dependencies = [
  "object",
  "veloc-mir",
+ "veloc-profile",
 ]
 
 [[package]]
@@ -940,10 +943,15 @@ dependencies = [
  "veloc-analyzer",
  "veloc-bytecode",
  "veloc-mir",
+ "veloc-profile",
  "veloc-semantics",
  "veloc-spec",
  "veloc-types",
 ]
+
+[[package]]
+name = "veloc-profile"
+version = "0.1.0"
 
 [[package]]
 name = "veloc-semantics"
@@ -996,6 +1004,7 @@ dependencies = [
  "veloc-fastjit",
  "veloc-mir",
  "veloc-optimizer",
+ "veloc-profile",
  "veloc-types",
  "wasmparser 0.244.0",
  "wat",

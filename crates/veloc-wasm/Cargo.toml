@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+veloc-profile.workspace = true
 veloc-types = { workspace = true }
 veloc = { workspace = true }
 veloc-fastjit = { workspace = true }

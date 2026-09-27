@@ -41,7 +41,10 @@ fn symbol(
     id
 }
 
-pub(crate) fn compile<T: Target>(module: &Module) -> Result<Vec<u8>> {
+pub(crate) fn compile<T: Target>(
+    module: &Module,
+    profile: &veloc_profile::Profile,
+) -> Result<Vec<u8>> {
     let mut object = Object::new(BinaryFormat::Elf, T::ARCH, T::ENDIAN);
     let text = object.section_id(StandardSection::Text);
     let mut names = HashMap::new();
@@ -49,12 +52,18 @@ pub(crate) fn compile<T: Target>(module: &Module) -> Result<Vec<u8>> {
         let sym = symbol(&mut object, &mut names, &func.decl.name);
         let Some(body) = func.body else { continue };
         let sig = &module.signatures()[func.decl.signature];
-        let code = T::compile(module, body, sig).map_err(|error| match error {
+        let scope = profile.entity_scope("function", 0, || func.decl.name.clone());
+        let result = T::compile(module, body, sig);
+        scope.result(&result);
+        let code = result.map_err(|error| match error {
             Error::Unsupported(reason) => {
                 Error::Unsupported(format!("{} ({id:?}): {reason}", func.decl.name))
             }
             other => other,
         })?;
+        profile.record_lazy(veloc_profile::Metric::bytes("code"), || {
+            code.bytes.len() as u64
+        });
         let base = object.add_symbol_data(sym, text, &code.bytes, 16);
         object.symbol_mut(sym).scope = match func.decl.linkage {
             Linkage::Local => SymbolScope::Compilation,
@@ -73,5 +82,5 @@ pub(crate) fn compile<T: Target>(module: &Module) -> Result<Vec<u8>> {
             )?;
         }
     }
-    Ok(object.write()?)
+    profile.measure("object", 0, || Ok(object.write()?))
 }

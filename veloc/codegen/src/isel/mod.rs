@@ -25,15 +25,9 @@ impl<'a> FunctionPass for InstructionSelectionPass<'a> {
     fn run(
         &self,
         mfunc: &mut veloc_lir::MachineFunction,
-        ctx: &mut FunctionPassContext<'_>,
+        _ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         select::InstructionSelector::new(self.selector).select(mfunc)?;
-        if ctx.options.collect_stats {
-            ctx.stats.selected_inst_count += mfunc
-                .blocks()
-                .map(|b| mfunc.block_insts(b).count())
-                .sum::<usize>();
-        }
         Ok(PassEffect::new(
             ChangeSet::SELECTED_OPCODES | ChangeSet::INST_SEMANTICS | ChangeSet::INST_OPERANDS,
         ))

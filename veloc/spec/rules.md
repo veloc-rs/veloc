@@ -100,6 +100,14 @@ candidate templates remain immutable until emission finishes. Matching indexes
 are no longer queried after this boundary.
 Equivalence-class representatives are not executable replacement values.
 
+A complete replacement marks its source operation `Folded`; this state is the
+single authority for removal, not a separate deletion queue. After extraction,
+placed `Folded` operations are collected into a temporary batch, candidate
+references are released, and the sources are erased in the same commit. A constant-valued equivalence class alone
+does not grant that permission: potentially trapping operations still require
+successful evaluation with their actual inputs. Ordinary DCE subsequently cleans
+up unused dependencies; it does not need equality-graph facts or exceptions.
+
 Rules must be written against these local normal forms: removing an identity
 can remove a syntactic match for another rule. This is an intentional search
 policy, not a proof that arbitrary rule reachability is preserved. Type checking

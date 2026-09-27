@@ -1,17 +1,16 @@
 use crate::pass::{FunctionPass, ModulePass, OptConfig, Pass};
 use crate::passes::dce;
-use crate::stats::{PipelineStats, TimingGuard};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use std::time::Instant;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{Module, function::FuncBody};
+use veloc_profile::Profile;
 
 /// 优化流程管理器。
 pub struct PassManager {
     passes: Vec<Pass>,
     config: OptConfig,
-    pub stats: PipelineStats,
+    profile: Profile,
 }
 
 impl PassManager {
@@ -19,15 +18,16 @@ impl PassManager {
         Self {
             passes: Vec::new(),
             config,
-            stats: PipelineStats::default(),
+            profile: Profile::default(),
         }
     }
 
     pub fn new_o1() -> Self {
-        let mut pm = Self::new(OptConfig::new(true));
+        let mut pm = Self::new(OptConfig::default());
         pm.add_function_pass(crate::ExpressionPass {
             budget: crate::passes::expression::Budget::DEFAULT,
         });
+        pm.add_function_pass(dce::DcePass);
         pm.add_function_pass(crate::passes::MemoryPass);
         pm.add_function_pass(crate::ExpressionPass {
             budget: crate::passes::expression::Budget::DEFAULT,
@@ -41,8 +41,9 @@ impl PassManager {
         self
     }
 
-    pub fn stats(&self) -> &PipelineStats {
-        &self.stats
+    pub fn with_profile(mut self, profile: Profile) -> Self {
+        self.profile = profile;
+        self
     }
 
     pub fn config(&self) -> &OptConfig {
@@ -60,28 +61,28 @@ impl PassManager {
     /// 在整个模块上运行所有 Pass。
     pub fn run_on_module(&mut self, module: &mut Module) -> bool {
         let mut changed = false;
-        self.stats.start_session();
-        let total_start = Instant::now();
+        let scope = self.profile.scope("optimizer", 0);
 
-        for pass in &self.passes {
-            let guard = if self.config.monitor_performance {
-                Some(TimingGuard::new(pass.name()))
-            } else {
-                None
-            };
+        for (position, pass) in self.passes.iter().enumerate() {
+            let pass_scope = self.profile.scope(pass.name(), position as u32);
 
             match pass {
                 Pass::Module(mp) => {
-                    let pa = mp.run(module, &self.config, &mut self.stats.metrics);
+                    let pa = mp.run(module, &self.config, &self.profile);
                     if pa.changed() {
                         changed = true;
                     }
                 }
                 Pass::Function(fp) => {
                     let mut fp_changed = false;
-                    for (_, func) in module.bodies_mut() {
-                        let mut analyses = AnalysisManager::new(func);
-                        let pa = fp.run(&mut analyses, &self.config, &mut self.stats.metrics);
+                    for (id, func) in module.bodies_mut() {
+                        let function_scope = self
+                            .profile
+                            .entity_scope("function", 0, || format!("{id:?}"));
+                        let mut analyses =
+                            AnalysisManager::new(func).with_profile(self.profile.clone());
+                        let pa = fp.run(&mut analyses, &self.config, &self.profile);
+                        function_scope.success();
                         if pa.changed() {
                             fp_changed = true;
                         }
@@ -92,42 +93,30 @@ impl PassManager {
                 }
             };
 
-            if let Some(g) = guard {
-                g.finish(&mut self.stats);
-            }
+            pass_scope.success();
         }
 
-        self.stats.total_duration = total_start.elapsed();
-        if self.config.monitor_performance {
-            println!("{}", self.stats);
-        }
+        scope.success();
         changed
     }
 
     /// 单独在某个函数上运行已注册的操作。
     pub fn run_on_function(&mut self, func: &mut FuncBody) -> bool {
         let mut changed = false;
-        self.stats.start_session();
-        let total_start = Instant::now();
+        let scope = self.profile.scope("optimizer", 0);
 
-        let mut analyses = AnalysisManager::new(func);
-        for pass in &self.passes {
+        let mut analyses = AnalysisManager::new(func).with_profile(self.profile.clone());
+        for (position, pass) in self.passes.iter().enumerate() {
             match pass {
                 Pass::Function(fp) => {
-                    let guard = if self.config.monitor_performance {
-                        Some(TimingGuard::new(fp.name()))
-                    } else {
-                        None
-                    };
+                    let pass_scope = self.profile.scope(fp.name(), position as u32);
 
-                    let pa = fp.run(&mut analyses, &self.config, &mut self.stats.metrics);
+                    let pa = fp.run(&mut analyses, &self.config, &self.profile);
                     if pa.changed() {
                         changed = true;
                     }
 
-                    if let Some(g) = guard {
-                        g.finish(&mut self.stats);
-                    }
+                    pass_scope.success();
 
                     analyses.invalidate_with_preserved(|id| pa.is_preserved_id(id));
                 }
@@ -135,10 +124,7 @@ impl PassManager {
             }
         }
 
-        self.stats.total_duration = total_start.elapsed();
-        if self.config.monitor_performance {
-            println!("{}", self.stats);
-        }
+        scope.success();
         changed
     }
 }

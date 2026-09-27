@@ -1,6 +1,6 @@
 //! Bounded block-local forwarding and dead-store elimination for entry objects.
 //! Unknown aliases, lifetime effects and volatile accesses are barriers.
-use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
+use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
 use hashbrown::HashSet;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{FuncBody, Inst, InstView, Opcode, Type, Value};
@@ -8,7 +8,7 @@ use veloc_mir::{FuncBody, Inst, InstView, Opcode, Type, Value};
 pub struct MemoryPass;
 
 impl FunctionPass for MemoryPass {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "MemoryPass"
     }
 
@@ -16,7 +16,7 @@ impl FunctionPass for MemoryPass {
         &self,
         am: &mut AnalysisManager<'_>,
         config: &OptConfig,
-        metrics: &mut Metrics,
+        metrics: &Profile,
     ) -> PreservedAnalyses {
         let Some(layout) = config.data_layout.as_ref() else {
             return PreservedAnalyses::all();
@@ -47,7 +47,7 @@ impl Cell {
 pub fn run_memory(
     func: &mut FuncBody,
     layout: &veloc_types::DataLayout,
-    metrics: &mut Metrics,
+    metrics: &Profile,
 ) -> bool {
     // A stack pointer passed anywhere except through a derived address or a
     // memory address may escape. Storing a pointer also escapes its object.
@@ -178,7 +178,7 @@ pub fn run_memory(
     if dead.is_empty() {
         return false;
     }
-    metrics.add("memory.removed_insts", dead.len() as u64);
+    metrics.count("memory.removed_insts", dead.len() as u64);
     func.edit()
         .erase_insts(&dead.into_iter().collect::<Vec<_>>());
     true

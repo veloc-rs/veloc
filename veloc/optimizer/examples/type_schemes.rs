@@ -3,7 +3,7 @@
 use std::hint::black_box;
 use std::time::Instant;
 use veloc_mir::{CallConv, Linkage, Module, ModuleBuilder, Opcode, Type};
-use veloc_optimizer::Metrics;
+use veloc_optimizer::Profile;
 use veloc_optimizer::passes::expression::{Budget, run};
 
 fn module() -> Module {
@@ -91,10 +91,10 @@ fn main() {
             let mut elapsed = 0.0;
             for _ in 0..10 * scale {
                 let mut data = source.clone();
-                let mut metrics = Metrics::default();
+                let metrics = Profile::default();
                 let start = Instant::now();
                 for function in data.bodies_mut().map(|(_, body)| body) {
-                    assert!(run(function, Budget::DEFAULT, false, &mut metrics));
+                    assert!(run(function, Budget::DEFAULT, false, &metrics));
                 }
                 elapsed += start.elapsed().as_secs_f64();
                 black_box(&data);

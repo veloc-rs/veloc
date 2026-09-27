@@ -9,7 +9,7 @@ mod extract;
 mod graph;
 mod matching;
 
-use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
+use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
 use graph::{Graph, InstKind};
 use veloc_analyzer::{AnalysisManager, Dominators};
 use veloc_mir::function::{Expressions, FrozenExpressions};
@@ -41,7 +41,7 @@ pub struct ExpressionPass {
 }
 
 impl FunctionPass for ExpressionPass {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ExpressionPass"
     }
 
@@ -49,7 +49,7 @@ impl FunctionPass for ExpressionPass {
         &self,
         am: &mut AnalysisManager<'_>,
         config: &OptConfig,
-        metrics: &mut Metrics,
+        metrics: &Profile,
     ) -> PreservedAnalyses {
         if run_with_analyses(
             am,
@@ -65,7 +65,7 @@ impl FunctionPass for ExpressionPass {
     }
 }
 
-pub fn run(func: &mut FuncBody, budget: Budget, debug: bool, metrics: &mut Metrics) -> bool {
+pub fn run(func: &mut FuncBody, budget: Budget, debug: bool, metrics: &Profile) -> bool {
     run_with_cost(func, budget, &GenericCost, debug, metrics)
 }
 
@@ -74,10 +74,10 @@ pub fn run_with_cost(
     budget: Budget,
     cost: &dyn CostModel,
     debug: bool,
-    metrics: &mut Metrics,
+    metrics: &Profile,
 ) -> bool {
     run_with_analyses(
-        &mut AnalysisManager::new(func),
+        &mut AnalysisManager::new(func).with_profile(metrics.clone()),
         budget,
         cost,
         debug,
@@ -90,9 +90,9 @@ fn run_with_analyses(
     budget: Budget,
     cost: &dyn CostModel,
     debug: bool,
-    metrics: &mut Metrics,
+    metrics: &Profile,
 ) -> bool {
-    // Expression selection and DCE preserve CFG topology. Own the snapshot
+    // Expression selection preserves CFG topology. Own the snapshot
     // while editing instructions, without holding a borrow of the manager.
     let dom = am.take_dominators();
     let changed = optimize_function(am.function_mut(), budget, cost, &dom, metrics);
@@ -166,12 +166,13 @@ impl<'a> EqualitySession<'a> {
         }
     }
 
-    fn saturate(&mut self, rounds: usize, fuel: &mut usize) {
+    fn saturate(&mut self, rounds: usize, fuel: &mut usize) -> Stop {
         let stop = saturate(&mut self.graph, &mut self.ir, rounds, fuel);
         match stop {
             Stop::Saturated => log::debug!("egraph saturated"),
             Stop::Limited(limit) => log::debug!("egraph limited: {limit:?}"),
         }
+        stop
     }
 
     fn finish(
@@ -180,32 +181,30 @@ impl<'a> EqualitySession<'a> {
         dom: &Dominators,
         rank: &mut usize,
         work: &mut usize,
-    ) -> (u64, Vec<Inst>) {
+    ) -> u64 {
         let Self {
             ir,
             mut graph,
             anchors,
         } = self;
-        let removable = anchors
-            .iter()
-            .copied()
-            .filter(|&inst| {
-                graph.kinds[inst] != InstKind::Unsupported
-                    && ir
-                        .body()
-                        .dfg()
-                        .inst_results(inst)
-                        .iter()
-                        .all(|&v| ir.body().dfg().as_const(graph.find(v)).is_some())
-            })
-            .collect();
         let mut ir = ir.freeze();
         let mut changed = Self::commit_folds(&mut graph, &mut ir);
         // Selection reads simplified executable operands. Keep old instructions
         // alive as source templates until selection and emission have finished.
         let extraction = graph.extract(ir.body(), &anchors, model, dom, rank, work);
         changed += extraction.apply(&mut ir);
-        (changed, removable)
+        // Instruction state is the only deletion authority. This temporary
+        // batch excludes detached candidates, which the session releases itself.
+        let folded: Vec<_> = ir
+            .body()
+            .layout()
+            .block_order()
+            .flat_map(|block| ir.body().layout().block_insts(block))
+            .filter(|&inst| graph.kinds[inst] == InstKind::Folded)
+            .collect();
+        changed += folded.len() as u64;
+        ir.commit(&folded);
+        changed
     }
 
     /// End search by committing established folds to executable uses. Matching
@@ -301,9 +300,11 @@ fn optimize_function(
     budget: Budget,
     model: &dyn CostModel,
     dom: &Dominators,
-    metrics: &mut Metrics,
+    metrics: &Profile,
 ) -> bool {
+    let scope = metrics.scope("egraph.import", 0);
     let mut session = EqualitySession::new(f, budget);
+    scope.success();
     if !session
         .graph
         .kinds
@@ -313,33 +314,29 @@ fn optimize_function(
         return false;
     }
     let mut fuel = budget.match_steps;
-    session.saturate(budget.rounds, &mut fuel);
-    metrics.add("egraph.nodes", session.graph.values.len() as u64);
+    let scope = metrics.scope("egraph.saturate", 0);
+    let stop = session.saturate(budget.rounds, &mut fuel);
+    if let Stop::Limited(limit) = stop {
+        metrics.count("budget_stops", 1);
+        metrics.remark(|| format!("egraph saturation stopped: {limit:?}"));
+    }
+    scope.success();
+    metrics.count("egraph.nodes", session.graph.values.len() as u64);
     let mut rank = budget.rank_steps;
     let mut work = budget.extract_steps;
-    let (mut changed, mut removable) = session.finish(model, dom, &mut rank, &mut work);
-    metrics.add("egraph.rank_steps", (budget.rank_steps - rank) as u64);
-    metrics.add("egraph.extract_steps", (budget.extract_steps - work) as u64);
-    // Candidate use-def links have been released before checking actual uses.
-    removable.retain(|&inst| {
-        f.dfg()
-            .inst_results(inst)
-            .iter()
-            .all(|&v| f.dfg().uses(v).next().is_none())
-    });
-    if !removable.is_empty() {
-        f.edit().erase_insts(&removable);
-        changed += removable.len() as u64;
-    }
-    let cleaned = super::dce::run_dce(f, false, metrics);
-    metrics.add("egraph.rewritten_values", changed);
-    metrics.add("egraph.match_steps", (budget.match_steps - fuel) as u64);
-    changed != 0 || cleaned
+    let scope = metrics.scope("egraph.extract", 0);
+    let changed = session.finish(model, dom, &mut rank, &mut work);
+    scope.success();
+    metrics.count("egraph.rank_steps", (budget.rank_steps - rank) as u64);
+    metrics.count("egraph.extract_steps", (budget.extract_steps - work) as u64);
+    metrics.count("egraph.rewritten_values", changed);
+    metrics.count("egraph.match_steps", (budget.match_steps - fuel) as u64);
+    changed != 0
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Metrics;
+    use crate::Profile;
     use veloc_mir::constant::ScalarConst;
     use veloc_mir::{Opcode as Op, Type, Value};
     use veloc_types::TypeInfo;
@@ -402,7 +399,7 @@ block0(v0: i64):
             body.layout()
                 .block_insts(body.entry_block())
                 .collect::<Vec<_>>(),
-            insts
+            insts[2..]
         );
         assert_eq!(
             &body.dfg().operands(*insts.last().unwrap())[..2],
@@ -431,7 +428,6 @@ block0():
             session.saturate(0, &mut 0);
             let mut rank = 0;
             session.finish(&GenericCost, &dom, &mut rank, &mut work);
-            super::super::dce::run_dce(body, false, &mut Metrics::default());
             let insts: Vec<_> = body.layout().block_insts(body.entry_block()).collect();
             assert_eq!(insts.len(), 1, "folded arithmetic must be dead");
             let value = body.dfg().operands(insts[0])[0];
@@ -527,12 +523,12 @@ block1():
             .find(|&i| f.dfg().inst(i).opcode() == Op::Load)
             .unwrap();
         let load_block = f.layout().inst_block(load);
-        assert!(super::run(
-            f,
-            Budget::DEFAULT,
-            false,
-            &mut Metrics::default()
-        ));
+        assert!(super::run(f, Budget::DEFAULT, false, &Profile::default()));
+        crate::DcePass.run(
+            &mut AnalysisManager::new(f),
+            &OptConfig::default(),
+            &Profile::default(),
+        );
         assert_eq!(f.layout().inst_block(load), load_block);
         assert_eq!(f.dfg().inst(load).opcode(), Op::Load);
         let constants: Vec<_> = f
@@ -605,8 +601,8 @@ block2():
                 extract_steps,
                 ..Budget::DEFAULT
             };
-            assert!(!run(body, budget, false, &mut Metrics::default()));
-            assert!(!run(body, budget, false, &mut Metrics::default()));
+            assert!(!run(body, budget, false, &Profile::default()));
+            assert!(!run(body, budget, false, &Profile::default()));
             module.validate().unwrap();
         }
     }
@@ -630,7 +626,7 @@ block0(v0: i64):
                 rank_steps,
                 ..Budget::DEFAULT
             };
-            assert!(run(body, budget, false, &mut Metrics::default()));
+            assert!(run(body, budget, false, &Profile::default()));
             let ret = body
                 .layout()
                 .block_insts(body.entry_block())
@@ -665,9 +661,13 @@ block0(v0: i64, v1: ptr):
         let mut rank = Budget::DEFAULT.rank_steps;
         let mut work = Budget::DEFAULT.extract_steps;
         let dom = Dominators::compute(session.ir.body().cfg(), session.ir.body().entry_block());
-        let (changed, _) = session.finish(&GenericCost, &dom, &mut rank, &mut work);
+        let changed = session.finish(&GenericCost, &dom, &mut rank, &mut work);
         assert_eq!(changed, 1);
-        super::super::dce::run_dce(body, false, &mut Metrics::default());
+        crate::DcePass.run(
+            &mut AnalysisManager::new(body),
+            &OptConfig::default(),
+            &Profile::default(),
+        );
         let mut multiply = None;
         let mut store = None;
         let mut ret = None;

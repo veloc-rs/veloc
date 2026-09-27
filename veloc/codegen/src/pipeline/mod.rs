@@ -15,16 +15,20 @@ use veloc_lir::MachineFunction;
 /// Shared execution for built-in and target passes.
 pub(crate) fn run_function_pass(
     pass: &dyn FunctionPass,
+    position: u32,
     function: &mut MachineFunction,
     ctx: &mut FunctionPassContext<'_>,
 ) -> crate::Result<PassEffect> {
-    let start = ctx.options.collect_stats.then(std::time::Instant::now);
-    let effect = pass
+    let scope = ctx.profile.scope(pass.name(), position);
+    let result = pass
         .run(function, ctx)
-        .map_err(|e| crate::Error::codegen(std::format!("{}: {e}", pass.name())))?;
-    if let Some(start) = start {
-        *ctx.stats.pass_times.entry(pass.name().into()).or_default() += start.elapsed();
+        .map_err(|e| crate::Error::codegen(std::format!("{}: {e}", pass.name())));
+    if result.is_ok() {
+        ctx.profile
+            .artifact(|| function.format_for_dump().to_string());
     }
+    scope.result(&result);
+    let effect = result?;
     ctx.function_analyses.apply(effect.change_set);
     dump_after(pass.name(), function, ctx.options);
     Ok(effect)
@@ -72,8 +76,8 @@ impl FunctionPassPipeline {
         ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         let mut combined = PassEffect::NONE;
-        for pass in &self.passes {
-            let effect = run_function_pass(&**pass, mfunc, ctx)?;
+        for (position, pass) in self.passes.iter().enumerate() {
+            let effect = run_function_pass(&**pass, position as u32, mfunc, ctx)?;
             if !effect.change_set.is_empty() {
                 combined.change_set |= effect.change_set;
             }
@@ -111,8 +115,11 @@ impl ModulePassPipeline {
         ctx: &mut ModulePassContext<'_>,
     ) -> Result<PassEffect> {
         let mut combined = PassEffect::new(ChangeSet::NONE);
-        for pass in &self.passes {
-            let effect = pass.run(module, ctx)?;
+        for (position, pass) in self.passes.iter().enumerate() {
+            let scope = ctx.profile.scope(pass.name(), position as u32);
+            let result = pass.run(module, ctx);
+            scope.result(&result);
+            let effect = result?;
             if !effect.change_set.is_empty() {
                 ctx.module_analyses.apply(effect.change_set);
                 combined.change_set |= effect.change_set;

@@ -72,6 +72,14 @@ pub struct FrozenExpressions<'a> {
 }
 
 impl FrozenExpressions<'_> {
+    /// Finish emission, release candidate references, then erase source
+    /// instructions that the caller has completely replaced. Unlike DCE,
+    /// removal here requires the caller's proof that execution is unnecessary.
+    pub fn commit(mut self, replaced: &[Inst]) {
+        self.expressions.clear();
+        self.expressions.body.edit().erase_insts(replaced);
+    }
+
     pub fn body(&self) -> &FuncBody {
         self.expressions.body
     }
@@ -114,13 +122,17 @@ impl FrozenExpressions<'_> {
     }
 }
 
-impl Drop for Expressions<'_> {
-    fn drop(&mut self) {
+impl Expressions<'_> {
+    fn clear(&mut self) {
+        let candidates = core::mem::take(&mut self.candidates);
+        if candidates.is_empty() {
+            return;
+        }
         let dfg = &mut self.body.dfg;
-        dfg.remove_insts(&self.candidates);
+        dfg.remove_insts(&candidates);
         // An abandoned search has no scheduled copies after its candidates.
         // Reclaim that entire suffix rather than leaving empty arena records.
-        if dfg.inst_count() == self.first_inst + self.candidates.len() {
+        if dfg.inst_count() == self.first_inst + candidates.len() {
             let mut instructions: Vec<_> = core::mem::take(&mut dfg.instructions).into();
             instructions.truncate(self.first_inst);
             dfg.instructions = instructions.into();
@@ -137,5 +149,11 @@ impl Drop for Expressions<'_> {
                 dfg.values = values.into();
             }
         }
+    }
+}
+
+impl Drop for Expressions<'_> {
+    fn drop(&mut self) {
+        self.clear();
     }
 }

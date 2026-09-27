@@ -1,4 +1,4 @@
-use crate::{Error, Result, stats::Metrics};
+use crate::{Error, Profile, Result};
 use alloc::boxed::Box;
 use core::any::TypeId;
 use hashbrown::HashSet;
@@ -41,24 +41,19 @@ impl PreservedAnalyses {
 
 /// 作用于单个函数的优化 Pass。
 pub trait FunctionPass {
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     fn run(
         &self,
         am: &mut AnalysisManager<'_>,
         config: &OptConfig,
-        metrics: &mut Metrics,
+        metrics: &Profile,
     ) -> PreservedAnalyses;
 }
 
 /// 作用于整个模块的优化 Pass。
 pub trait ModulePass {
-    fn name(&self) -> &str;
-    fn run(
-        &self,
-        module: &mut Module,
-        config: &OptConfig,
-        metrics: &mut Metrics,
-    ) -> PreservedAnalyses;
+    fn name(&self) -> &'static str;
+    fn run(&self, module: &mut Module, config: &OptConfig, metrics: &Profile) -> PreservedAnalyses;
 }
 
 /// 优化 Pass 的类型包装。
@@ -68,7 +63,7 @@ pub enum Pass {
 }
 
 impl Pass {
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &'static str {
         match self {
             Pass::Function(f) => f.name(),
             Pass::Module(m) => m.name(),
@@ -81,25 +76,15 @@ impl Pass {
 pub struct OptConfig {
     /// None disables optimizations that depend on target memory representation.
     pub data_layout: Option<veloc_types::DataLayout>,
-    pub monitor_performance: bool,
     /// 调试标签系统，用于控制细粒度的输出，如 "dce", "liveness" 等
     debug_tags: HashSet<String>,
 }
 
 impl OptConfig {
-    /// 创建基础配置
-    pub fn new(monitor_performance: bool) -> Self {
-        Self {
-            monitor_performance,
-            data_layout: None,
-            debug_tags: HashSet::new(),
-        }
-    }
-
     /// 创建配置并批量添加调试标签
     /// 如果发现未知标签，直接返回错误
-    pub fn with_debug_tags(monitor_performance: bool, tags: &[&str]) -> Result<Self> {
-        let mut config = Self::new(monitor_performance);
+    pub fn with_debug_tags(tags: &[&str]) -> Result<Self> {
+        let mut config = Self::default();
         for tag in tags {
             config.add_debug_tag(tag)?;
         }

@@ -17,31 +17,7 @@ use std::collections::BTreeMap;
 use std::vec::Vec;
 use veloc_lir::{MachineFunction, MachineModule};
 use veloc_mir::{FuncId, FunctionRef, Module};
-
-/// 代码生成统计信息
-#[derive(Debug, Clone, Default)]
-pub struct CodegenStats {
-    /// Number of local regions whose instruction order changed.
-    pub scheduled_regions: usize,
-    /// 原始指令数
-    pub initial_inst_count: usize,
-    /// 合法化后指令数
-    pub legalized_inst_count: usize,
-    /// 指令选择后指令数
-    pub selected_inst_count: usize,
-    /// Instruction count after frame finalization.
-    pub final_inst_count: usize,
-    /// Virtual registers immediately after MIR translation.
-    pub vreg_count: usize,
-    /// All stack objects, including locals, ABI areas and spills.
-    pub stack_slot_count: usize,
-    /// 栈帧大小（字节）
-    pub stack_frame_size: u64,
-    /// Total emitted code and embedded data bytes, excluding object metadata.
-    pub code_bytes: usize,
-    /// Per-function pass time, aggregated by name.
-    pub pass_times: BTreeMap<std::string::String, core::time::Duration>,
-}
+use veloc_profile::{Metric, Profile};
 
 /// 代码生成选项
 #[derive(Debug, Clone)]
@@ -57,9 +33,6 @@ pub struct CodegenOptions {
     pub dump_function: Option<std::string::String>,
     /// 是否打印中间结果（调试用）
     pub dump_lir: bool,
-    /// Collect aggregate pipeline counters. Disabled by default so production
-    /// JIT compilation does not repeatedly scan every function for diagnostics.
-    pub collect_stats: bool,
 }
 
 impl Default for CodegenOptions {
@@ -70,7 +43,6 @@ impl Default for CodegenOptions {
             dump_after: Vec::new(),
             dump_function: None,
             dump_lir: false,
-            collect_stats: false,
         }
     }
 }
@@ -93,6 +65,7 @@ impl Default for CodegenOptions {
 pub struct CodegenPipeline<'a> {
     target: &'a dyn TargetMachine,
     options: CodegenOptions,
+    profile: Profile,
 }
 
 struct TargetFunctionPipelines {
@@ -139,48 +112,51 @@ impl<'a> CodegenPipeline<'a> {
         Self {
             target,
             options: CodegenOptions::default(),
+            profile: Profile::default(),
         }
     }
 
     /// 创建带显式选项的代码生成驱动。
     pub fn with_options(target: &'a dyn TargetMachine, options: CodegenOptions) -> Self {
-        Self { target, options }
+        Self {
+            target,
+            options,
+            profile: Profile::default(),
+        }
     }
 
     /// 编译整个模块并生成单个 relocatable object 文件。
     pub fn compile_object(&self, module: &veloc_mir::Module) -> Result<Vec<u8>> {
-        self.compile_object_impl(module, &mut CodegenStats::default())
+        self.profile
+            .measure("codegen", 0, || self.compile_object_impl(module))
     }
 
-    /// Compile and return diagnostics; ordinary compilation keeps them disabled by default.
-    pub fn compile_object_with_stats(&self, module: &Module) -> Result<(Vec<u8>, CodegenStats)> {
-        let mut options = self.options.clone();
-        options.collect_stats = true;
-        let pipeline = Self::with_options(self.target, options);
-        let mut stats = CodegenStats::default();
-        let object = pipeline.compile_object_impl(module, &mut stats)?;
-        Ok((object, stats))
+    pub fn with_profile(mut self, profile: Profile) -> Self {
+        self.profile = profile;
+        self
     }
 
-    fn compile_object_impl(&self, module: &Module, stats: &mut CodegenStats) -> Result<Vec<u8>> {
+    fn compile_object_impl(&self, module: &Module) -> Result<Vec<u8>> {
         let mut object = ObjectFileBuilder::new(self.target)?;
         let mut module_analyses = ModuleAnalysisCtx::default();
-        let compiled = self.compile_module_artifact(module, stats, &mut module_analyses)?;
+        let compiled = self.compile_module_artifact(module, &mut module_analyses)?;
 
-        for compiled_func in &compiled.functions {
-            let func = module.function(compiled_func.func_id);
-            if let Some(emitted) = &compiled_func.emitted {
-                object.add_defined_function(&func, emitted, &compiled.symbols)?;
+        self.profile.measure("object", 0, || {
+            for compiled_func in &compiled.functions {
+                let func = module.function(compiled_func.func_id);
+                if let Some(emitted) = &compiled_func.emitted {
+                    object.add_defined_function(&func, emitted, &compiled.symbols)?;
+                }
             }
-        }
 
-        for (_, func) in module.functions() {
-            if func.decl.linkage == veloc_mir::Linkage::Import {
-                object.add_undefined_function(&func);
+            for (_, func) in module.functions() {
+                if func.decl.linkage == veloc_mir::Linkage::Import {
+                    object.add_undefined_function(&func);
+                }
             }
-        }
 
-        object.finish()
+            object.finish()
+        })
     }
 
     /// 编译模块中的所有已定义函数并返回裸机器码。
@@ -188,31 +164,31 @@ impl<'a> CodegenPipeline<'a> {
         &self,
         module: &veloc_mir::Module,
     ) -> Result<BTreeMap<veloc_mir::FuncId, Vec<u8>>> {
-        let mut stats = CodegenStats::default();
-        let mut module_analyses = ModuleAnalysisCtx::default();
-        let CompiledModule {
-            symbols, functions, ..
-        } = self.compile_module_artifact(module, &mut stats, &mut module_analyses)?;
-        let mut results = BTreeMap::new();
+        self.profile.measure("codegen", 0, || {
+            let mut module_analyses = ModuleAnalysisCtx::default();
+            let CompiledModule {
+                symbols, functions, ..
+            } = self.compile_module_artifact(module, &mut module_analyses)?;
+            let mut results = BTreeMap::new();
 
-        for compiled_func in functions {
-            let emitted = compiled_func
-                .emitted
-                .ok_or_else(|| Error::missing_emitted_code(compiled_func.name.clone()))?;
-            if let Some(reloc) = emitted.relocations.first() {
-                let symbol = symbols.get(reloc.symbol).name.clone();
-                return Err(Error::unexpected_relocation(symbol));
+            for compiled_func in functions {
+                let emitted = compiled_func
+                    .emitted
+                    .ok_or_else(|| Error::missing_emitted_code(compiled_func.name.clone()))?;
+                if let Some(reloc) = emitted.relocations.first() {
+                    let symbol = symbols.get(reloc.symbol).name.clone();
+                    return Err(Error::unexpected_relocation(symbol));
+                }
+                results.insert(compiled_func.func_id, emitted.data);
             }
-            results.insert(compiled_func.func_id, emitted.data);
-        }
 
-        Ok(results)
+            Ok(results)
+        })
     }
 
     fn compile_module_artifact(
         &self,
         module: &Module,
-        stats: &mut CodegenStats,
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<CompiledModule> {
         let mmodule = self.translate_module(module)?;
@@ -230,26 +206,36 @@ impl<'a> CodegenPipeline<'a> {
             .zip(functions.into_iter())
         {
             debug_assert_eq!(func.decl.name, mfunc.name);
-            compiled_functions.push(self.compile_defined_function(
+            let scope = self
+                .profile
+                .entity_scope("function", 0, || mfunc.name.clone());
+            let result = self.compile_defined_function(
                 func_id,
                 &func,
                 &module.signatures()[func.decl.signature],
                 mfunc,
-                stats,
                 module_analyses,
                 &function_pipelines,
-            )?);
+            );
+            scope.result(&result);
+            compiled_functions.push(result?);
         }
 
         let mut compiled = CompiledModule::new(name, symbols, compiled_functions);
-        self.run_module_pre_emit_passes(&mut compiled, stats, module_analyses)?;
-        self.emit_compiled_functions(&mut compiled, stats)?;
-        self.run_module_post_emit_passes(&mut compiled, stats, module_analyses)?;
+        self.profile.measure("pre_emit", 0, || {
+            self.run_module_pre_emit_passes(&mut compiled, module_analyses)
+        })?;
+        self.emit_compiled_functions(&mut compiled)?;
+        self.profile.measure("post_emit", 0, || {
+            self.run_module_post_emit_passes(&mut compiled, module_analyses)
+        })?;
         Ok(compiled)
     }
 
     fn translate_module(&self, module: &Module) -> Result<MachineModule> {
-        IRTranslator::new(module, self.target.desc().data_layout).translate_module()
+        self.profile.measure("translate", 0, || {
+            IRTranslator::new(module, self.target.desc().data_layout).translate_module()
+        })
     }
 
     fn compile_defined_function(
@@ -258,26 +244,26 @@ impl<'a> CodegenPipeline<'a> {
         func: &FunctionRef,
         sig: &veloc_mir::Signature,
         mfunc: MachineFunction,
-        stats: &mut CodegenStats,
         module_analyses: &mut ModuleAnalysisCtx,
         target_pipelines: &TargetFunctionPipelines,
     ) -> Result<CompiledFunction> {
-        let mut function_analyses = FunctionAnalysisCtx::default();
+        let mut function_analyses =
+            FunctionAnalysisCtx::default().with_profile(self.profile.clone());
 
-        if self.options.collect_stats {
-            stats.initial_inst_count += mfunc
-                .blocks()
-                .map(|b| mfunc.block_insts(b).count())
-                .sum::<usize>();
-            stats.vreg_count += mfunc.vregs().len();
-        }
+        self.profile
+            .record_lazy(Metric::count("initial_insts"), || {
+                mfunc
+                    .blocks()
+                    .map(|b| mfunc.block_insts(b).count() as u64)
+                    .sum()
+            });
+        self.profile.count("vregs", mfunc.vregs().len() as u64);
         self.maybe_dump_mfunc("translated", &mfunc);
         crate::pipeline::dump_after("translated", &mfunc, &self.options);
 
         let final_mfunc = self.run_function_pipeline(
             mfunc,
             sig,
-            stats,
             &mut function_analyses,
             module_analyses,
             target_pipelines,
@@ -297,7 +283,6 @@ impl<'a> CodegenPipeline<'a> {
         &self,
         mut mfunc: MachineFunction,
         func_sig: &veloc_mir::Signature,
-        stats: &mut CodegenStats,
         function_analyses: &mut FunctionAnalysisCtx,
         module_analyses: &mut ModuleAnalysisCtx,
         target_pipelines: &TargetFunctionPipelines,
@@ -308,59 +293,74 @@ impl<'a> CodegenPipeline<'a> {
             self.target,
             func_sig,
             &self.options,
-            stats,
+            &self.profile,
             function_analyses,
             module_analyses,
         );
 
         run_function_pass(
             &crate::passes::lowering::AbiLoweringPass::new(),
+            0,
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("abi-lowered", &mfunc, verify)?;
-        target_pipelines.prepare.run(&mut mfunc, &mut ctx)?;
+        self.profile.measure("prepare", 0, || {
+            target_pipelines.prepare.run(&mut mfunc, &mut ctx)
+        })?;
         run_function_pass(
             &LegalizePass::new(self.target.legalizer()),
+            0,
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("legalized", &mfunc, verify)?;
-        if ctx.options.collect_stats {
-            ctx.stats.legalized_inst_count += mfunc
-                .blocks()
-                .map(|b| mfunc.block_insts(b).count())
-                .sum::<usize>();
-        }
-        target_pipelines.pre_isel.run(&mut mfunc, &mut ctx)?;
+        ctx.profile
+            .record_lazy(Metric::count("legalized_insts"), || {
+                mfunc
+                    .blocks()
+                    .map(|b| mfunc.block_insts(b).count() as u64)
+                    .sum()
+            });
+        self.profile.measure("pre_isel", 0, || {
+            target_pipelines.pre_isel.run(&mut mfunc, &mut ctx)
+        })?;
         if self.options.verify {
-            crate::passes::lowering::Legalizer::new(self.target.legalizer()).verify(&mfunc)?;
+            self.profile.measure("verify.legalized", 0, || {
+                crate::passes::lowering::Legalizer::new(self.target.legalizer()).verify(&mfunc)
+            })?;
         }
         run_function_pass(
             &crate::passes::constraints::PreSelectOperandConstraintPass::new(
                 self.target.operand_lowering(),
             ),
+            0,
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("pre-isel", &mfunc, verify)?;
         run_function_pass(
             &InstructionSelectionPass::new(self.target.selector()),
+            0,
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("selected", &mfunc, verify_selected)?;
-        if ctx.options.collect_stats {
-            ctx.stats.selected_inst_count += mfunc
-                .blocks()
-                .map(|b| mfunc.block_insts(b).count())
-                .sum::<usize>();
-        }
+        ctx.profile
+            .record_lazy(Metric::count("selected_insts"), || {
+                mfunc
+                    .blocks()
+                    .map(|b| mfunc.block_insts(b).count() as u64)
+                    .sum()
+            });
 
-        target_pipelines.post_isel.run(&mut mfunc, &mut ctx)?;
+        self.profile.measure("post_isel", 0, || {
+            target_pipelines.post_isel.run(&mut mfunc, &mut ctx)
+        })?;
         self.verify_function("post-isel-target", &mfunc, verify_selected)?;
         run_function_pass(
             &PostIselOptimizePass::new(self.target.post_isel()),
+            0,
             &mut mfunc,
             &mut ctx,
         )?;
@@ -369,21 +369,25 @@ impl<'a> CodegenPipeline<'a> {
             &crate::passes::constraints::PostSelectOperandConstraintPass::new(
                 self.target.operand_lowering(),
             ),
+            0,
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("operand-constraints", &mfunc, verify_selected)?;
-        run_function_pass(&crate::passes::schedule::SchedulePass, &mut mfunc, &mut ctx)?;
+        run_function_pass(
+            &crate::passes::schedule::SchedulePass,
+            0,
+            &mut mfunc,
+            &mut ctx,
+        )?;
         self.verify_function("scheduled", &mfunc, verify_selected)?;
 
         // Allocation owns its exact input until its plan is materialized.
-        let start = self.options.collect_stats.then(std::time::Instant::now);
-        let allocation = crate::regalloc::RegisterAllocator::new(self.target)
-            .allocate(mfunc, ctx.function_analyses)?;
-        let mut mfunc = allocation.materialize(self.target)?;
-        if let Some(start) = start {
-            *ctx.stats.pass_times.entry("regalloc".into()).or_default() += start.elapsed();
-        }
+        let mut mfunc = self.profile.measure("regalloc", 0, || {
+            let allocation = crate::regalloc::RegisterAllocator::new(self.target)
+                .allocate(mfunc, ctx.function_analyses)?;
+            allocation.materialize(self.target)
+        })?;
         use crate::analysis::ChangeSet;
         ctx.function_analyses.apply(
             ChangeSet::REGALLOC
@@ -395,21 +399,25 @@ impl<'a> CodegenPipeline<'a> {
         );
         self.verify_function("regalloc", &mfunc, verify_allocated)?;
 
-        target_pipelines.post_regalloc.run(&mut mfunc, &mut ctx)?;
+        self.profile.measure("post_regalloc", 0, || {
+            target_pipelines.post_regalloc.run(&mut mfunc, &mut ctx)
+        })?;
         self.verify_function("post-regalloc", &mfunc, verify_allocated)?;
         run_function_pass(
             &FrameFinalizePass::new(self.target.frame_lowering()),
+            0,
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("frame-finalized", &mfunc, verify_allocated)?;
-        if ctx.options.collect_stats {
-            ctx.stats.final_inst_count += mfunc
+        ctx.profile.record_lazy(Metric::count("final_insts"), || {
+            mfunc
                 .blocks()
-                .map(|b| mfunc.block_insts(b).count())
-                .sum::<usize>();
-            ctx.stats.stack_slot_count += mfunc.stack_frame.slots().len();
-        }
+                .map(|b| mfunc.block_insts(b).count() as u64)
+                .sum()
+        });
+        ctx.profile
+            .count("stack_slots", mfunc.stack_frame.slots().len() as u64);
 
         Ok(mfunc)
     }
@@ -417,14 +425,14 @@ impl<'a> CodegenPipeline<'a> {
     fn run_module_pre_emit_passes(
         &self,
         compiled: &mut CompiledModule,
-        stats: &mut CodegenStats,
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<()> {
         let mut pipeline = ModulePassPipeline::new();
         for pass in self.target.pass_config().pre_emit_module_passes() {
             pipeline.add_boxed_pass(pass);
         }
-        let mut ctx = ModulePassContext::new(self.target, &self.options, stats, module_analyses);
+        let mut ctx =
+            ModulePassContext::new(self.target, &self.options, &self.profile, module_analyses);
         let _ = pipeline.run(compiled, &mut ctx)?;
         Ok(())
     }
@@ -432,27 +440,25 @@ impl<'a> CodegenPipeline<'a> {
     fn run_module_post_emit_passes(
         &self,
         compiled: &mut CompiledModule,
-        stats: &mut CodegenStats,
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<()> {
         let mut pipeline = ModulePassPipeline::new();
         for pass in self.target.pass_config().post_emit_module_passes() {
             pipeline.add_boxed_pass(pass);
         }
-        let mut ctx = ModulePassContext::new(self.target, &self.options, stats, module_analyses);
+        let mut ctx =
+            ModulePassContext::new(self.target, &self.options, &self.profile, module_analyses);
         let _ = pipeline.run(compiled, &mut ctx)?;
         Ok(())
     }
 
-    fn emit_compiled_functions(
-        &self,
-        compiled: &mut CompiledModule,
-        stats: &mut CodegenStats,
-    ) -> Result<()> {
+    fn emit_compiled_functions(&self, compiled: &mut CompiledModule) -> Result<()> {
         for func in &mut compiled.functions {
             if func.emitted.is_none() {
-                func.emitted =
-                    Some(self.emit_function_with_relocations(&func.machine_function, stats)?);
+                let scope = self.profile.entity_scope("emit", 0, || func.name.clone());
+                let result = self.emit_function_with_relocations(&func.machine_function);
+                scope.result(&result);
+                func.emitted = Some(result?);
             }
         }
         Ok(())
@@ -460,12 +466,16 @@ impl<'a> CodegenPipeline<'a> {
 
     fn verify_function(
         &self,
-        name: &str,
+        name: &'static str,
         mfunc: &MachineFunction,
         verify: fn(&MachineFunction, &dyn crate::target::TargetInstructions) -> Result<()>,
     ) -> Result<()> {
         if self.options.verify {
-            verify(mfunc, self.target).map_err(|e| Error::codegen(std::format!("{name}: {e}")))?;
+            self.profile
+                .measure("verify", 0, || {
+                    self.profile.measure(name, 0, || verify(mfunc, self.target))
+                })
+                .map_err(|e| Error::codegen(std::format!("{name}: {e}")))?;
         }
         self.maybe_dump_mfunc(name, mfunc);
         Ok(())
@@ -474,13 +484,11 @@ impl<'a> CodegenPipeline<'a> {
     fn emit_function_with_relocations(
         &self,
         mfunc: &MachineFunction,
-        stats: &mut CodegenStats,
     ) -> Result<crate::EmittedCode> {
         if Some(mfunc.entry_block()) != mfunc.blocks().next() {
             return Err(Error::codegen("function entry must be first at emission"));
         }
         let emitter = self.target.emitter();
-        let start = self.options.collect_stats.then(std::time::Instant::now);
         let mut output = crate::Emitter::new();
 
         for block in mfunc.blocks() {
@@ -499,20 +507,16 @@ impl<'a> CodegenPipeline<'a> {
         }
 
         emitter.finish_function(&mut output, mfunc)?;
-        if self.options.collect_stats {
-            stats.stack_frame_size += mfunc
+        self.profile.record_lazy(Metric::bytes("frame_size"), || {
+            mfunc
                 .stack_frame
                 .layout()
                 .expect("finalized frame")
-                .total_size as u64;
-        }
+                .total_size as u64
+        });
         let emitted = output.finish()?;
-        if let Some(start) = start {
-            *stats.pass_times.entry("emit".into()).or_default() += start.elapsed();
-        }
-        if self.options.collect_stats {
-            stats.code_bytes += emitted.data.len();
-        }
+        self.profile
+            .record_lazy(Metric::bytes("code"), || emitted.data.len() as u64);
         Ok(emitted)
     }
 
@@ -570,7 +574,6 @@ block0(v0: ptr):
                 .run_function_pipeline(
                     f,
                     sig,
-                    &mut CodegenStats::default(),
                     &mut FunctionAnalysisCtx::default(),
                     &mut ModuleAnalysisCtx::default(),
                     &target_pipelines,
@@ -612,11 +615,7 @@ block0(v0: ptr, v1: i64):
                 },
             );
             let compiled = pipeline
-                .compile_module_artifact(
-                    &module,
-                    &mut CodegenStats::default(),
-                    &mut ModuleAnalysisCtx::default(),
-                )
+                .compile_module_artifact(&module, &mut ModuleAnalysisCtx::default())
                 .unwrap();
             let f = &compiled.functions[0].machine_function;
             let accesses: Vec<_> = f

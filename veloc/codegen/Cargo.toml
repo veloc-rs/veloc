@@ -5,6 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
+veloc-profile.workspace = true
 veloc-bytecode = { workspace = true }
 veloc-analyzer.workspace = true
 veloc-encoder.workspace = true
