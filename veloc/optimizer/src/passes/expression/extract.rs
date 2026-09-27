@@ -1,6 +1,6 @@
 //! Select expressions at executable uses, then commit a dominance-valid plan.
 use super::{
-    CostModel,
+    CostModel, Limit,
     graph::{Graph, InstKind},
 };
 use cranelift_entity::SecondaryMap;
@@ -37,7 +37,7 @@ struct Rewrite {
 
 /// A complete plan, not a global class-to-value preference. Steps are in
 /// dependency order, and each use names an occurrence available at that use.
-/// Planning never edits MIR; failed trials leave no partially emitted code.
+/// Planning never edits MIR; budget exhaustion leaves no partially emitted code.
 #[derive(Default)]
 pub(super) struct Extraction {
     steps: Vec<Step>,
@@ -91,7 +91,6 @@ impl Input {
 struct Mark {
     steps: usize,
     bound: usize,
-    selected: usize,
 }
 
 #[derive(Default)]
@@ -99,7 +98,6 @@ struct Plan {
     steps: Vec<Recipe>,
     inputs: SecondaryMap<Value, Option<Input>>,
     bound: Vec<Value>,
-    selected: Vec<(Value, Value)>,
     operations: HashMap<Inst, usize>,
 }
 
@@ -108,7 +106,6 @@ impl Plan {
         Mark {
             steps: self.steps.len(),
             bound: self.bound.len(),
-            selected: self.selected.len(),
         }
     }
 
@@ -119,7 +116,6 @@ impl Plan {
         for class in self.bound.drain(mark.bound..) {
             self.inputs[class] = None;
         }
-        self.selected.truncate(mark.selected);
     }
 
     fn bind(&mut self, class: Value, input: Input) {
@@ -148,7 +144,6 @@ enum State {
 enum Resolve {
     Ready,
     Unavailable,
-    Exhausted,
 }
 
 /// Try the preferred value once, then the ranked alternatives without repeats.
@@ -185,23 +180,6 @@ impl Frame {
             mark,
         }
     }
-}
-
-/// A preference belongs to a use site, not globally to an equivalence class.
-/// Sibling blocks may need different representatives of the same class.
-type Choices = HashMap<(Inst, Value), Value>;
-
-#[derive(Clone, Copy)]
-struct Choice {
-    anchor: Inst,
-    class: Value,
-    value: Value,
-}
-
-struct Selection {
-    extraction: Extraction,
-    choices: Vec<Choice>,
-    cost: usize,
 }
 
 /// Enter/leave events let selection use a single binding per class. Leaving a
@@ -253,9 +231,7 @@ struct Planner<'a> {
 
 impl Graph {
     fn price(&self, f: &FuncBody, value: Value, model: &dyn CostModel) -> usize {
-        if let Some(c) = f.dfg().as_const(self.find(value)) {
-            c.as_scalar().map_or(1, |c| model.constant(c).max(1))
-        } else if let Some(inst) = self.floating_inst(f, value) {
+        if let Some(inst) = self.floating_inst(f, value) {
             let result = f.dfg().inst_results(inst)[0];
             model
                 .operation(f.dfg().opcode(inst), f.dfg().value_type(result))
@@ -284,17 +260,24 @@ impl Graph {
         let mut queued = SecondaryMap::<Value, bool>::new();
         let mut candidates = SecondaryMap::<Value, SmallVec<[Candidate; 2]>>::new();
         for &value in &self.values {
+            if f.dfg()
+                .value_inst(value)
+                .is_some_and(|inst| self.kinds[inst] == InstKind::Folded)
+            {
+                continue;
+            }
             let class = self.find(value);
+            // A literal is the answer, not an alternative to rank or place.
+            if f.dfg().as_const(class).is_some() {
+                costs[class] = (0, 0);
+                continue;
+            }
             candidates[class].push(Candidate {
                 value,
                 rank: (usize::MAX, usize::MAX),
             });
-            if f.dfg().as_const(class).is_some() {
-                costs[class] = (self.price(f, class, model), 0);
-            } else {
-                pending.push_back(value);
-                queued[value] = true;
-            }
+            pending.push_back(value);
+            queued[value] = true;
         }
         while *work != 0 {
             let Some(value) = pending.pop_front() else {
@@ -315,6 +298,9 @@ impl Graph {
             if price != usize::MAX && (price, depth) < costs[class] {
                 costs[class] = (price, depth);
                 for &user in &self.users[class] {
+                    if self.kinds[user] == InstKind::Folded {
+                        continue;
+                    }
                     for &result in f.dfg().inst_results(user) {
                         if f.dfg().as_const(self.find(result)).is_none() && !queued[result] {
                             queued[result] = true;
@@ -323,6 +309,9 @@ impl Graph {
                     }
                 }
             }
+        }
+        if !pending.is_empty() {
+            log::debug!("egraph ranking limited: {:?}", Limit::RankWork);
         }
         for values in candidates.values_mut() {
             for candidate in values.iter_mut() {
@@ -345,6 +334,7 @@ impl Graph {
         work: &mut usize,
     ) -> Extraction {
         if *work == 0 {
+            log::debug!("egraph extraction limited: {:?}", Limit::ExtractWork);
             return Extraction::default();
         }
         // Ranking is optional guidance, not a prerequisite for placement.
@@ -372,66 +362,24 @@ impl Graph {
             }
         }
         let original_cost = planner.cost(&mut original, model);
-        let mut choices = Choices::new();
-        let Some(mut best) = planner.select(&visits, &choices, model) else {
-            return Extraction::default();
-        };
-
-        // Search complete multi-root selections, not independently priced
-        // trees. A paired move can expose sharing even when changing either
-        // root alone would be more expensive. This is bounded local search,
-        // not an exact minimum-cost DAG solver.
-        while *planner.work != 0 {
-            let moves = planner.alternatives(&best);
-            let mut improved = None;
-            'search: for (index, &a) in moves.iter().enumerate() {
-                let old_a = choices.insert((a.anchor, a.class), a.value);
-                if let Some(trial) = planner.select(&visits, &choices, model) {
-                    if trial.cost < best.cost {
-                        improved = Some(trial);
-                        break;
-                    }
-                }
-                for &b in &moves[index + 1..] {
-                    if *planner.work == 0 {
-                        break 'search;
-                    }
-                    *planner.work -= 1;
-                    if (a.anchor, a.class) == (b.anchor, b.class)
-                        || !planner.shares_dependency(a.value, b.value)
-                    {
-                        continue;
-                    }
-                    let old = choices.insert((b.anchor, b.class), b.value);
-                    if let Some(trial) = planner.select(&visits, &choices, model) {
-                        if trial.cost < best.cost {
-                            improved = Some(trial);
-                            break 'search;
-                        }
-                    }
-                    restore_choice(&mut choices, b, old);
-                }
-                restore_choice(&mut choices, a, old_a);
+        let mut extraction = match planner.select(&visits) {
+            Ok(extraction) => extraction,
+            Err(limit) => {
+                log::debug!("egraph extraction limited: {limit:?}");
+                return Extraction::default();
             }
-            let Some(trial) = improved else { break };
-            best = trial;
-            choices.clear();
-            choices.extend(best.choices.iter().map(|c| ((c.anchor, c.class), c.value)));
+        };
+        // Price the complete DAG once, including reused original instructions.
+        // Ranking is only a heuristic; retain the original if placement loses.
+        let cost = planner.cost(&mut extraction, model);
+        if *planner.work == 0 {
+            log::debug!("egraph extraction limited: {:?}", Limit::ExtractWork);
         }
-        if best.cost <= original_cost {
-            best.extraction
+        if cost <= original_cost {
+            extraction
         } else {
             Extraction::default()
         }
-    }
-}
-
-fn restore_choice(choices: &mut Choices, choice: Choice, old: Option<Value>) {
-    let key = (choice.anchor, choice.class);
-    if let Some(value) = old {
-        choices.insert(key, value);
-    } else {
-        choices.remove(&key);
     }
 }
 
@@ -456,17 +404,10 @@ impl Planner<'_> {
         visits
     }
 
-    /// Replaying a trial changes only planning state. MIR remains frozen until
-    /// a complete selection wins; budget exhaustion cannot leave partial edits.
-    fn select(
-        &mut self,
-        visits: &[Visit],
-        choices: &Choices,
-        model: &dyn CostModel,
-    ) -> Option<Selection> {
-        self.available = Scope::default();
+    /// Build one plan in dominance order. MIR stays frozen until the complete
+    /// plan passes the cost check; candidates can still backtrack locally.
+    fn select(&mut self, visits: &[Visit]) -> Result<Extraction, Limit> {
         let mut extraction = Extraction::default();
-        let mut selected = Vec::new();
         let mut plan = Plan::default();
         let mut stack = Vec::new();
         for visit in visits {
@@ -482,7 +423,7 @@ impl Planner<'_> {
                 Visit::Anchor(anchor) => anchor,
             };
             if *self.work == 0 {
-                return None;
+                return Err(Limit::ExtractWork);
             }
             *self.work -= 1;
             plan.restore(Mark::default());
@@ -490,9 +431,8 @@ impl Planner<'_> {
             for (operand, &root) in self.body.dfg().operands(anchor).iter().enumerate() {
                 let class = self.graph.find(root);
                 let mark = plan.mark();
-                match self.resolve(anchor, base, class, choices, &mut plan, &mut stack) {
+                match self.resolve(anchor, base, class, &mut plan, &mut stack)? {
                     Resolve::Ready => {}
-                    Resolve::Exhausted => return None,
                     Resolve::Unavailable => {
                         plan.restore(mark);
                         plan.bind(class, Input::Existing(root));
@@ -504,35 +444,9 @@ impl Planner<'_> {
                     input: plan.inputs[class].expect("planned executable use"),
                 });
             }
-            selected.extend(plan.selected.iter().map(|&(class, value)| Choice {
-                anchor,
-                class,
-                value,
-            }));
             for &class in &plan.bound {
                 self.available
                     .bind(class, plan.inputs[class].expect("bound class"));
-            }
-            // A multi-result instruction is one computation, not one per class.
-            for (step, recipe) in plan.steps.iter().enumerate() {
-                for (index, &value) in self
-                    .body
-                    .dfg()
-                    .inst_results(recipe.source)
-                    .iter()
-                    .enumerate()
-                {
-                    let class = self.graph.find(value);
-                    if self.available.inputs[class].is_none() {
-                        self.available.bind(
-                            class,
-                            Input::Result {
-                                step: base + step,
-                                index,
-                            },
-                        );
-                    }
-                }
             }
             extraction
                 .steps
@@ -543,12 +457,7 @@ impl Planner<'_> {
                 }));
             plan.operations.clear();
         }
-        let cost = self.cost(&mut extraction, model);
-        Some(Selection {
-            extraction,
-            choices: selected,
-            cost,
-        })
+        Ok(extraction)
     }
 
     /// Charge the selected computation DAG, including original definitions kept
@@ -557,7 +466,6 @@ impl Planner<'_> {
     /// Reference counts belong to occurrences, never to equivalence classes.
     /// Finish this finite traversal even if it exhausts the search budget: a
     /// complete selection must not be discarded halfway through pricing it.
-    /// Subsequent searches observe the exhausted budget and do not proceed.
     fn cost(&mut self, extraction: &mut Extraction, model: &dyn CostModel) -> usize {
         let mut seen = HashSet::new();
         let mut pending: Vec<_> = extraction.rewrites.iter().map(|r| r.input).collect();
@@ -566,18 +474,16 @@ impl Planner<'_> {
             *self.work = self.work.saturating_sub(1);
             let price = match input {
                 Input::Existing(value) => {
-                    if let Some(c) = self.body.dfg().as_const(value) {
-                        let price = c.as_scalar().map_or(1, |c| model.constant(c).max(1));
-                        cost = cost.saturating_add(price);
-                        continue;
-                    }
                     let ValueDef::Inst(inst) = self.body.dfg().value_def(value) else {
                         continue;
                     };
                     if !seen.insert(inst) {
                         continue;
                     }
-                    if self.graph.kinds[inst] == InstKind::Floating {
+                    if matches!(
+                        self.graph.kinds[inst],
+                        InstKind::Floating | InstKind::Folded
+                    ) {
                         pending.extend(
                             self.body
                                 .dfg()
@@ -618,39 +524,6 @@ impl Planner<'_> {
             cost = cost.saturating_add(price);
         }
         cost
-    }
-
-    fn alternatives(&mut self, selection: &Selection) -> Vec<Choice> {
-        let mut moves = Vec::new();
-        for &choice in &selection.choices {
-            for candidate in &self.candidates[choice.class] {
-                if *self.work == 0 {
-                    return moves;
-                }
-                *self.work -= 1;
-                if candidate.value != choice.value {
-                    moves.push(Choice {
-                        value: candidate.value,
-                        ..choice
-                    });
-                }
-            }
-        }
-        moves
-    }
-
-    fn shares_dependency(&self, a: Value, b: Value) -> bool {
-        self.graph.args(self.body, a).iter().any(|&x| {
-            // Sharing a pinned input such as a block parameter has no saving
-            // in this model; it should not trigger expensive paired trials.
-            (self.body.dfg().as_const(self.graph.find(x)).is_some()
-                || self.graph.floating_inst(self.body, x).is_some())
-                && self
-                    .graph
-                    .args(self.body, b)
-                    .iter()
-                    .any(|&y| self.graph.find(x) == self.graph.find(y))
-        })
     }
 
     fn inst_dominates(&mut self, def: Inst, anchor: Inst) -> bool {
@@ -720,12 +593,11 @@ impl Planner<'_> {
         anchor: Inst,
         base: usize,
         root: Value,
-        choices: &Choices,
         plan: &mut Plan,
         stack: &mut Vec<Frame>,
-    ) -> Resolve {
+    ) -> Result<Resolve, Limit> {
         if plan.inputs[root].is_some() {
-            return Resolve::Ready;
+            return Ok(Resolve::Ready);
         }
         debug_assert!(stack.is_empty());
         stack.push(Frame::new(root, plan.mark()));
@@ -735,29 +607,33 @@ impl Planner<'_> {
                 for frame in stack.drain(..) {
                     self.active[frame.class] = false;
                 }
-                return Resolve::Exhausted;
+                return Err(Limit::ExtractWork);
             }
             *self.work -= 1;
             let class = frame.class;
+            // A dependency can also produce another result that satisfies
+            // this suspended frame. No further candidate search is needed.
+            if plan.inputs[class].is_some() {
+                self.active[class] = false;
+                stack.pop();
+                continue;
+            }
             match frame.state {
                 State::Start => {
-                    if let Some(input) = self.available.inputs[class] {
-                        plan.bind(class, input);
-                        self.active[class] = false;
-                        stack.pop();
-                        continue;
-                    }
                     if self.body.dfg().as_const(class).is_some() {
                         plan.bind(class, Input::Existing(class));
                         self.active[class] = false;
                         stack.pop();
                         continue;
                     }
+                    if let Some(input) = self.available.inputs[class] {
+                        plan.bind(class, input);
+                        self.active[class] = false;
+                        stack.pop();
+                        continue;
+                    }
 
-                    frame.candidates.preferred = choices
-                        .get(&(anchor, class))
-                        .copied()
-                        .or_else(|| self.preferred(class, anchor));
+                    frame.candidates.preferred = self.preferred(class, anchor);
                     frame.state = State::Choose;
                 }
                 State::Choose => {
@@ -768,7 +644,7 @@ impl Planner<'_> {
                         self.active[class] = false;
                         stack.pop();
                         let Some(parent) = stack.last_mut() else {
-                            return Resolve::Unavailable;
+                            return Ok(Resolve::Unavailable);
                         };
                         plan.restore(parent.mark);
                         parent.state = State::Choose;
@@ -812,11 +688,6 @@ impl Planner<'_> {
                         .iter()
                         .map(|&arg| plan.inputs[self.graph.find(arg)].expect("planned operand"))
                         .collect();
-                    let results = self.body.dfg().inst_results(source);
-                    let index = results
-                        .iter()
-                        .position(|&v| v == value)
-                        .expect("result membership");
                     let reuse = self.dominates(value, anchor)
                         && self.body.dfg().operands(source).iter().zip(&args).all(
                             |(&old, &new)| match new {
@@ -824,8 +695,8 @@ impl Planner<'_> {
                                 Input::Result { .. } => false,
                             },
                         );
-                    let input = if reuse {
-                        Input::Existing(value)
+                    let step = if reuse {
+                        None
                     } else {
                         let step = if let Some(&step) = plan.operations.get(&source) {
                             step
@@ -835,15 +706,34 @@ impl Planner<'_> {
                             plan.operations.insert(source, step);
                             step
                         };
-                        Input::Result { step, index }
+                        Some(step)
                     };
-                    plan.bind(class, input);
-                    plan.selected.push((class, value));
+                    // Planning one instruction makes every result available,
+                    // including to later operands of this same anchor. Record
+                    // all bindings in the plan so backtracking undoes them.
+                    for (index, &result) in self.body.dfg().inst_results(source).iter().enumerate()
+                    {
+                        let class = self.graph.find(result);
+                        if plan.inputs[class].is_some() {
+                            continue;
+                        }
+                        let input = if self.body.dfg().as_const(class).is_some() {
+                            Input::Existing(class)
+                        } else if let Some(input) = self.available.inputs[class] {
+                            input
+                        } else {
+                            step.map_or(Input::Existing(result), |step| Input::Result {
+                                step,
+                                index,
+                            })
+                        };
+                        plan.bind(class, input);
+                    }
                     self.active[class] = false;
                     stack.pop();
                 }
             }
         }
-        Resolve::Ready
+        Ok(Resolve::Ready)
     }
 }

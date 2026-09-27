@@ -65,10 +65,46 @@ variable. Operand arity and the common scalar type domain are checked against
 OpSpec. Guards use `case (x, y) if y == 0 => x;`; the current guard language
 supports equality or inequality between a bound value and an integer literal.
 
-Every matching case contributes an equality, subject to the exploration budget.
-`=>` specifies the search/build direction, not destructive replacement or
-first-match selection. Cost-based extraction remains separate. Type checking
-does not prove the equality.
+The compiler separates two execution contracts from the checked pattern shape:
+
+- A root-only pattern containing variables and constants, whose replacement is
+  an operand or literal, becomes a local fold. Repeated variables and constant
+  guards use current equality/constant facts without enumerating child nodes.
+- Nested patterns and replacements that construct operations become query/apply
+  bytecode. Every matching case contributes an equality, subject to the search
+  budget; these cases are not ordered alternatives.
+
+Local folds run during graph import, before allocating a constructed expression,
+and when rebuilding an expression whose operands changed classes. Primitive
+identity, absorbing and idempotence laws use the same checked rule model.
+The generated semantic evaluator supplies concrete constant results, including
+multi-result operations and trap checks. Neither path creates new operations.
+Local reductions therefore finish independently of exploratory rule fuel.
+
+Local patterns are checked against each operand's declared type, not a single
+type shared by every input. For example, `Select<T: Any>` accepts the cases
+`(true, x, y) => x`, `(false, x, y) => y`, and `(condition, x, x) => x`:
+the condition is boolean while the branches and result share `T`. Only literal
+patterns and guards query constant contents, so unknown pointer, float and vector
+branches can be returned directly. No complete semantic recipe is required for
+an authored, non-trapping pure operation; its equality remains author-reviewed.
+Heterogeneous patterns currently belong to local folding; the query/action VM
+still requires same-type expressions and a domain of named exact types.
+
+A folded expression leaves matching and memo indexes. No historical key is
+retained to prevent reconstruction: construction runs the same local folds.
+MIR definitions remain stable during searching. Once search ends, original
+operand witnesses commit established folds to executable uses before extraction,
+even when extraction has no budget. Ranking and pricing read the simplified MIR;
+candidate templates remain immutable until emission finishes. Matching indexes
+are no longer queried after this boundary.
+Equivalence-class representatives are not executable replacement values.
+
+Rules must be written against these local normal forms: removing an identity
+can remove a syntactic match for another rule. This is an intentional search
+policy, not a proof that arbitrary rule reachability is preserved. Type checking
+does not prove an authored equality. General equalities still retain alternatives
+for cost-based extraction.
 
 Multiple groups and ordinary template expansions may contribute rules for the
 same root opcode. The compiler merges them and shares matching prefixes before

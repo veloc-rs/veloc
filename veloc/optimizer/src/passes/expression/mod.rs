@@ -12,19 +12,19 @@ mod matching;
 use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
 use graph::{Graph, InstKind};
 use veloc_analyzer::{AnalysisManager, Dominators};
-use veloc_mir::function::Expressions;
+use veloc_mir::function::{Expressions, FrozenExpressions};
 use veloc_mir::{FuncBody, Inst};
 
-/// Relative costs of materializing constants and movable operations, not total
+/// Relative costs of movable operations, not total
 /// function runtime or compiler work. Ranking adds these as tree costs; planning
 /// accounts for shared occurrences. Existing pinned values are zero-cost inputs,
 /// not claims that their producing instructions are free to execute.
-/// Materialization costs are clamped to at least one.
+/// Known constants are terminal MIR values, never costed alternatives. Machine
+/// materialization belongs to lowering. Operation costs are at least one.
 pub trait CostModel {
     /// Cost of one operation, using its first result type even when another
     /// projection is the requested value. Multi-result ops are charged once.
     fn operation(&self, opcode: veloc_mir::Opcode, ty: veloc_mir::Type) -> usize;
-    fn constant(&self, value: veloc_mir::constant::ScalarConst) -> usize;
 }
 
 /// Target-independent baseline. Targets may provide their own estimates without
@@ -32,9 +32,6 @@ pub trait CostModel {
 pub struct GenericCost;
 impl CostModel for GenericCost {
     fn operation(&self, _: veloc_mir::Opcode, _: veloc_mir::Type) -> usize {
-        1
-    }
-    fn constant(&self, _: veloc_mir::constant::ScalarConst) -> usize {
         1
     }
 }
@@ -116,9 +113,9 @@ pub struct Budget {
     /// Cost-propagation steps for candidate ranking. Partial estimates remain
     /// usable; exhaustion must not consume the placement budget.
     pub rank_steps: usize,
-    /// Placement and joint DAG-selection work, independently of ranking.
-    /// Exhaustion keeps the last complete selection, or the original function
-    /// if the initial selection has not finished.
+    /// Placement work, independently of ranking. Exhaustion before the plan
+    /// is complete preserves the original code with established local folds.
+    /// Those replacements commit independently of this budget.
     pub extract_steps: usize,
 }
 
@@ -171,7 +168,10 @@ impl<'a> EqualitySession<'a> {
 
     fn saturate(&mut self, rounds: usize, fuel: &mut usize) {
         let stop = saturate(&mut self.graph, &mut self.ir, rounds, fuel);
-        log::debug!("egraph stopped: {stop:?}");
+        match stop {
+            Stop::Saturated => log::debug!("egraph saturated"),
+            Stop::Limited(limit) => log::debug!("egraph limited: {limit:?}"),
+        }
     }
 
     fn finish(
@@ -181,10 +181,11 @@ impl<'a> EqualitySession<'a> {
         rank: &mut usize,
         work: &mut usize,
     ) -> (u64, Vec<Inst>) {
-        let Self { ir, graph, anchors } = self;
-        // Preserve use locations through selection. Candidate uses do not make
-        // expressions live; only executable anchors request occurrences.
-        let extraction = graph.extract(ir.body(), &anchors, model, dom, rank, work);
+        let Self {
+            ir,
+            mut graph,
+            anchors,
+        } = self;
         let removable = anchors
             .iter()
             .copied()
@@ -199,8 +200,40 @@ impl<'a> EqualitySession<'a> {
             })
             .collect();
         let mut ir = ir.freeze();
-        let changed = extraction.apply(&mut ir);
+        let mut changed = Self::commit_folds(&mut graph, &mut ir);
+        // Selection reads simplified executable operands. Keep old instructions
+        // alive as source templates until selection and emission have finished.
+        let extraction = graph.extract(ir.body(), &anchors, model, dom, rank, work);
+        changed += extraction.apply(&mut ir);
         (changed, removable)
+    }
+
+    /// End search by committing established folds to executable uses. Matching
+    /// indexes must not be queried afterwards. Replacements stay in the same
+    /// classes, preserving dependencies for ranking; templates stay immutable.
+    fn commit_folds(graph: &mut Graph, ir: &mut FrozenExpressions<'_>) -> u64 {
+        let mut changed = 0;
+        // Actual operand witnesses dominate the original executable uses; class
+        // representatives and detached alternatives are never used as aliases.
+        let mut uses = Vec::new();
+        for index in 0..graph.values.len() {
+            let value = graph.values[index];
+            let replacement = graph.resolve_alias(ir.body(), value);
+            if value == replacement {
+                continue;
+            }
+            uses.extend(ir.body().dfg().uses(value).filter_map(|site| {
+                ir.body()
+                    .layout()
+                    .inst_block(site.inst())
+                    .map(|_| (site.inst(), site.index()))
+            }));
+            for (inst, index) in uses.drain(..) {
+                ir.replace_input(inst, index, replacement);
+                changed += 1;
+            }
+        }
+        changed
     }
 }
 
@@ -209,27 +242,35 @@ impl<'a> EqualitySession<'a> {
 #[derive(Clone, Copy, Debug)]
 enum Stop {
     Saturated,
+    Limited(Limit),
+}
+
+/// Shared resource-limit reasons; each phase owns its counters and recovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Limit {
     Rounds,
-    Work,
-    Matches,
     Nodes,
+    Matches,
+    MatchWork,
+    RankWork,
+    ExtractWork,
 }
 
 fn saturate(graph: &mut Graph, ir: &mut Expressions<'_>, rounds: usize, fuel: &mut usize) -> Stop {
     let mut machine = matching::Machine::new();
     let mut queries = Vec::new();
-    graph.prepare(ir, fuel);
+    graph.rebuild(ir);
     for _ in 0..rounds {
         if graph.is_idle() {
             return Stop::Saturated;
         }
         if *fuel == 0 {
-            return Stop::Work;
+            return Stop::Limited(Limit::MatchWork);
         }
         queries.clear();
         graph.schedule(ir.body(), &mut queries);
         // Nothing relevant to a rule changed. Analysis is already drained by
-        // prepare, so an empty query set really is a fixed point.
+        // rebuilding, so an empty query set really is a fixed point.
         if queries.is_empty() {
             return Stop::Saturated;
         }
@@ -238,23 +279,20 @@ fn saturate(graph: &mut Graph, ir: &mut Expressions<'_>, rounds: usize, fuel: &m
         // sound matches worth applying before returning a budget stop.
         let searched = machine.search(graph, ir.body(), &queries, fuel);
         let applied = machine.apply(graph, ir);
-        graph.prepare(ir, fuel);
+        graph.rebuild(ir);
         if let Err(limit) = searched {
-            return match limit {
-                matching::QueryLimit::Work => Stop::Work,
-                matching::QueryLimit::Matches => Stop::Matches,
-            };
+            return Stop::Limited(limit);
         }
-        if !applied {
-            return Stop::Nodes;
+        if let Err(limit) = applied {
+            return Stop::Limited(limit);
         }
     }
     if graph.is_idle() {
         Stop::Saturated
     } else if *fuel == 0 {
-        Stop::Work
+        Stop::Limited(Limit::MatchWork)
     } else {
-        Stop::Rounds
+        Stop::Limited(Limit::Rounds)
     }
 }
 
@@ -307,6 +345,105 @@ mod tests {
     use veloc_types::TypeInfo;
 
     #[test]
+    fn local_folds_need_neither_memo_tombstones_nor_extraction_budget() {
+        let mut module = veloc_mir::ModuleParser::new()
+            .parse(
+                r#"
+local function identities(i64) -> (i64, i64, i64)
+block0(v0: i64):
+  v2: i64 = isub v0, i64(0)
+  v3: i64 = isub v0, i64(0)
+  v4: i64 = iadd v0, i64(1)
+  v5: i64 = isub v4, i64(1)
+  return v2, v3, v5
+"#,
+            )
+            .unwrap();
+        let body = module.body_mut(veloc_mir::FuncId(0)).unwrap();
+        let insts: Vec<_> = body.layout().block_insts(body.entry_block()).collect();
+        let mut session = EqualitySession::new(body, Budget::DEFAULT);
+        let mut fuel = Budget::DEFAULT.match_steps;
+        session.saturate(Budget::DEFAULT.rounds, &mut fuel);
+        let graph = &mut session.graph;
+        let ir = &mut session.ir;
+        // Import folding removes both concrete identities from search.
+        for &inst in &insts[..2] {
+            assert!(graph.kinds[inst] == InstKind::Folded);
+        }
+        // Cancellation is still an ordinary equality: keep this alternative.
+        assert!(graph.kinds[insts[3]] == InstKind::Floating);
+        let other = ir.body().dfg().inst_results(insts[3])[0];
+        assert_eq!(graph.find(other), graph.find(Value(0)));
+        assert_eq!(graph.relations[&(graph.find(other), Op::ISub)], [other]);
+
+        // Construction returns the input, without allocating or consulting a tombstone.
+        let count = graph.values.len();
+        let inst_count = ir.body().dfg().inst_count();
+        graph.limit = 0;
+        let zero = ir.constant(ScalarConst::from(0i64).into());
+        let rebuilt = graph
+            .build(ir, Op::ISub, &[Value(0), zero], Type::I64)
+            .unwrap();
+        assert_eq!(graph.values.len(), count);
+        assert_eq!(rebuilt, Value(0));
+        assert!(ir.body().dfg().value_inst(rebuilt).is_none());
+        let one = ir.constant(ScalarConst::from(1i64).into());
+        let folded = graph.build(ir, Op::IAdd, &[one, one], Type::I64).unwrap();
+        assert_eq!(
+            ir.body().dfg().as_scalar_const(folded),
+            Some(ScalarConst::from(2i64))
+        );
+        assert_eq!(ir.body().dfg().inst_count(), inst_count);
+
+        let dom = Dominators::compute(ir.body().cfg(), ir.body().entry_block());
+        // Even without extraction fuel, executable uses get the original operand.
+        session.finish(&GenericCost, &dom, &mut 0, &mut 0);
+        assert_eq!(
+            body.layout()
+                .block_insts(body.entry_block())
+                .collect::<Vec<_>>(),
+            insts
+        );
+        assert_eq!(
+            &body.dfg().operands(*insts.last().unwrap())[..2],
+            &[Value(0), Value(0)]
+        );
+        module.validate().unwrap();
+    }
+
+    #[test]
+    fn known_constants_do_not_require_extraction_budget() {
+        for mut work in [0, Budget::DEFAULT.extract_steps] {
+            let mut module = veloc_mir::ModuleParser::new()
+                .parse(
+                    r#"
+local function folded() -> i64
+block0():
+  v0: i64 = iadd i64(3), i64(4)
+  return v0
+"#,
+                )
+                .unwrap();
+            let body = module.body_mut(veloc_mir::FuncId(0)).unwrap();
+            let dom = Dominators::compute(body.cfg(), body.entry_block());
+            let mut session = EqualitySession::new(body, Budget::DEFAULT);
+            // Import reduction is independent of exploratory matching fuel.
+            session.saturate(0, &mut 0);
+            let mut rank = 0;
+            session.finish(&GenericCost, &dom, &mut rank, &mut work);
+            super::super::dce::run_dce(body, false, &mut Metrics::default());
+            let insts: Vec<_> = body.layout().block_insts(body.entry_block()).collect();
+            assert_eq!(insts.len(), 1, "folded arithmetic must be dead");
+            let value = body.dfg().operands(insts[0])[0];
+            assert_eq!(
+                body.dfg().as_scalar_const(value),
+                Some(ScalarConst::from(7i64))
+            );
+            module.validate().unwrap();
+        }
+    }
+
+    #[test]
     fn constants_remain_roots_and_wake_new_users() {
         let mut body = FuncBody::new(&[Type::I32; 7]);
         let mut graph = Graph::new();
@@ -334,8 +471,7 @@ mod tests {
         for index in 0..5 {
             assert_eq!(graph.find(Value(index)), one);
         }
-        let mut fuel = 100;
-        graph.prepare(&mut ir, &mut fuel);
+        graph.rebuild(&mut ir);
         let two = ir.constant(ScalarConst::from(2i32).into());
         assert_eq!(graph.find(sum), two);
         assert_eq!(graph.find(one), one);
@@ -506,75 +642,46 @@ block0(v0: i64):
     }
 
     #[test]
-    fn extraction_coordinates_shared_computations_across_uses() {
-        struct Cost;
-        impl CostModel for Cost {
-            fn operation(&self, op: Op, _: Type) -> usize {
-                if op == Op::IMul { 5 } else { 1 }
-            }
-            fn constant(&self, _: ScalarConst) -> usize {
-                1
-            }
-        }
-
+    fn extraction_reuses_computations_across_uses() {
         let mut module = veloc_mir::ModuleParser::new()
             .parse(
                 r#"
 local function shared(i64, ptr) -> i64
 block0(v0: i64, v1: ptr):
-  v4: i64 = imul v0, i64(6)
+  v4: i64 = imul v0, i64(3)
   store v4, v1, offset=0
-  v5: i64 = imul v0, i64(9)
+  v5: i64 = imul v0, i64(3)
   return v5
 "#,
             )
             .unwrap();
         module.validate().unwrap();
         let body = module.body_mut(veloc_mir::FuncId(0)).unwrap();
-        let roots: Vec<_> = body
-            .layout()
-            .block_insts(body.entry_block())
-            .filter(|&inst| body.dfg().opcode(inst) == Op::IMul)
-            .map(|inst| body.dfg().inst_results(inst)[0])
-            .collect();
         let mut session = EqualitySession::new(body, Budget::DEFAULT);
-        let graph = &mut session.graph;
-        let ir = &mut session.ir;
-        let three = graph
-            .literal(ir, ScalarConst::from_bits(Type::I64, 3).unwrap())
-            .unwrap();
-        let shared = graph
-            .build(ir, Op::IMul, &[Value(0), three], Type::I64)
-            .unwrap();
-        let six = graph
-            .build(ir, Op::IAdd, &[shared, shared], Type::I64)
-            .unwrap();
-        let nine = graph
-            .build(ir, Op::IAdd, &[six, shared], Type::I64)
-            .unwrap();
-        graph.union(ir.body(), roots[0], six);
-        graph.union(ir.body(), roots[1], nine);
-        graph.rebuild(ir.body());
+        session.graph.rebuild(&mut session.ir);
 
-        // Each original multiply costs 6 with its literal: total 12. Changing
-        // just one root is worse. Changing both costs 6 + 1 + 1 = 8, with the
-        // shared multiply placed before the store and reused by the return.
+        // One dominance-ordered plan reuses the multiply at both anchors;
+        // sharing does not require retrying complete selections.
         let mut rank = Budget::DEFAULT.rank_steps;
         let mut work = Budget::DEFAULT.extract_steps;
         let dom = Dominators::compute(session.ir.body().cfg(), session.ir.body().entry_block());
-        let (changed, _) = session.finish(&Cost, &dom, &mut rank, &mut work);
-        assert_eq!(changed, 2);
+        let (changed, _) = session.finish(&GenericCost, &dom, &mut rank, &mut work);
+        assert_eq!(changed, 1);
         super::super::dce::run_dce(body, false, &mut Metrics::default());
-        let mut multiplies = 0;
-        let mut additions = 0;
+        let mut multiply = None;
+        let mut store = None;
+        let mut ret = None;
         for inst in body.layout().block_insts(body.entry_block()) {
             match body.dfg().opcode(inst) {
-                Op::IMul => multiplies += 1,
-                Op::IAdd => additions += 1,
+                Op::IMul => assert!(multiply.replace(inst).is_none()),
+                Op::Store => store = Some(inst),
+                Op::Return => ret = Some(inst),
                 _ => {}
             }
         }
-        assert_eq!((multiplies, additions), (1, 2));
+        let result = body.dfg().inst_results(multiply.unwrap())[0];
+        assert_eq!(body.dfg().operands(store.unwrap())[0], result);
+        assert_eq!(body.dfg().operands(ret.unwrap()), &[result]);
         module.validate().unwrap();
     }
 }

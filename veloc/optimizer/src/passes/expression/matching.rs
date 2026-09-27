@@ -8,7 +8,7 @@ use veloc_bytecode::{Reader, equivalence::Instruction as Op};
 use veloc_mir::{FuncBody, Opcode, Type, Value, constant::ScalarConst, function::Expressions};
 use veloc_types::TypeInfo;
 
-use super::graph::Graph;
+use super::{Limit, graph::Graph};
 
 struct Group {
     slots: usize,
@@ -105,9 +105,11 @@ enum Source {
 /// Lazily populated rows shared by scans of the same class/opcode pair.
 struct Relation {
     cursor: RuleCursor,
-    rows: Vec<SmallVec<[Value; 3]>>,
+    rows: Vec<Row>,
     exhausted: bool,
 }
+
+type Row = SmallVec<[Value; 3]>;
 
 /// All queries in a round share this buffer. Roots are explicit because a
 /// round can match several classes before any graph updates are applied.
@@ -127,12 +129,6 @@ struct Match {
     start: usize,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) enum QueryLimit {
-    Work,
-    Matches,
-}
-
 impl Matches {
     fn begin(&mut self, limit: usize) {
         self.values.clear();
@@ -141,9 +137,9 @@ impl Matches {
         self.limit = limit;
     }
 
-    /// Save a complete match; return whether querying may continue.
+    /// Save a complete match, then report a reached capture-buffer limit.
     /// The soft budget may be exceeded by at most one match's charge.
-    fn capture(&mut self, root: Value, rule: usize, slots: &[Value]) -> bool {
+    fn capture(&mut self, root: Value, rule: usize, slots: &[Value]) -> Result<(), Limit> {
         let captures = PROGRAM.rules[rule].captures;
         let values: SmallVec<[Value; 3]> = captures.iter().map(|&slot| slots[slot]).collect();
         let hash = self.hasher.hash_one((root, rule, values.as_slice()));
@@ -157,7 +153,7 @@ impl Matches {
             })
             .is_some()
         {
-            return true;
+            return Ok(());
         }
         let row = self.rows.len();
         self.rows.push(Match {
@@ -173,7 +169,11 @@ impl Matches {
                 .hash_one((old.root, old.rule, &self.values[old.start..end]))
         });
         // Charge the three header fields too, even for zero-capture rules.
-        self.rows.len() * 3 + self.values.len() < self.limit
+        if self.rows.len() * 3 + self.values.len() < self.limit {
+            Ok(())
+        } else {
+            Err(Limit::Matches)
+        }
     }
 }
 
@@ -198,7 +198,7 @@ impl Machine {
         body: &FuncBody,
         queries: &[Query],
         fuel: &mut usize,
-    ) -> Result<(), QueryLimit> {
+    ) -> Result<(), Limit> {
         self.index.clear();
         self.matches.begin(*fuel);
         let result = queries.iter().try_for_each(|query| {
@@ -211,7 +211,7 @@ impl Machine {
             // Distinct entry plans retain their own order while sharing rows.
             for &input in query.inputs.keys() {
                 if *fuel == 0 {
-                    return Err(QueryLimit::Work);
+                    return Err(Limit::MatchWork);
                 }
                 *fuel -= 1;
                 self.query(graph, body, query, input, fuel)?;
@@ -232,7 +232,7 @@ impl Machine {
         query: &Query,
         input: usize,
         fuel: &mut usize,
-    ) -> Result<(), QueryLimit> {
+    ) -> Result<(), Limit> {
         let entry = trigger(input);
         let seeds = &query.inputs[&input];
         let root = query.root;
@@ -299,11 +299,11 @@ impl Machine {
                     // Scans charge each attempted binding. A budget stop returns
                     // to the host, which still applies the saved matches.
                     if *fuel == 0 {
-                        return Err(QueryLimit::Work);
+                        return Err(Limit::MatchWork);
                     }
                     if !self.scan_next(graph, body, query, cursor, fuel) {
                         if *fuel == 0 {
-                            return Err(QueryLimit::Work);
+                            return Err(Limit::MatchWork);
                         }
                         reader.pc = exhausted;
                     }
@@ -351,9 +351,7 @@ impl Machine {
                 Op::Capture { rule } => {
                     // Query specialization establishes the input's scope. There
                     // is no current-rule filter: all matching branches contribute.
-                    if !self.matches.capture(root, rule, &self.slots) {
-                        return Err(QueryLimit::Matches);
-                    }
+                    self.matches.capture(root, rule, &self.slots)?;
                 }
                 Op::Jump { target } => reader.pc = target,
                 Op::Return {} => return Ok(()),
@@ -365,8 +363,12 @@ impl Machine {
     /// Apply the saved matches after all queries have released their cursors.
     /// A full node budget can reject construction while still allowing later
     /// matches that only merge existing values or establish constant facts.
-    pub(super) fn apply(&mut self, graph: &mut Graph, ir: &mut Expressions<'_>) -> bool {
-        let mut complete = true;
+    pub(super) fn apply(
+        &mut self,
+        graph: &mut Graph,
+        ir: &mut Expressions<'_>,
+    ) -> Result<(), Limit> {
+        let mut status = Ok(());
         for row in 0..self.matches.rows.len() {
             let matched = self.matches.rows[row];
             let root = graph.find(matched.root);
@@ -383,12 +385,19 @@ impl Machine {
             {
                 self.slots[slot + 1] = graph.find(value);
             }
-            complete &= self.rewrite(graph, ir, rule);
+            if let Err(limit) = self.rewrite(graph, ir, rule) {
+                status = Err(limit);
+            }
         }
-        complete
+        status
     }
 
-    fn rewrite(&mut self, graph: &mut Graph, ir: &mut Expressions<'_>, rule: &Rule) -> bool {
+    fn rewrite(
+        &mut self,
+        graph: &mut Graph,
+        ir: &mut Expressions<'_>,
+        rule: &Rule,
+    ) -> Result<(), Limit> {
         let root = self.slots[0];
         let ty = ir.body().dfg().value_type(root);
         let mask = u64::MAX >> (64 - ty.element_bits().expect("integer rewrite type"));
@@ -406,19 +415,14 @@ impl Machine {
                     dst,
                     constant: index,
                 } => {
-                    let Some(value) = graph.literal(ir, constant(index)) else {
-                        return false;
-                    };
+                    let value = graph.literal(ir, constant(index))?;
                     self.slots[dst] = value;
                 }
                 Op::Build { dst, opcode, args } => {
                     self.args.clear();
                     self.args
                         .extend(args.iter().map(|slot| graph.find(self.slots[slot])));
-                    let Some(value) = graph.build(ir, PROGRAM.opcodes[opcode], &self.args, ty)
-                    else {
-                        return false;
-                    };
+                    let value = graph.build(ir, PROGRAM.opcodes[opcode], &self.args, ty)?;
                     self.slots[dst] = value;
                 }
                 Op::Union { value } => {
@@ -429,7 +433,7 @@ impl Machine {
                     graph.fold_to(ir, root, constant(index));
                     log::trace!("egraph rule {}", rule.name);
                 }
-                Op::Return {} => return true,
+                Op::Return {} => return Ok(()),
                 op => panic!("query opcode in rewrite: {op:?}"),
             }
         }
@@ -549,12 +553,7 @@ struct RuleCursor {
 }
 
 impl RuleCursor {
-    fn next(
-        &mut self,
-        graph: &Graph,
-        body: &FuncBody,
-        query: &Query,
-    ) -> Option<SmallVec<[Value; 3]>> {
+    fn next(&mut self, graph: &Graph, body: &FuncBody, query: &Query) -> Option<Row> {
         // Borrow only for this read; the reusable cursor owns no graph borrow.
         // Empty, changed-node and relation sources share the exhaustion rule.
         let values: &[Value] = match &self.source {
@@ -565,12 +564,16 @@ impl RuleCursor {
                 .get(&(*class, *opcode))
                 .map_or(&[], Vec::as_slice),
         };
-        let value = *values.get(self.row)?;
-        self.row += 1;
-        let inst = body.dfg().value_inst(value).expect("relation result");
-        // The compiler accepts only single-result pattern operations. Result
-        // types are shared by all members of the queried equivalence class;
-        // operand type requirements are emitted in the matching program.
-        Some(graph.canonical_args(body, inst))
+        loop {
+            let value = *values.get(self.row)?;
+            self.row += 1;
+            let inst = body.dfg().value_inst(value).expect("relation result");
+            // Added-node seeds can outlive local folding in the preceding batch.
+            if graph.kinds[inst] == super::graph::InstKind::Folded {
+                continue;
+            }
+            // The compiler accepts only single-result pattern operations.
+            return Some(graph.canonical_args(body, inst));
+        }
     }
 }

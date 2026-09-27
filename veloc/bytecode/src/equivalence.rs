@@ -5,7 +5,8 @@
 //! yields one binding satisfying its input constraint, or exits on exhaustion.
 //! Query and rewrite entries both end with `Return`. The host batches queries
 //! against a stable graph, then restores captures into slots starting at one
-//! before calling each rewrite entry. Capture records a rule ID, so zero-input
+//! before calling each rewrite entry.
+//! Capture records a rule ID, so zero-input
 //! matches remain distinguishable. Phase scheduling is not part of the VM.
 //! Incremental inputs select query entries compiled for all relevant rules;
 //! only Capture names a rule. Checks branch on `otherwise`, while iterators
