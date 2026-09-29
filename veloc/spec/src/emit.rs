@@ -29,6 +29,7 @@ pub enum Emit {
     Rules,
     Decisions,
     Equivalences,
+    LocalFolds,
 }
 impl Emit {
     pub const ALL: &'static [Self] = &[
@@ -52,6 +53,7 @@ impl Emit {
         Self::Rules,
         Self::Decisions,
         Self::Equivalences,
+        Self::LocalFolds,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -75,6 +77,7 @@ impl Emit {
             Self::Rules => "rules",
             Self::Decisions => "decisions",
             Self::Equivalences => "equivalences",
+            Self::LocalFolds => "local-folds",
         }
     }
     pub fn filename(self) -> String {
@@ -195,7 +198,7 @@ impl Source {
                 continue;
             }
             let text = match kind {
-                Emit::Equivalences => {
+                Emit::Equivalences | Emit::LocalFolds => {
                     let config = options.equivalences.as_ref().ok_or_else(|| {
                         fail("equivalences require definitions and Rust bindings")
                     })?;
@@ -205,6 +208,7 @@ impl Source {
                         config.dialect,
                         config.opcode,
                         config.types,
+                        kind,
                     )
                     .map_err(|e| self.locate(e))?
                 }

@@ -336,21 +336,21 @@ impl Module {
             let config = OptConfig::with_debug_tags(&tags)?;
 
             let mut pm = if engine.config().opt_level == 1 {
-                let mut pm = PassManager::new(config);
-                pm.add_function_pass(veloc_optimizer::ExpressionPass {
-                    budget: if engine.config().fast_egraph {
+                PassManager::o1(
+                    config,
+                    if engine.config().fast_egraph {
                         veloc_optimizer::passes::expression::Budget::FAST
                     } else {
                         veloc_optimizer::passes::expression::Budget::DEFAULT
                     },
-                });
-                pm.add_function_pass(veloc_optimizer::DcePass);
-                pm
+                )
             } else {
                 PassManager::new(config)
             };
 
-            pm = pm.with_profile(profile.clone());
+            pm = pm
+                .with_layout(engine.backend().target().desc().data_layout)
+                .with_profile(profile.clone());
             pm.run_on_module(&mut ir);
         }
 

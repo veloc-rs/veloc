@@ -8,7 +8,10 @@ use veloc_bytecode::{Reader, equivalence::Instruction as Op};
 use veloc_mir::{FuncBody, Opcode, Type, Value, constant::ScalarConst, function::Expressions};
 use veloc_types::TypeInfo;
 
-use super::{Limit, graph::Graph};
+use super::{
+    Limit,
+    graph::{Graph, Root},
+};
 
 struct Group {
     slots: usize,
@@ -24,6 +27,34 @@ pub(super) struct Trigger {
     slot: usize,
     scan: Option<usize>, // Generated plan identity, never a bytecode address.
     pub path: &'static [Edge],
+    types: usize,
+    constants: &'static [(usize, bool)],
+}
+
+impl Trigger {
+    /// Reject impossible inputs before walking their reverse paths. Pattern
+    /// typing ensures every bound input shares the root's type and bit width.
+    pub(super) fn accepts(&self, body: &FuncBody, class: Root) -> bool {
+        if !PROGRAM.types[self.types].contains(&body.dfg().value_type(class.value())) {
+            return false;
+        }
+        if self.constants.is_empty() {
+            return true;
+        }
+        let Some(value) = body.dfg().as_scalar_const(class.value()) else {
+            return false;
+        };
+        let mask = u64::MAX >> (64 - value.ty().element_bits().unwrap());
+        self.constants.iter().all(|&(constant, equal)| {
+            matches_constant(Some(value), PROGRAM.constants[constant], mask, equal)
+        })
+    }
+}
+
+/// Pattern literals are masked to the matched type. Unknown values establish
+/// neither equality nor inequality; scheduling and the VM use the same check.
+fn matches_constant(value: Option<ScalarConst>, bits: u64, mask: u64, equal: bool) -> bool {
+    value.is_some_and(|value| (value.to_bits() == (bits & mask)) == equal)
 }
 
 pub(super) struct Edge {
@@ -35,13 +66,30 @@ pub(super) fn trigger(id: usize) -> &'static Trigger {
     &TRIGGERS[id]
 }
 
+/// Added expressions retain concrete node identity; class changes only carry
+/// equivalence identity. Both are grouped by canonical class during scheduling.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Seed {
+    Added(Value),
+    Class(Root),
+}
+
+impl Seed {
+    pub(super) fn root(self, graph: &Graph) -> Root {
+        match self {
+            Self::Added(value) => graph.find(value),
+            Self::Class(root) => graph.canonicalize(root),
+        }
+    }
+}
+
 /// One root/opcode query, with the union of all affected input positions.
 pub(super) struct Query {
-    pub root: Value,
+    pub root: Root,
     pub opcode: Opcode,
     /// Trigger ID -> seeds sorted by (class, node). Added-node seeds keep
-    /// their concrete identity; constant/merge seeds are class representatives.
-    pub inputs: BTreeMap<usize, Vec<Value>>,
+    /// their concrete identity; class-change seeds are class representatives.
+    pub inputs: BTreeMap<usize, Vec<Seed>>,
 }
 
 struct Program {
@@ -64,7 +112,8 @@ include!(concat!(env!("OUT_DIR"), "/equivalences.rs"));
 /// The rule compiler resolves binding and backtracking. The executor reuses
 /// registers and retains only the RHS inputs of each complete match.
 pub(super) struct Machine {
-    slots: Vec<Value>,
+    slots: Vec<Root>,   // Class bindings used only while querying a stable graph.
+    values: Vec<Value>, // MIR values used to construct detached replacements.
     cursors: Vec<Option<Cursor>>,
     relations: Vec<Relation>,
     index: HashMap<Source, usize>,
@@ -90,7 +139,7 @@ struct Cursor {
 enum Source {
     Empty,
     Relation {
-        class: Value,
+        class: Root,
         opcode: Opcode,
     },
     // A class-filtered slice of one input's seeds. Indices are valid only
@@ -109,13 +158,13 @@ struct Relation {
     exhausted: bool,
 }
 
-type Row = SmallVec<[Value; 3]>;
+type Row = SmallVec<[Root; 3]>;
 
 /// All queries in a round share this buffer. Roots are explicit because a
 /// round can match several classes before any graph updates are applied.
 #[derive(Default)]
 struct Matches {
-    values: Vec<Value>,
+    values: Vec<Root>,
     rows: Vec<Match>,
     seen: HashTable<usize>, // Row indices, without copying captured values.
     hasher: DefaultHashBuilder,
@@ -124,7 +173,7 @@ struct Matches {
 
 #[derive(Clone, Copy)]
 struct Match {
-    root: Value,
+    root: Root,
     rule: usize,
     start: usize,
 }
@@ -139,9 +188,9 @@ impl Matches {
 
     /// Save a complete match, then report a reached capture-buffer limit.
     /// The soft budget may be exceeded by at most one match's charge.
-    fn capture(&mut self, root: Value, rule: usize, slots: &[Value]) -> Result<(), Limit> {
+    fn capture(&mut self, root: Root, rule: usize, slots: &[Root]) -> Result<(), Limit> {
         let captures = PROGRAM.rules[rule].captures;
-        let values: SmallVec<[Value; 3]> = captures.iter().map(|&slot| slots[slot]).collect();
+        let values: SmallVec<[Root; 3]> = captures.iter().map(|&slot| slots[slot]).collect();
         let hash = self.hasher.hash_one((root, rule, values.as_slice()));
         if self
             .seen
@@ -181,6 +230,7 @@ impl Machine {
     pub(super) fn new() -> Self {
         Self {
             slots: Vec::new(),
+            values: Vec::new(),
             cursors: Vec::new(),
             relations: Vec::new(),
             index: HashMap::new(),
@@ -203,7 +253,7 @@ impl Machine {
         self.matches.begin(*fuel);
         let result = queries.iter().try_for_each(|query| {
             let root = query.root;
-            if body.dfg().as_const(root).is_some() {
+            if body.dfg().as_const(root.value()).is_some() {
                 return Ok(());
             }
             self.index.clear();
@@ -236,7 +286,7 @@ impl Machine {
         let entry = trigger(input);
         let seeds = &query.inputs[&input];
         let root = query.root;
-        let ty = body.dfg().value_type(root);
+        let ty = body.dfg().value_type(root.value());
         let mask = u64::MAX >> (64 - ty.element_bits().unwrap());
         let group = group(query.opcode).expect("generated query group");
         self.slots.resize(group.slots, root);
@@ -254,7 +304,7 @@ impl Machine {
                     types,
                     otherwise,
                 } => {
-                    let ty = body.dfg().value_type(self.slots[value]);
+                    let ty = body.dfg().value_type(self.slots[value].value());
                     if !PROGRAM.types[types].contains(&ty) {
                         reader.pc = otherwise;
                     }
@@ -265,7 +315,9 @@ impl Machine {
                     otherwise,
                 } => {
                     let dfg = body.dfg();
-                    if dfg.value_type(self.slots[lhs]) != dfg.value_type(self.slots[rhs]) {
+                    if dfg.value_type(self.slots[lhs].value())
+                        != dfg.value_type(self.slots[rhs].value())
+                    {
                         reader.pc = otherwise;
                     }
                 }
@@ -280,8 +332,8 @@ impl Machine {
                     let source = if entry.scan == Some(scan) {
                         // Seeds are sorted by (class, node). Resolve the class
                         // slice once, then enumerate only affected nodes.
-                        let start = seeds.partition_point(|&v| graph.find(v) < class);
-                        let end = seeds.partition_point(|&v| graph.find(v) <= class);
+                        let start = seeds.partition_point(|&seed| seed.root(graph) < class);
+                        let end = seeds.partition_point(|&seed| seed.root(graph) <= class);
                         if start != end {
                             Source::Candidates { input, start, end }
                         } else {
@@ -322,13 +374,12 @@ impl Machine {
                     constant,
                     otherwise,
                 } => {
-                    let bits = PROGRAM.constants[constant] & mask;
-                    if body
-                        .dfg()
-                        .as_scalar_const(self.slots[value])
-                        .map(|c| c.to_bits())
-                        != Some(bits)
-                    {
+                    if !matches_constant(
+                        body.dfg().as_scalar_const(self.slots[value].value()),
+                        PROGRAM.constants[constant],
+                        mask,
+                        true,
+                    ) {
                         reader.pc = otherwise;
                     }
                 }
@@ -337,13 +388,12 @@ impl Machine {
                     constant,
                     otherwise,
                 } => {
-                    let bits = PROGRAM.constants[constant] & mask;
-                    // Unknown is not evidence of inequality.
-                    if !body
-                        .dfg()
-                        .as_scalar_const(self.slots[value])
-                        .is_some_and(|c| c.to_bits() != bits)
-                    {
+                    if !matches_constant(
+                        body.dfg().as_scalar_const(self.slots[value].value()),
+                        PROGRAM.constants[constant],
+                        mask,
+                        false,
+                    ) {
                         reader.pc = otherwise;
                     }
                 }
@@ -371,19 +421,19 @@ impl Machine {
         let mut status = Ok(());
         for row in 0..self.matches.rows.len() {
             let matched = self.matches.rows[row];
-            let root = graph.find(matched.root);
-            if ir.body().dfg().as_const(root).is_some() {
+            let root = graph.canonicalize(matched.root);
+            if ir.body().dfg().as_const(root.value()).is_some() {
                 continue;
             }
             let rule = &PROGRAM.rules[matched.rule];
-            self.slots.resize(rule.slots, root);
-            self.slots[0] = root;
+            self.values.resize(rule.slots, root.value());
+            self.values[0] = root.value();
             for (slot, &value) in self.matches.values
                 [matched.start..matched.start + rule.captures.len()]
                 .iter()
                 .enumerate()
             {
-                self.slots[slot + 1] = graph.find(value);
+                self.values[slot + 1] = graph.canonicalize(value).value();
             }
             if let Err(limit) = self.rewrite(graph, ir, rule) {
                 status = Err(limit);
@@ -398,7 +448,7 @@ impl Machine {
         ir: &mut Expressions<'_>,
         rule: &Rule,
     ) -> Result<(), Limit> {
-        let root = self.slots[0];
+        let root = self.values[0];
         let ty = ir.body().dfg().value_type(root);
         let mask = u64::MAX >> (64 - ty.element_bits().expect("integer rewrite type"));
         let constant = |index| {
@@ -416,17 +466,19 @@ impl Machine {
                     constant: index,
                 } => {
                     let value = graph.literal(ir, constant(index))?;
-                    self.slots[dst] = value;
+                    self.values[dst] = value;
                 }
                 Op::Build { dst, opcode, args } => {
                     self.args.clear();
-                    self.args
-                        .extend(args.iter().map(|slot| graph.find(self.slots[slot])));
+                    self.args.extend(
+                        args.iter()
+                            .map(|slot| graph.find(self.values[slot]).value()),
+                    );
                     let value = graph.build(ir, PROGRAM.opcodes[opcode], &self.args, ty)?;
-                    self.slots[dst] = value;
+                    self.values[dst] = value;
                 }
                 Op::Union { value } => {
-                    graph.union(ir.body(), root, self.slots[value]);
+                    graph.union(ir.body(), root, self.values[value]);
                     log::trace!("egraph rule {}", rule.name);
                 }
                 Op::SetConstant { constant: index } => {
@@ -506,7 +558,7 @@ impl Machine {
             if binding.iter().zip(row).any(|(&slot, &arg)| {
                 slot == input
                     && seeds
-                        .binary_search_by_key(&arg, |&v| graph.find(v))
+                        .binary_search_by_key(&arg, |&seed| seed.root(graph))
                         .is_err()
             }) {
                 continue;
@@ -556,24 +608,22 @@ impl RuleCursor {
     fn next(&mut self, graph: &Graph, body: &FuncBody, query: &Query) -> Option<Row> {
         // Borrow only for this read; the reusable cursor owns no graph borrow.
         // Empty, changed-node and relation sources share the exhaustion rule.
-        let values: &[Value] = match &self.source {
-            Source::Empty => &[],
-            Source::Candidates { input, start, end } => &query.inputs[input][*start..*end],
-            Source::Relation { class, opcode } => graph
-                .relations
-                .get(&(*class, *opcode))
-                .map_or(&[], Vec::as_slice),
-        };
-        loop {
-            let value = *values.get(self.row)?;
-            self.row += 1;
-            let inst = body.dfg().value_inst(value).expect("relation result");
-            // Added-node seeds can outlive local folding in the preceding batch.
-            if graph.kinds[inst] == super::graph::InstKind::Folded {
-                continue;
+        let value = match &self.source {
+            Source::Empty => return None,
+            Source::Candidates { input, start, end } => {
+                let Seed::Added(value) = query.inputs[input][*start..*end].get(self.row)? else {
+                    unreachable!("only added-node triggers constrain a concrete scan");
+                };
+                *value
             }
-            // The compiler accepts only single-result pattern operations.
-            return Some(graph.canonical_args(body, inst));
-        }
+            Source::Relation { class, opcode } => {
+                *graph.alternatives(*class, *opcode).get(self.row)?
+            }
+        };
+        self.row += 1;
+        let inst = body.dfg().value_inst(value).expect("relation result");
+        // Rebuilding filters folded nodes from both relations and added seeds.
+        // The compiler accepts only single-result pattern operations.
+        Some(graph.canonical_args(body, inst))
     }
 }

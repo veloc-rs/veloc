@@ -10,12 +10,36 @@ use veloc_mir::function::Expressions;
 use veloc_mir::{FuncBody, Inst, IntCC, Opcode as Op, Value, ValueDef};
 use veloc_types::Type;
 
+/// An equivalence-class identity, not an executable operand witness. A saved
+/// root may cease to be canonical after a union; normalize it before reuse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub(super) struct Root(Value);
+
+impl Root {
+    /// Expose MIR identity explicitly for metadata, constants or detached
+    /// candidates. This does not establish dominance at an executable use.
+    pub(super) fn value(self) -> Value {
+        self.0
+    }
+}
+
+impl EntityRef for Root {
+    fn new(index: usize) -> Self {
+        Self(Value::new(index))
+    }
+
+    fn index(self) -> usize {
+        self.0.index()
+    }
+}
+
 /// Equivalence is an overlay on MIR value identities. MIR definitions are never
 /// rewritten to union-find representatives during saturation.
 #[derive(Default)]
 struct UnionFind {
     parents: SecondaryMap<Value, PackedOption<Value>>,
-    sizes: SecondaryMap<Value, usize>,
+    sizes: SecondaryMap<Root, usize>,
 }
 
 impl UnionFind {
@@ -24,25 +48,25 @@ impl UnionFind {
             return false;
         }
         self.parents[value] = value.into();
-        self.sizes[value] = 1;
+        self.sizes[Root(value)] = 1;
         true
     }
 
-    fn find(&self, mut value: Value) -> Value {
+    fn find(&self, mut value: Value) -> Root {
         loop {
             let parent = self.parents[value].expect("registered MIR value");
             if parent == value {
-                return value;
+                return Root(value);
             }
             value = parent;
         }
     }
 
-    fn find_mut(&mut self, mut value: Value) -> Value {
+    fn find_mut(&mut self, mut value: Value) -> Root {
         loop {
             let parent = self.parents[value].expect("registered MIR value");
             if parent == value {
-                return value;
+                return Root(value);
             }
             let grandparent = self.parents[parent].expect("registered parent");
             self.parents[value] = grandparent.into();
@@ -51,11 +75,11 @@ impl UnionFind {
     }
 
     /// The graph chooses the root; union-find only maintains the forest.
-    fn link(&mut self, root: Value, other: Value) {
+    fn link(&mut self, root: Root, other: Root) {
         debug_assert_ne!(root, other);
-        debug_assert_eq!(self.parents[root], root.into());
-        debug_assert_eq!(self.parents[other], other.into());
-        self.parents[other] = root.into();
+        debug_assert_eq!(self.parents[root.0], root.0.into());
+        debug_assert_eq!(self.parents[other.0], other.0.into());
+        self.parents[other.0] = root.0.into();
         self.sizes[root] += self.sizes[other];
     }
 }
@@ -96,18 +120,19 @@ impl<K: EntityRef> Worklist<K> {
 #[derive(PartialEq, Eq, Hash)]
 struct Key {
     opcode: Op,
-    args: SmallVec<[Value; 3]>,
+    args: SmallVec<[Root; 3]>,
     results: SmallVec<[Type; 2]>,
     properties: SmallVec<[IntCC; 1]>,
 }
 
 /// Mutations are batched until congruence indexes have been repaired.
-/// Query batches order events by kind (added, constant, merged), then by ID.
+/// Query batches order events by kind (added, class changed), then by ID.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Change {
     Added(Inst),
-    Constant(Value),
-    Merged(Value),
+    ClassChanged(Root),
+    /// Consumed by index compaction before scheduling queries.
+    Folded(Inst),
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -122,6 +147,50 @@ pub(super) enum InstKind {
     Folded,
 }
 
+/// Indexes owned by one canonical class. During rebuilding, lists may contain
+/// folded instructions; compaction restores live, unique entries before queries.
+#[derive(Clone, Default)]
+struct ClassIndex {
+    users: Vec<Inst>,
+    expressions: HashMap<Op, Vec<Value>>,
+    // Only opcode/column pairs requested by the generated query plans.
+    parents: HashMap<(Op, usize), Vec<Value>>,
+}
+
+impl ClassIndex {
+    fn merge(&mut self, other: Self) {
+        self.users.extend(other.users);
+        for (opcode, values) in other.expressions {
+            self.expressions.entry(opcode).or_default().extend(values);
+        }
+        for (key, values) in other.parents {
+            self.parents.entry(key).or_default().extend(values);
+        }
+    }
+
+    fn compact(&mut self, f: &FuncBody, kinds: &SecondaryMap<Inst, InstKind>) {
+        self.users.retain(|&inst| kinds[inst] != InstKind::Folded);
+        self.users.sort_unstable();
+        self.users.dedup();
+        let live = |&value: &Value| {
+            let inst = f.dfg().value_inst(value).expect("indexed expression");
+            kinds[inst] != InstKind::Folded
+        };
+        // Each expression is registered once and moves with its class. Keep
+        // its insertion order; unlike parent rows, these rows cannot overlap.
+        self.expressions.retain(|_, rows| {
+            rows.retain(live);
+            !rows.is_empty()
+        });
+        self.parents.retain(|_, rows| {
+            rows.retain(live);
+            rows.sort_unstable();
+            rows.dedup();
+            !rows.is_empty()
+        });
+    }
+}
+
 /// All expression storage belongs to MIR. This structure holds equality and
 /// dependency indexes over existing values/instructions. A class containing a
 /// constant is rooted at that unique MIR literal; no separate fact table exists.
@@ -129,19 +198,14 @@ pub(super) struct Graph {
     pub(super) values: Vec<Value>,
     classes: UnionFind,
     pub(super) kinds: SecondaryMap<Inst, InstKind>,
-    pub(super) users: SecondaryMap<Value, Vec<Inst>>,
-    dirty_classes: Worklist<Value>,
+    indexes: SecondaryMap<Root, ClassIndex>,
     changes: Vec<Change>,
-    // Only opcode/column pairs requested by the generated query plans.
-    parents: SecondaryMap<Value, HashMap<(Op, usize), Vec<Value>>>,
     rebuild_work: Worklist<Inst>,
     // Direct MIR operand witnesses, never arbitrary union-find representatives.
     aliases: HashMap<Value, Value>,
     memo: HashTable<Inst>,
     hashes: SecondaryMap<Inst, u64>,
     hasher: DefaultHashBuilder,
-    pub(super) relations: HashMap<(Value, Op), Vec<Value>>,
-    class_ops: SecondaryMap<Value, Vec<Op>>,
     pub(super) limit: usize,
 }
 
@@ -151,30 +215,41 @@ impl Graph {
             values: Vec::new(),
             classes: UnionFind::default(),
             kinds: SecondaryMap::new(),
-            users: SecondaryMap::new(),
-            dirty_classes: Worklist::default(),
+            indexes: SecondaryMap::new(),
             rebuild_work: Worklist::default(),
             aliases: HashMap::new(),
             changes: Vec::new(),
-            parents: SecondaryMap::new(),
             memo: HashTable::new(),
             hashes: SecondaryMap::new(),
             hasher: DefaultHashBuilder::default(),
-            relations: HashMap::new(),
-            class_ops: SecondaryMap::new(),
             limit: usize::MAX,
         }
     }
 
-    pub(super) fn find(&self, value: Value) -> Value {
+    pub(super) fn find(&self, value: Value) -> Root {
         self.classes.find(value)
+    }
+
+    pub(super) fn canonicalize(&self, root: Root) -> Root {
+        self.classes.find(root.0)
+    }
+
+    pub(super) fn alternatives(&self, class: Root, opcode: Op) -> &[Value] {
+        self.indexes[class]
+            .expressions
+            .get(&opcode)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub(super) fn users(&self, class: Root) -> &[Inst] {
+        &self.indexes[class].users
     }
 
     pub(super) fn register_value(&mut self, f: &FuncBody, value: Value) {
         if self.classes.insert(value) {
             self.values.push(value);
             if f.dfg().as_const(value).is_some() {
-                self.changes.push(Change::Constant(value));
+                self.changes.push(Change::ClassChanged(Root(value)));
             }
         }
     }
@@ -186,19 +261,25 @@ impl Graph {
     }
 
     pub(super) fn args<'a>(&self, f: &'a FuncBody, value: Value) -> &'a [Value] {
-        if f.dfg().as_const(self.find(value)).is_some() {
+        if f.dfg().as_const(self.find(value).value()).is_some() {
             return &[];
         }
         self.floating_inst(f, value)
             .map_or(&[], |inst| f.dfg().operands(inst))
     }
 
-    pub(super) fn canonical_args(&self, f: &FuncBody, inst: Inst) -> SmallVec<[Value; 3]> {
-        self.normalize_args(f.dfg().opcode(inst), f.dfg().operands(inst))
+    pub(super) fn canonical_args(&self, f: &FuncBody, inst: Inst) -> SmallVec<[Root; 3]> {
+        let args: SmallVec<[Root; 3]> = f
+            .dfg()
+            .operands(inst)
+            .iter()
+            .map(|&v| self.find(v))
+            .collect();
+        self.normalize_args(f.dfg().opcode(inst), &args)
     }
 
-    fn normalize_args(&self, opcode: Op, args: &[Value]) -> SmallVec<[Value; 3]> {
-        let mut args: SmallVec<_> = args.iter().map(|&v| self.find(v)).collect();
+    fn normalize_args(&self, opcode: Op, args: &[Root]) -> SmallVec<[Root; 3]> {
+        let mut args: SmallVec<_> = args.iter().map(|&root| self.canonicalize(root)).collect();
         if opcode.spec().is_commutative() && args.len() == 2 && args[0] > args[1] {
             args.swap(0, 1);
         }
@@ -246,7 +327,7 @@ impl Graph {
         } else {
             InstKind::Pinned
         };
-        let mut args: SmallVec<[Value; 3]> = f
+        let mut args: SmallVec<[Root; 3]> = f
             .dfg()
             .operands(inst)
             .iter()
@@ -255,23 +336,24 @@ impl Graph {
         args.sort_unstable();
         args.dedup();
         for arg in args {
-            self.users[arg].push(inst);
+            self.indexes[arg].users.push(inst);
         }
         if self.kinds[inst] == InstKind::Floating {
             let result = f.dfg().first_result(inst).expect("expression result");
             let class = self.find(result);
             let opcode = f.dfg().opcode(inst);
-            let row = self.relations.entry((class, opcode)).or_default();
-            if row.is_empty() {
-                self.class_ops[class].push(opcode);
-            }
-            row.push(result);
+            self.indexes[class]
+                .expressions
+                .entry(opcode)
+                .or_default()
+                .push(result);
             // A new alternative can satisfy a nested pattern in an existing
             // parent even when no operand or constant fact changes.
             self.changes.push(Change::Added(inst));
             for &column in matching::indexed_columns(opcode) {
                 let arg = self.find(f.dfg().operands(inst)[column]);
-                self.parents[arg]
+                self.indexes[arg]
+                    .parents
                     .entry((opcode, column))
                     .or_default()
                     .push(result);
@@ -291,8 +373,8 @@ impl Graph {
         if a == b {
             return;
         }
-        let a_const = matches!(f.dfg().value_def(a), ValueDef::Const(_));
-        let b_const = matches!(f.dfg().value_def(b), ValueDef::Const(_));
+        let a_const = matches!(f.dfg().value_def(a.value()), ValueDef::Const(_));
+        let b_const = matches!(f.dfg().value_def(b.value()), ValueDef::Const(_));
         assert!(!(a_const && b_const), "rewrite equated distinct constants");
         // Canonical literals are terminal roots. Other classes use union by
         // size; attaching one to a literal adds at most one final parent edge.
@@ -301,71 +383,27 @@ impl Graph {
         }
         self.classes.link(a, b);
         let constant = a_const || b_const;
-        for user in core::mem::take(&mut self.users[b]) {
+        let source = core::mem::take(&mut self.indexes[b]);
+        for &user in &source.users {
             if self.kinds[user] == InstKind::Folded {
                 continue;
             }
             self.rebuild_work.push(user);
-            self.users[a].push(user);
         }
-        for opcode in core::mem::take(&mut self.class_ops[b]) {
-            let source = self.relations.remove(&(b, opcode)).expect("indexed opcode");
-            let target = self.relations.entry((a, opcode)).or_default();
-            if target.is_empty() {
-                self.class_ops[a].push(opcode);
-            }
-            target.extend(source);
-        }
-        self.dirty_classes.push(a);
-        for (key, values) in core::mem::take(&mut self.parents[b]) {
-            self.parents[a].entry(key).or_default().extend(values);
-        }
-        self.changes.push(Change::Merged(a));
+        self.indexes[a].merge(source);
+        // One event covers both new equalities and any resulting constant fact.
+        self.changes.push(Change::ClassChanged(a));
         if constant {
             // A known result also makes its pure producers unnecessary.
-            for &opcode in &self.class_ops[a] {
-                for &value in &self.relations[&(a, opcode)] {
+            for values in self.indexes[a].expressions.values() {
+                for &value in values {
                     let inst = f.dfg().value_inst(value).expect("indexed expression");
-                    self.rebuild_work.push(inst);
-                }
-            }
-            // The losing class's parents can now match constant predicates,
-            // even when this literal was already known in another class.
-            self.changes.push(Change::Constant(a));
-        }
-    }
-
-    /// Drop a reduced expression from all search/hash-consing indexes. Its MIR
-    /// storage stays immutable until the session ends, but is not a memo tombstone.
-    fn discard(&mut self, f: &FuncBody, inst: Inst) {
-        assert!(self.kinds[inst] == InstKind::Floating);
-        self.kinds[inst] = InstKind::Folded;
-        if let Ok(entry) = self.memo.find_entry(self.hashes[inst], |&old| old == inst) {
-            entry.remove();
-        }
-        let node = f.dfg().inst_results(inst)[0];
-        let class = self.find(node);
-        let opcode = f.dfg().opcode(inst);
-        let rows = self
-            .relations
-            .get_mut(&(class, opcode))
-            .expect("indexed expression");
-        rows.retain(|&v| v != node);
-        if rows.is_empty() {
-            self.relations.remove(&(class, opcode));
-            self.class_ops[class].retain(|&op| op != opcode);
-        }
-        for &column in matching::indexed_columns(opcode) {
-            let arg = self.find(f.dfg().operands(inst)[column]);
-            let index = &mut self.parents[arg];
-            if let Some(rows) = index.get_mut(&(opcode, column)) {
-                rows.retain(|&v| v != node);
-                if rows.is_empty() {
-                    index.remove(&(opcode, column));
+                    if self.kinds[inst] != InstKind::Folded {
+                        self.rebuild_work.push(inst);
+                    }
                 }
             }
         }
-        // Dependency lists are compacted in batches; queued stale work is skipped.
     }
 
     /// An executable replacement must follow actual operand edges, not the
@@ -373,8 +411,8 @@ impl Graph {
     pub(super) fn replacement(&self, f: &FuncBody, mut value: Value) -> Value {
         loop {
             let class = self.find(value);
-            if f.dfg().as_const(class).is_some() {
-                return class;
+            if f.dfg().as_const(class.value()).is_some() {
+                return class.value();
             }
             match self.aliases.get(&value) {
                 Some(&next) => value = next,
@@ -398,21 +436,10 @@ impl Graph {
     /// Bounded local reasoning over a not-yet-allocated operation. Argument
     /// order is preserved so Operand(i) also identifies the original MIR input.
     fn reduce(&self, f: &FuncBody, key: &Key) -> Option<SmallVec<[Fold; 2]>> {
-        if let [ty] = key.results.as_slice()
-            && key.properties.is_empty()
-            && let Some(fold) = matching::fold(key.opcode, *ty, &key.args, |value| {
-                f.dfg().as_scalar_const(value)
-            })
-        {
-            return Some(smallvec::smallvec![fold]);
-        }
-        let constants: SmallVec<[ScalarConst; 3]> = key
-            .args
-            .iter()
-            .map(|&value| f.dfg().as_scalar_const(value))
-            .collect::<Option<_>>()?;
-        crate::evaluate::evaluate(key.opcode, &constants, &key.results, &key.properties)
-            .map(|values| values.into_iter().map(Fold::Constant).collect())
+        let args: SmallVec<[Value; 3]> = key.args.iter().map(|root| root.value()).collect();
+        crate::evaluate::reduce(key.opcode, &args, &key.results, &key.properties, |value| {
+            f.dfg().as_scalar_const(value)
+        })
     }
 
     pub(super) fn fold_to(
@@ -428,6 +455,38 @@ impl Graph {
         self.union(ir.body(), value, literal);
     }
 
+    fn try_fold(&mut self, ir: &mut Expressions<'_>, inst: Inst, key: &Key) -> bool {
+        let results: SmallVec<[Value; 2]> = ir.body().dfg().inst_results(inst).into();
+        // A known value alone cannot discharge a pinned operation's trap.
+        // Evaluate its actual inputs before granting permission to erase it.
+        let known = self.kinds[inst] == InstKind::Floating
+            && results
+                .iter()
+                .all(|&v| ir.body().dfg().as_const(self.find(v).value()).is_some());
+        if !known {
+            let Some(reduced) = self.reduce(ir.body(), key) else {
+                return false;
+            };
+            assert_eq!(reduced.len(), results.len(), "fold result arity");
+            for (&value, fold) in results.iter().zip(reduced) {
+                match fold {
+                    Fold::Operand(index) => {
+                        let operand = ir.body().dfg().operands(inst)[index];
+                        let replacement = self.replacement(ir.body(), operand);
+                        self.aliases.insert(value, replacement);
+                        self.union(ir.body(), value, operand);
+                    }
+                    Fold::Constant(c) => self.fold_to(ir, value, c),
+                }
+            }
+        }
+        // Rebuilding already removed the memo entry. Lists are compacted once
+        // the entire wave has settled; MIR storage remains alive until commit.
+        self.kinds[inst] = InstKind::Folded;
+        self.changes.push(Change::Folded(inst));
+        true
+    }
+
     /// Normalize dirty expressions before exposing them to the matcher. This
     /// bounded reduction never creates operations, only literals or equalities;
     /// unlike exploratory rules it also completes when search fuel is exhausted.
@@ -439,39 +498,8 @@ impl Graph {
             if let Ok(entry) = self.memo.find_entry(self.hashes[inst], |&old| old == inst) {
                 entry.remove();
             }
-            let f = ir.body();
-            let results: SmallVec<[Value; 2]> = f.dfg().inst_results(inst).into();
-            let known = results
-                .iter()
-                .all(|&v| f.dfg().as_const(self.find(v)).is_some());
-            let mut key = self.key(f, inst);
-            // A known value alone cannot discharge a pinned operation's trap.
-            // Evaluate its actual inputs before granting permission to erase it.
-            let reduced = if known && self.kinds[inst] == InstKind::Floating {
-                None
-            } else {
-                self.reduce(f, &key)
-            };
-            if (known && self.kinds[inst] == InstKind::Floating) || reduced.is_some() {
-                if let Some(reduced) = reduced {
-                    assert_eq!(reduced.len(), results.len(), "fold result arity");
-                    for (&value, fold) in results.iter().zip(reduced) {
-                        match fold {
-                            Fold::Operand(index) => {
-                                let operand = ir.body().dfg().operands(inst)[index];
-                                let replacement = self.replacement(ir.body(), operand);
-                                self.aliases.insert(value, replacement);
-                                self.union(ir.body(), value, operand);
-                            }
-                            Fold::Constant(c) => self.fold_to(ir, value, c),
-                        }
-                    }
-                }
-                if self.kinds[inst] == InstKind::Floating {
-                    self.discard(ir.body(), inst);
-                } else {
-                    self.kinds[inst] = InstKind::Folded;
-                }
+            let mut key = self.key(ir.body(), inst);
+            if self.try_fold(ir, inst, &key) {
                 continue;
             }
             if self.kinds[inst] != InstKind::Floating {
@@ -482,6 +510,7 @@ impl Graph {
             let hash = self.hasher.hash_one(&key);
             self.hashes[inst] = hash;
             if let Some(other) = self.lookup(ir.body(), &key) {
+                let results: SmallVec<[Value; 2]> = ir.body().dfg().inst_results(inst).into();
                 let outputs: SmallVec<[Value; 2]> = ir.body().dfg().inst_results(other).into();
                 for (&a, &b) in results.iter().zip(&outputs) {
                     self.union(ir.body(), a, b);
@@ -490,18 +519,39 @@ impl Graph {
                 self.memo.insert_unique(hash, inst, |&i| self.hashes[i]);
             }
         }
-        // Consolidate once after a wave of unions, rather than sorting the
-        // growing winner list after every individual merge.
-        while let Some(class) = self.dirty_classes.pop() {
-            if self.find(class) == class {
-                self.users[class].retain(|&inst| self.kinds[inst] != InstKind::Folded);
-                self.users[class].sort_unstable();
-                self.users[class].dedup();
-                for rows in self.parents[class].values_mut() {
-                    rows.sort_unstable();
-                    rows.dedup();
-                }
+        self.compact_indexes(ir.body());
+    }
+
+    /// Derive cleanup work from mutations at the stable rebuild boundary. Only
+    /// matching events survive, including when the caller stops at a budget limit.
+    fn compact_indexes(&mut self, f: &FuncBody) {
+        let mut affected = Vec::new();
+        self.changes.retain_mut(|change| match change {
+            Change::Added(inst) => self.kinds[*inst] != InstKind::Folded,
+            Change::ClassChanged(class) => {
+                *class = self.classes.find(class.value());
+                affected.push(*class);
+                true
             }
+            Change::Folded(inst) => {
+                // Operand classes own users/parents; result classes own the
+                // expressions. Either may have merged since the fold occurred.
+                affected.extend(
+                    f.dfg()
+                        .operands(*inst)
+                        .iter()
+                        .chain(f.dfg().inst_results(*inst))
+                        .map(|&value| self.classes.find(value)),
+                );
+                false
+            }
+        });
+        self.changes.sort_unstable();
+        self.changes.dedup();
+        affected.sort_unstable();
+        affected.dedup();
+        for class in affected {
+            self.indexes[class].compact(f, &self.kinds);
         }
     }
 
@@ -510,37 +560,29 @@ impl Graph {
     /// seeds at the same position are searched together, not as separate tasks.
     pub(super) fn schedule(&mut self, f: &FuncBody, queries: &mut Vec<matching::Query>) {
         let mut changes = core::mem::take(&mut self.changes);
-        // Distinct events may become duplicates after their classes merge.
-        // Normalize once at the stable query boundary, before ordering them.
-        for change in &mut changes {
-            match change {
-                Change::Added(_) => {}
-                Change::Constant(value) | Change::Merged(value) => {
-                    *value = self.find(*value);
-                }
-            }
-        }
-        changes.sort_unstable();
-        changes.dedup();
-
         let mut batches = HashMap::new();
         let mut frontier = HashSet::new();
         let mut next = HashSet::new();
         for change in changes.drain(..) {
             let (seed, entries) = match change {
-                Change::Added(inst) if self.kinds[inst] == InstKind::Folded => continue,
                 Change::Added(inst) => (
-                    f.dfg().first_result(inst).expect("expression result"),
+                    matching::Seed::Added(f.dfg().first_result(inst).expect("expression result")),
                     matching::added(f.dfg().opcode(inst)),
                 ),
-                Change::Constant(value) => (value, matching::CONSTANT_TRIGGERS),
-                Change::Merged(value) => (value, matching::MERGE_TRIGGERS),
+                Change::ClassChanged(root) => {
+                    (matching::Seed::Class(root), matching::CLASS_TRIGGERS)
+                }
+                Change::Folded(_) => unreachable!("folded events are consumed by rebuild"),
             };
+            let class = seed.root(self);
             for &entry in entries {
                 let trigger = matching::trigger(entry);
-                self.trace_parents(seed, trigger.path, &mut frontier, &mut next);
+                if !trigger.accepts(f, class) {
+                    continue;
+                }
+                self.trace_parents(class, trigger.path, &mut frontier, &mut next);
                 for &root in &frontier {
-                    if !self.relations.contains_key(&(root, trigger.root)) {
+                    if self.alternatives(root, trigger.root).is_empty() {
                         continue;
                     }
                     let batch = *batches.entry((root, trigger.root)).or_insert_with(|| {
@@ -561,7 +603,7 @@ impl Graph {
         // grouping by class makes constrained candidate slices cheap to locate.
         for query in queries.iter_mut() {
             for seeds in query.inputs.values_mut() {
-                seeds.sort_unstable_by_key(|&v| (self.find(v), v));
+                seeds.sort_unstable_by_key(|&seed| (seed.root(self), seed));
                 seeds.dedup();
             }
         }
@@ -572,18 +614,18 @@ impl Graph {
     /// Reuse both sets across triggers; each step deduplicates merged classes.
     fn trace_parents(
         &self,
-        seed: Value,
+        seed: Root,
         path: &[matching::Edge],
-        frontier: &mut HashSet<Value>,
-        next: &mut HashSet<Value>,
+        frontier: &mut HashSet<Root>,
+        next: &mut HashSet<Root>,
     ) {
         frontier.clear();
-        frontier.insert(self.find(seed));
+        frontier.insert(seed);
         for edge in path {
             next.clear();
             for &class in frontier.iter() {
                 for &column in edge.columns {
-                    if let Some(rows) = self.parents[class].get(&(edge.opcode, column)) {
+                    if let Some(rows) = self.indexes[class].parents.get(&(edge.opcode, column)) {
                         next.extend(rows.iter().map(|&v| self.find(v)));
                     }
                 }
@@ -644,9 +686,12 @@ impl Graph {
         if self.values.len() >= self.limit {
             return Err(Limit::Nodes);
         }
+        // Detached candidates may use representatives; executable operands are
+        // selected separately under dominance checks during extraction.
+        let args: SmallVec<[Value; 3]> = key.args.iter().map(|root| root.value()).collect();
         let inst = ir.create(
             |w| {
-                w.from_values(opcode, &key.args)
+                w.from_values(opcode, &args)
                     .expect("value-only rule operation")
             },
             &[ty],
@@ -674,15 +719,5 @@ impl Graph {
 }
 
 fn can_analyze(f: &FuncBody, inst: Inst) -> bool {
-    let view = f.dfg().inst(inst);
-    let results = f.dfg().inst_results(inst);
-    !results.is_empty()
-        && (matching::can_fold(view.opcode())
-            || (results
-                .iter()
-                .all(|&v| ScalarConst::from_bits(f.dfg().value_type(v), 0).is_some())
-                && crate::evaluate::can_fold(view.opcode())))
-        && view.memory_effect().is_none()
-        && !view.is_terminator()
-        && !view.opcode().transfers_ownership()
+    crate::evaluate::can_reduce(f.dfg(), inst)
 }

@@ -23,15 +23,19 @@ impl PassManager {
     }
 
     pub fn new_o1() -> Self {
-        let mut pm = Self::new(OptConfig::default());
-        pm.add_function_pass(crate::ExpressionPass {
-            budget: crate::passes::expression::Budget::DEFAULT,
-        });
-        pm.add_function_pass(dce::DcePass);
+        Self::o1(
+            OptConfig::default(),
+            crate::passes::expression::Budget::DEFAULT,
+        )
+    }
+
+    /// Prepare constants and local identities before memory forwarding, then
+    /// spend the equality-search budget once on the resulting expressions.
+    pub fn o1(config: OptConfig, budget: crate::passes::expression::Budget) -> Self {
+        let mut pm = Self::new(config);
+        pm.add_function_pass(crate::SimplifyPass);
         pm.add_function_pass(crate::passes::MemoryPass);
-        pm.add_function_pass(crate::ExpressionPass {
-            budget: crate::passes::expression::Budget::DEFAULT,
-        });
+        pm.add_function_pass(crate::ExpressionPass { budget });
         pm.add_function_pass(dce::DcePass);
         pm
     }

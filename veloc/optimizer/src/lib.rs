@@ -9,7 +9,7 @@ pub mod passes;
 pub use error::Error;
 pub use manager::PassManager;
 pub use pass::{FunctionPass, ModulePass, OptConfig, Pass, PreservedAnalyses};
-pub use passes::{DcePass, ExpressionPass};
+pub use passes::{DcePass, ExpressionPass, SimplifyPass};
 pub use veloc_profile::Profile;
 
 /// 获取所有已知的调试标签列表

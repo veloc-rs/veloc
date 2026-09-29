@@ -185,10 +185,11 @@ impl<'a> EqualitySession<'a> {
         let Self {
             ir,
             mut graph,
-            anchors,
+            mut anchors,
         } = self;
         let mut ir = ir.freeze();
         let mut changed = Self::commit_folds(&mut graph, &mut ir);
+        anchors.retain(|&inst| graph.kinds[inst] != InstKind::Folded);
         // Selection reads simplified executable operands. Keep old instructions
         // alive as source templates until selection and emission have finished.
         let extraction = graph.extract(ir.body(), &anchors, model, dom, rank, work);
@@ -371,7 +372,7 @@ block0(v0: i64):
         assert!(graph.kinds[insts[3]] == InstKind::Floating);
         let other = ir.body().dfg().inst_results(insts[3])[0];
         assert_eq!(graph.find(other), graph.find(Value(0)));
-        assert_eq!(graph.relations[&(graph.find(other), Op::ISub)], [other]);
+        assert_eq!(graph.alternatives(graph.find(other), Op::ISub), [other]);
 
         // Construction returns the input, without allocating or consulting a tombstone.
         let count = graph.values.len();
@@ -457,7 +458,7 @@ block0():
 
         graph.union(ir.body(), Value(2), one);
         for index in 0..3 {
-            assert_eq!(graph.find(Value(index)), one);
+            assert_eq!(graph.find(Value(index)).value(), one);
         }
         // Both argument orders preserve the literal root. The last merge must
         // wake the addition even though this constant root was already known.
@@ -465,12 +466,12 @@ block0():
         graph.union(ir.body(), Value(4), one);
         graph.union(ir.body(), Value(0), Value(4));
         for index in 0..5 {
-            assert_eq!(graph.find(Value(index)), one);
+            assert_eq!(graph.find(Value(index)).value(), one);
         }
         graph.rebuild(&mut ir);
         let two = ir.constant(ScalarConst::from(2i32).into());
-        assert_eq!(graph.find(sum), two);
-        assert_eq!(graph.find(one), one);
+        assert_eq!(graph.find(sum).value(), two);
+        assert_eq!(graph.find(one).value(), one);
 
         // Finish one matching round with a known zero and an unrelated parent.
         // Only the subsequent merge can reveal the parent's x + 0 identity.

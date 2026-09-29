@@ -1,7 +1,7 @@
 //! Select expressions at executable uses, then commit a dominance-valid plan.
 use super::{
     CostModel, Limit,
-    graph::{Graph, InstKind},
+    graph::{Graph, InstKind, Root},
 };
 use cranelift_entity::SecondaryMap;
 use hashbrown::{HashMap, HashSet};
@@ -26,7 +26,7 @@ struct Recipe {
 struct Step {
     before: Inst,
     recipe: Recipe,
-    refs: usize,
+    needed: bool,
 }
 
 struct Rewrite {
@@ -51,7 +51,7 @@ impl Extraction {
         }
         let mut results = Vec::<SmallVec<[Value; 2]>>::with_capacity(self.steps.len());
         for step in self.steps {
-            if step.refs == 0 {
+            if !step.needed {
                 results.push(SmallVec::new());
                 continue;
             }
@@ -96,8 +96,8 @@ struct Mark {
 #[derive(Default)]
 struct Plan {
     steps: Vec<Recipe>,
-    inputs: SecondaryMap<Value, Option<Input>>,
-    bound: Vec<Value>,
+    inputs: SecondaryMap<Root, Option<Input>>,
+    bound: Vec<Root>,
     operations: HashMap<Inst, usize>,
 }
 
@@ -118,7 +118,7 @@ impl Plan {
         }
     }
 
-    fn bind(&mut self, class: Value, input: Input) {
+    fn bind(&mut self, class: Root, input: Input) {
         debug_assert!(self.inputs[class].is_none());
         self.inputs[class] = Some(input);
         self.bound.push(class);
@@ -128,7 +128,7 @@ impl Plan {
 /// Explicit DFS frames avoid native-stack growth for deep expressions. Each
 /// frame tries alternatives until all dependencies can be placed at this use.
 struct Frame {
-    class: Value,
+    class: Root,
     candidates: Candidates,
     state: State,
     mark: Mark,
@@ -172,7 +172,7 @@ impl Candidates {
 }
 
 impl Frame {
-    fn new(class: Value, mark: Mark) -> Self {
+    fn new(class: Root, mark: Mark) -> Self {
         Self {
             class,
             candidates: Candidates::default(),
@@ -193,13 +193,13 @@ enum Visit {
 
 #[derive(Default)]
 struct Scope {
-    inputs: SecondaryMap<Value, Option<Input>>,
-    undo: Vec<(Value, Option<Input>)>,
+    inputs: SecondaryMap<Root, Option<Input>>,
+    undo: Vec<(Root, Option<Input>)>,
     marks: Vec<usize>,
 }
 
 impl Scope {
-    fn bind(&mut self, class: Value, input: Input) {
+    fn bind(&mut self, class: Root, input: Input) {
         self.undo.push((class, self.inputs[class]));
         self.inputs[class] = Some(input);
     }
@@ -222,11 +222,11 @@ struct Planner<'a> {
     graph: &'a Graph,
     body: &'a FuncBody,
     work: &'a mut usize,
-    candidates: SecondaryMap<Value, SmallVec<[Candidate; 2]>>,
+    candidates: SecondaryMap<Root, SmallVec<[Candidate; 2]>>,
     dom: &'a Dominators,
     order: InstOrder,
     available: Scope,
-    active: SecondaryMap<Value, bool>,
+    active: SecondaryMap<Root, bool>,
 }
 
 impl Graph {
@@ -253,12 +253,12 @@ impl Graph {
         f: &FuncBody,
         model: &dyn CostModel,
         work: &mut usize,
-    ) -> SecondaryMap<Value, SmallVec<[Candidate; 2]>> {
+    ) -> SecondaryMap<Root, SmallVec<[Candidate; 2]>> {
         let mut costs = SecondaryMap::with_default((usize::MAX, usize::MAX));
         let mut ranks = SecondaryMap::with_default((usize::MAX, usize::MAX));
         let mut pending = VecDeque::new();
         let mut queued = SecondaryMap::<Value, bool>::new();
-        let mut candidates = SecondaryMap::<Value, SmallVec<[Candidate; 2]>>::new();
+        let mut candidates = SecondaryMap::<Root, SmallVec<[Candidate; 2]>>::new();
         for &value in &self.values {
             if f.dfg()
                 .value_inst(value)
@@ -268,7 +268,7 @@ impl Graph {
             }
             let class = self.find(value);
             // A literal is the answer, not an alternative to rank or place.
-            if f.dfg().as_const(class).is_some() {
+            if f.dfg().as_const(class.value()).is_some() {
                 costs[class] = (0, 0);
                 continue;
             }
@@ -297,12 +297,10 @@ impl Graph {
             ranks[value] = (price, depth);
             if price != usize::MAX && (price, depth) < costs[class] {
                 costs[class] = (price, depth);
-                for &user in &self.users[class] {
-                    if self.kinds[user] == InstKind::Folded {
-                        continue;
-                    }
+                for &user in self.users(class) {
                     for &result in f.dfg().inst_results(user) {
-                        if f.dfg().as_const(self.find(result)).is_none() && !queued[result] {
+                        if f.dfg().as_const(self.find(result).value()).is_none() && !queued[result]
+                        {
                             queued[result] = true;
                             pending.push_back(result);
                         }
@@ -453,7 +451,7 @@ impl Planner<'_> {
                 .extend(plan.steps.drain(..).map(|recipe| Step {
                     before: anchor,
                     recipe,
-                    refs: 0,
+                    needed: false,
                 }));
             plan.operations.clear();
         }
@@ -463,7 +461,7 @@ impl Planner<'_> {
     /// Charge the selected computation DAG, including original definitions kept
     /// by any root. Counting only new recipes would incorrectly make a reused
     /// instruction free, or miss an old computation still needed by another use.
-    /// Reference counts belong to occurrences, never to equivalence classes.
+    /// Liveness belongs to occurrences, never to equivalence classes.
     /// Finish this finite traversal even if it exhausts the search budget: a
     /// complete selection must not be discarded halfway through pricing it.
     fn cost(&mut self, extraction: &mut Extraction, model: &dyn CostModel) -> usize {
@@ -505,10 +503,10 @@ impl Planner<'_> {
                 }
                 Input::Result { step, .. } => {
                     let step = &mut extraction.steps[step];
-                    step.refs += 1;
-                    if step.refs != 1 {
+                    if step.needed {
                         continue;
                     }
+                    step.needed = true;
                     let Recipe { source, args } = &step.recipe;
 
                     pending.extend(args.iter().copied());
@@ -560,7 +558,7 @@ impl Planner<'_> {
     /// On a cost tie prefer a definition already available here. Otherwise two
     /// sibling blocks could repeatedly copy each other's equivalent expression
     /// on every optimizer invocation instead of keeping their own definition.
-    fn preferred(&mut self, class: Value, anchor: Inst) -> Option<Value> {
+    fn preferred(&mut self, class: Root, anchor: Inst) -> Option<Value> {
         let mut best = None;
         let mut rank = (usize::MAX, usize::MAX);
         for index in 0..self.candidates[class].len() {
@@ -592,7 +590,7 @@ impl Planner<'_> {
         &mut self,
         anchor: Inst,
         base: usize,
-        root: Value,
+        root: Root,
         plan: &mut Plan,
         stack: &mut Vec<Frame>,
     ) -> Result<Resolve, Limit> {
@@ -620,8 +618,8 @@ impl Planner<'_> {
             }
             match frame.state {
                 State::Start => {
-                    if self.body.dfg().as_const(class).is_some() {
-                        plan.bind(class, Input::Existing(class));
+                    if self.body.dfg().as_const(class.value()).is_some() {
+                        plan.bind(class, Input::Existing(class.value()));
                         self.active[class] = false;
                         stack.pop();
                         continue;
@@ -717,8 +715,8 @@ impl Planner<'_> {
                         if plan.inputs[class].is_some() {
                             continue;
                         }
-                        let input = if self.body.dfg().as_const(class).is_some() {
-                            Input::Existing(class)
+                        let input = if self.body.dfg().as_const(class.value()).is_some() {
+                            Input::Existing(class.value())
                         } else if let Some(input) = self.available.inputs[class] {
                             input
                         } else {

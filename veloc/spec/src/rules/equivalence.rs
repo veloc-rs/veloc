@@ -15,6 +15,7 @@ pub(crate) fn generate(
     dialect: &str,
     opcode: &str,
     types: &str,
+    artifact: crate::Emit,
 ) -> Result<String, Error> {
     if !super::identifier(dialect)
         || ![opcode, types]
@@ -231,6 +232,9 @@ pub(crate) fn generate(
             groups.entry(name.to_owned()).or_default().push(rule);
         }
     }
+    if artifact == crate::Emit::LocalFolds {
+        return Ok(local_folds(&groups, defs, opcode, types));
+    }
     writeln!(
         output,
         "fn group(opcode: {opcode}) -> Option<Group> {{\nmatch opcode {{"
@@ -246,7 +250,6 @@ pub(crate) fn generate(
     }
     writeln!(output, "_ => None,\n}}\n}}").unwrap();
     output.push_str(&program.emit(opcode));
-    output.push_str(&local_folds(&groups, defs, opcode, types));
     Ok(output)
 }
 
@@ -664,6 +667,39 @@ enum Step {
     Capture(usize),
 }
 
+/// Predicates on any occurrence of a repeated variable constrain all its
+/// occurrences. Derive them from the same equality checks used by the matcher.
+fn input_constants(prefix: &[(Step, usize)], slot: usize) -> Vec<(usize, bool)> {
+    let mut aliases = BTreeSet::new();
+    let mut pending = vec![slot];
+    while let Some(slot) = pending.pop() {
+        if !aliases.insert(slot) {
+            continue;
+        }
+        for (step, _) in prefix {
+            if let Step::Equal(a, b) = *step {
+                if a == slot {
+                    pending.push(b);
+                }
+                if b == slot {
+                    pending.push(a);
+                }
+            }
+        }
+    }
+    prefix
+        .iter()
+        .filter_map(|(step, _)| match *step {
+            Step::Constant(slot, constant, equal) if aliases.contains(&slot) => {
+                Some((constant, equal))
+            }
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 struct Search {
     step: Step,
     scan: Option<usize>,
@@ -730,8 +766,7 @@ struct Edge {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Event {
     Added(usize),
-    Constant,
-    Merged,
+    ClassChanged,
 }
 
 struct Trigger {
@@ -743,6 +778,8 @@ struct Trigger {
     event: Event,
     scan: Option<usize>,
     path: Vec<Edge>,
+    types: usize,
+    constants: Vec<(usize, bool)>,
 }
 
 struct Bytecode {
@@ -845,6 +882,8 @@ impl Bytecode {
                 trigger.event.clone(),
                 trigger.scan,
                 trigger.path.clone(),
+                trigger.types,
+                trigger.constants.clone(),
             );
             queries
                 .entry(key)
@@ -983,6 +1022,13 @@ impl Bytecode {
     /// Derive wake-up entries and operand indexes from the exact scan plan
     /// that emitted the matcher, not a second traversal of the source pattern.
     fn triggers_for(&mut self, rule: usize, prefix: &[(Step, usize)]) {
+        let types = prefix
+            .iter()
+            .find_map(|(step, _)| match step {
+                Step::Type(types) => Some(*types),
+                _ => None,
+            })
+            .expect("rule type domain");
         let mut paths: BTreeMap<usize, Vec<Edge>> = BTreeMap::from([(0, Vec::new())]);
         let mut root = None;
         for (step, scan) in prefix {
@@ -1003,6 +1049,8 @@ impl Bytecode {
                     event: Event::Added(*opcode),
                     scan: Some(*scan),
                     path: parent.clone(),
+                    types,
+                    constants: input_constants(prefix, *source),
                 });
                 let slots = &bindings[0];
                 for &slot in slots {
@@ -1030,38 +1078,20 @@ impl Bytecode {
             }
         }
         let root = root.expect("rule root scan");
-        let constants: BTreeSet<_> = prefix
-            .iter()
-            .filter_map(|(step, _)| {
-                if let Step::Constant(slot, _, _) = step {
-                    Some(*slot)
-                } else {
-                    None
-                }
-            })
-            .collect();
         for (slot, path) in paths {
-            if constants.contains(&slot) {
-                self.triggers.push(Trigger {
-                    root,
-                    rules: BTreeSet::from([rule]),
-                    entry: 0,
-                    slot,
-                    event: Event::Constant,
-                    scan: None,
-                    path: path.clone(),
-                });
-            }
             // Unions can create new joins and satisfy repeated-variable checks
-            // without adding any expression. Every bound class is a dependency.
+            // or constant predicates without adding an expression. Every bound
+            // class is a dependency; conditions filter its final state.
             self.triggers.push(Trigger {
                 root,
                 rules: BTreeSet::from([rule]),
                 entry: 0,
                 slot,
-                event: Event::Merged,
+                event: Event::ClassChanged,
                 scan: None,
                 path,
+                types,
+                constants: input_constants(prefix, slot),
             });
         }
     }
@@ -1122,14 +1152,12 @@ impl Bytecode {
             self.constants, code).unwrap();
         writeln!(output, "static TRIGGERS: &[Trigger] = &[").unwrap();
         let mut added: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        let mut constants = Vec::new();
-        let mut merged = Vec::new();
+        let mut changed = Vec::new();
         let mut indexes: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
         for (id, trigger) in self.triggers.iter().enumerate() {
             match trigger.event {
                 Event::Added(op) => added.entry(op).or_default().push(id),
-                Event::Constant => constants.push(id),
-                Event::Merged => merged.push(id),
+                Event::ClassChanged => changed.push(id),
             }
             let path = trigger
                 .path
@@ -1146,8 +1174,8 @@ impl Bytecode {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            writeln!(output, "Trigger {{ root: {opcode}::{}, entry: {}, slot: {}, scan: {:?}, path: &[{path}] }},",
-                self.opcodes[trigger.root], trigger.entry, trigger.slot, trigger.scan).unwrap();
+            writeln!(output, "Trigger {{ root: {opcode}::{}, entry: {}, slot: {}, scan: {:?}, path: &[{path}], types: {}, constants: &{:?} }},",
+                self.opcodes[trigger.root], trigger.entry, trigger.slot, trigger.scan, trigger.types, trigger.constants).unwrap();
         }
         writeln!(output, "];").unwrap();
         writeln!(
@@ -1161,12 +1189,7 @@ impl Bytecode {
         writeln!(output, "_ => &[], }} }}").unwrap();
         writeln!(
             output,
-            "pub(super) const CONSTANT_TRIGGERS: &[usize] = &{constants:?};"
-        )
-        .unwrap();
-        writeln!(
-            output,
-            "pub(super) const MERGE_TRIGGERS: &[usize] = &{merged:?};"
+            "pub(super) const CLASS_TRIGGERS: &[usize] = &{changed:?};"
         )
         .unwrap();
         writeln!(

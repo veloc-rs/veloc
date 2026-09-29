@@ -22,7 +22,7 @@ fn main() {
     }
     let generated = rules
         .generate(
-            &[Emit::Equivalences],
+            &[Emit::Equivalences, Emit::LocalFolds],
             Options {
                 equivalences: Some(Equivalences {
                     definitions: &source,

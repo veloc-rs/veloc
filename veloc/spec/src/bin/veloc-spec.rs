@@ -155,7 +155,9 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             interfaces: args.namespace.as_deref(),
             rules,
             decisions,
-            equivalences: if args.emit.contains(&Emit::Equivalences) {
+            equivalences: if args.emit.contains(&Emit::Equivalences)
+                || args.emit.contains(&Emit::LocalFolds)
+            {
                 Some(Equivalences {
                     definitions: definitions
                         .as_ref()
