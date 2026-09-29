@@ -102,20 +102,27 @@ fn run_with_analyses(
     changed
 }
 
-/// Deterministic search limits for one function. Both profiles
+/// Search and extraction limits for one function. Both profiles
 /// run the same graph optimizer; neither is a separate greedy rewrite engine.
 #[derive(Clone, Copy)]
 pub struct Budget {
-    /// Additional nodes allowed beyond the imported function.
+    /// New detached instructions allowed across all rewrite rounds. Imports,
+    /// literals, reuse and operations folded during construction do not count.
+    /// Later folding does not refund an instruction's allocation.
     pub graph_nodes: usize,
+    /// Maximum rounds of matching, rewriting and rebuilding.
     pub rounds: usize,
+    /// Maximum unique matches retained per round, independent of search fuel.
+    pub matches: usize,
+    /// Query entries and attempted row bindings across all rounds.
     pub match_steps: usize,
-    /// Cost-propagation steps for candidate ranking. Partial estimates remain
-    /// usable; exhaustion must not consume the placement budget.
+    /// Cost-propagation steps for candidate ranking. Initialization, final
+    /// candidate estimates and sorting are outside this budget. On exhaustion,
+    /// candidates use the partial class estimates without spending placement fuel.
     pub rank_steps: usize,
-    /// Placement work, independently of ranking. Exhaustion before the plan
-    /// is complete preserves the original code with established local folds.
-    /// Those replacements commit independently of this budget.
+    /// Candidate-search state transitions, independently of ranking. Exhaustion
+    /// rolls back the unfinished operand; remaining uses keep their originals.
+    /// Completed choices still undergo the full DAG cost check, which is unmetered.
     pub extract_steps: usize,
 }
 
@@ -123,6 +130,7 @@ impl Budget {
     pub const FAST: Self = Self {
         graph_nodes: 160,
         rounds: 2,
+        matches: 4_096,
         match_steps: 16_384,
         rank_steps: 4_096,
         extract_steps: 12_288,
@@ -130,6 +138,7 @@ impl Budget {
     pub const DEFAULT: Self = Self {
         graph_nodes: 512,
         rounds: 6,
+        matches: 65_536,
         match_steps: 262_144,
         rank_steps: 32_768,
         extract_steps: 98_304,
@@ -158,7 +167,7 @@ impl<'a> EqualitySession<'a> {
                 }
             }
         }
-        graph.limit = graph.values.len().saturating_add(budget.graph_nodes);
+        graph.remaining_nodes = budget.graph_nodes;
         Self {
             ir: f.expressions(),
             graph,
@@ -166,8 +175,8 @@ impl<'a> EqualitySession<'a> {
         }
     }
 
-    fn saturate(&mut self, rounds: usize, fuel: &mut usize) -> Stop {
-        let stop = saturate(&mut self.graph, &mut self.ir, rounds, fuel);
+    fn saturate(&mut self, rounds: usize, matches: usize, fuel: &mut usize) -> Stop {
+        let stop = saturate(&mut self.graph, &mut self.ir, rounds, matches, fuel);
         match stop {
             Stop::Saturated => log::debug!("egraph saturated"),
             Stop::Limited(limit) => log::debug!("egraph limited: {limit:?}"),
@@ -256,7 +265,13 @@ enum Limit {
     ExtractWork,
 }
 
-fn saturate(graph: &mut Graph, ir: &mut Expressions<'_>, rounds: usize, fuel: &mut usize) -> Stop {
+fn saturate(
+    graph: &mut Graph,
+    ir: &mut Expressions<'_>,
+    rounds: usize,
+    matches: usize,
+    fuel: &mut usize,
+) -> Stop {
     let mut machine = matching::Machine::new();
     let mut queries = Vec::new();
     graph.rebuild(ir);
@@ -277,7 +292,7 @@ fn saturate(graph: &mut Graph, ir: &mut Expressions<'_>, rounds: usize, fuel: &m
 
         // All roots see the same immutable graph. Even a partial search has
         // sound matches worth applying before returning a budget stop.
-        let searched = machine.search(graph, ir.body(), &queries, fuel);
+        let searched = machine.search(graph, ir.body(), &queries, matches, fuel);
         let applied = machine.apply(graph, ir);
         graph.rebuild(ir);
         if let Err(limit) = searched {
@@ -305,6 +320,7 @@ fn optimize_function(
 ) -> bool {
     let scope = metrics.scope("egraph.import", 0);
     let mut session = EqualitySession::new(f, budget);
+    session.graph.profile = metrics.clone();
     scope.success();
     if !session
         .graph
@@ -316,13 +332,17 @@ fn optimize_function(
     }
     let mut fuel = budget.match_steps;
     let scope = metrics.scope("egraph.saturate", 0);
-    let stop = session.saturate(budget.rounds, &mut fuel);
+    let stop = session.saturate(budget.rounds, budget.matches, &mut fuel);
     if let Stop::Limited(limit) = stop {
         metrics.count("budget_stops", 1);
         metrics.remark(|| format!("egraph saturation stopped: {limit:?}"));
     }
     scope.success();
     metrics.count("egraph.nodes", session.graph.values.len() as u64);
+    metrics.count(
+        "egraph.created_nodes",
+        (budget.graph_nodes - session.graph.remaining_nodes) as u64,
+    );
     let mut rank = budget.rank_steps;
     let mut work = budget.extract_steps;
     let scope = metrics.scope("egraph.extract", 0);
@@ -361,7 +381,7 @@ block0(v0: i64):
         let insts: Vec<_> = body.layout().block_insts(body.entry_block()).collect();
         let mut session = EqualitySession::new(body, Budget::DEFAULT);
         let mut fuel = Budget::DEFAULT.match_steps;
-        session.saturate(Budget::DEFAULT.rounds, &mut fuel);
+        session.saturate(Budget::DEFAULT.rounds, Budget::DEFAULT.matches, &mut fuel);
         let graph = &mut session.graph;
         let ir = &mut session.ir;
         // Import folding removes both concrete identities from search.
@@ -377,7 +397,7 @@ block0(v0: i64):
         // Construction returns the input, without allocating or consulting a tombstone.
         let count = graph.values.len();
         let inst_count = ir.body().dfg().inst_count();
-        graph.limit = 0;
+        graph.remaining_nodes = 0;
         let zero = ir.constant(ScalarConst::from(0i64).into());
         let rebuilt = graph
             .build(ir, Op::ISub, &[Value(0), zero], Type::I64)
@@ -426,7 +446,7 @@ block0():
             let dom = Dominators::compute(body.cfg(), body.entry_block());
             let mut session = EqualitySession::new(body, Budget::DEFAULT);
             // Import reduction is independent of exploratory matching fuel.
-            session.saturate(0, &mut 0);
+            session.saturate(0, Budget::DEFAULT.matches, &mut 0);
             let mut rank = 0;
             session.finish(&GenericCost, &dom, &mut rank, &mut work);
             let insts: Vec<_> = body.layout().block_insts(body.entry_block()).collect();
@@ -454,7 +474,7 @@ block0():
         let sum = graph
             .build(&mut ir, Op::IAdd, &[Value(2), Value(4)], Type::I32)
             .unwrap();
-        let one = graph.literal(&mut ir, ScalarConst::from(1i32)).unwrap();
+        let one = graph.literal(&mut ir, ScalarConst::from(1i32));
 
         graph.union(ir.body(), Value(2), one);
         for index in 0..3 {
@@ -475,14 +495,26 @@ block0():
 
         // Finish one matching round with a known zero and an unrelated parent.
         // Only the subsequent merge can reveal the parent's x + 0 identity.
-        let zero = graph.literal(&mut ir, ScalarConst::from(0i32)).unwrap();
+        let zero = graph.literal(&mut ir, ScalarConst::from(0i32));
         let parent = graph
             .build(&mut ir, Op::IAdd, &[Value(5), Value(6)], Type::I32)
             .unwrap();
         let mut fuel = Budget::DEFAULT.match_steps;
-        super::saturate(&mut graph, &mut ir, Budget::DEFAULT.rounds, &mut fuel);
+        super::saturate(
+            &mut graph,
+            &mut ir,
+            Budget::DEFAULT.rounds,
+            Budget::DEFAULT.matches,
+            &mut fuel,
+        );
         graph.union(ir.body(), Value(6), zero);
-        super::saturate(&mut graph, &mut ir, Budget::DEFAULT.rounds, &mut fuel);
+        super::saturate(
+            &mut graph,
+            &mut ir,
+            Budget::DEFAULT.rounds,
+            Budget::DEFAULT.matches,
+            &mut fuel,
+        );
         assert_eq!(graph.find(parent), graph.find(Value(5)));
     }
 
@@ -492,8 +524,8 @@ block0():
         let mut body = FuncBody::new(&[]);
         let mut ir = body.expressions();
         let mut graph = Graph::new();
-        let one = graph.literal(&mut ir, ScalarConst::from(1i32)).unwrap();
-        let two = graph.literal(&mut ir, ScalarConst::from(2i32)).unwrap();
+        let one = graph.literal(&mut ir, ScalarConst::from(1i32));
+        let two = graph.literal(&mut ir, ScalarConst::from(2i32));
         graph.union(ir.body(), one, two);
     }
 
@@ -551,26 +583,27 @@ block1():
             let x = Value(0);
             let y = Value(1);
             let mut graph = Graph::new();
-            graph.limit = Budget::DEFAULT.graph_nodes;
+            graph.remaining_nodes = Budget::DEFAULT.graph_nodes;
             graph.register_value(&body, x);
             graph.register_value(&body, y);
             let mut ir = body.expressions();
             let sum = graph.build(&mut ir, Op::IAdd, &[x, y], ty).unwrap();
             let cancel = graph.build(&mut ir, Op::ISub, &[sum, x], ty).unwrap();
-            let max = graph
-                .literal(
-                    &mut ir,
-                    ScalarConst::from_bits(ty, u64::MAX >> (64 - ty.element_bits().unwrap()))
-                        .unwrap(),
-                )
-                .unwrap();
-            let one = graph
-                .literal(&mut ir, ScalarConst::from_bits(ty, 1).unwrap())
-                .unwrap();
+            let max = graph.literal(
+                &mut ir,
+                ScalarConst::from_bits(ty, u64::MAX >> (64 - ty.element_bits().unwrap())).unwrap(),
+            );
+            let one = graph.literal(&mut ir, ScalarConst::from_bits(ty, 1).unwrap());
             let left = graph.build(&mut ir, Op::IAdd, &[x, max], ty).unwrap();
             let wrapped = graph.build(&mut ir, Op::IAdd, &[left, one], ty).unwrap();
             let mut fuel = Budget::DEFAULT.match_steps;
-            super::saturate(&mut graph, &mut ir, Budget::DEFAULT.rounds, &mut fuel);
+            super::saturate(
+                &mut graph,
+                &mut ir,
+                Budget::DEFAULT.rounds,
+                Budget::DEFAULT.matches,
+                &mut fuel,
+            );
             assert_eq!(graph.find(cancel), graph.find(y), "{ty:?}");
             assert_eq!(graph.find(wrapped), graph.find(x), "{ty:?}");
         }
@@ -681,7 +714,7 @@ block0(v0: i64, v1: ptr):
             }
         }
         let result = body.dfg().inst_results(multiply.unwrap())[0];
-        assert_eq!(body.dfg().operands(store.unwrap())[0], result);
+        assert_eq!(body.dfg().operands(store.unwrap())[1], result);
         assert_eq!(body.dfg().operands(ret.unwrap()), &[result]);
         module.validate().unwrap();
     }

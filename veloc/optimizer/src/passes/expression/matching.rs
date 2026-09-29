@@ -1,9 +1,8 @@
 //! Equality-saturation bytecode. All rules share one program and constant pool.
 //! Queries run against a stable graph; actions run after enumeration finishes.
-use hashbrown::{HashTable, hash_map::DefaultHashBuilder};
+use hashbrown::HashSet;
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, HashMap};
-use std::hash::BuildHasher;
 use veloc_bytecode::{Reader, equivalence::Instruction as Op};
 use veloc_mir::{FuncBody, Opcode, Type, Value, constant::ScalarConst, function::Expressions};
 use veloc_types::TypeInfo;
@@ -26,7 +25,7 @@ pub(super) struct Trigger {
     entry: usize, // Query bytecode shared by all rules using this input.
     slot: usize,
     scan: Option<usize>, // Generated plan identity, never a bytecode address.
-    pub path: &'static [Edge],
+    pub path: PathId,
     types: usize,
     constants: &'static [(usize, bool)],
 }
@@ -62,8 +61,24 @@ pub(super) struct Edge {
     pub columns: &'static [usize],
 }
 
-pub(super) fn trigger(id: usize) -> &'static Trigger {
-    &TRIGGERS[id]
+/// Interned reverse path shared by generated triggers.
+#[derive(Clone, Copy)]
+pub(super) struct PathId(usize);
+
+impl PathId {
+    pub(super) fn index(self) -> usize {
+        self.0
+    }
+}
+
+/// Index into the generated trigger table, distinct from rule IDs, slots and
+/// bytecode offsets. Only this module and its generated tables construct IDs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub(super) struct TriggerId(usize);
+
+pub(super) fn trigger(id: TriggerId) -> &'static Trigger {
+    &TRIGGERS[id.0]
 }
 
 /// Added expressions retain concrete node identity; class changes only carry
@@ -89,7 +104,7 @@ pub(super) struct Query {
     pub opcode: Opcode,
     /// Trigger ID -> seeds sorted by (class, node). Added-node seeds keep
     /// their concrete identity; class-change seeds are class representatives.
-    pub inputs: BTreeMap<usize, Vec<Seed>>,
+    pub inputs: BTreeMap<TriggerId, Vec<Seed>>,
 }
 
 struct Program {
@@ -131,7 +146,7 @@ struct Cursor {
     row: usize,
     binding: usize,
     bindings: Bindings,
-    input: usize,
+    input: TriggerId,
 }
 
 /// Relation data can be shared independently of bindings and input constraints.
@@ -145,7 +160,7 @@ enum Source {
     // A class-filtered slice of one input's seeds. Indices are valid only
     // within the current query; relation caches are reset between queries.
     Candidates {
-        input: usize,
+        input: TriggerId,
         start: usize,
         end: usize,
     },
@@ -160,68 +175,50 @@ struct Relation {
 
 type Row = SmallVec<[Root; 3]>;
 
-/// All queries in a round share this buffer. Roots are explicit because a
-/// round can match several classes before any graph updates are applied.
+/// All queries in a round share this set. Complete matches own their captures;
+/// application order is unspecified and no graph update occurs during capture.
 #[derive(Default)]
 struct Matches {
-    values: Vec<Root>,
-    rows: Vec<Match>,
-    seen: HashTable<usize>, // Row indices, without copying captured values.
-    hasher: DefaultHashBuilder,
-    limit: usize,
+    entries: HashSet<Match>,
+    remaining: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq, Hash)]
 struct Match {
     root: Root,
     rule: usize,
-    start: usize,
+    captures: SmallVec<[Root; 3]>,
 }
 
 impl Matches {
     fn begin(&mut self, limit: usize) {
-        self.values.clear();
-        self.rows.clear();
-        self.seen.clear();
-        self.limit = limit;
+        self.entries.clear();
+        self.remaining = limit;
     }
 
-    /// Save a complete match, then report a reached capture-buffer limit.
-    /// The soft budget may be exceeded by at most one match's charge.
+    /// Save complete, unique matches up to the per-round storage limit.
+    /// The match that fills the buffer is still applied before search stops.
     fn capture(&mut self, root: Root, rule: usize, slots: &[Root]) -> Result<(), Limit> {
-        let captures = PROGRAM.rules[rule].captures;
-        let values: SmallVec<[Root; 3]> = captures.iter().map(|&slot| slots[slot]).collect();
-        let hash = self.hasher.hash_one((root, rule, values.as_slice()));
-        if self
-            .seen
-            .find(hash, |&row| {
-                let old = self.rows[row];
-                old.root == root
-                    && old.rule == rule
-                    && self.values[old.start..old.start + captures.len()] == values[..]
-            })
-            .is_some()
-        {
-            return Ok(());
+        if self.remaining == 0 {
+            return Err(Limit::Matches);
         }
-        let row = self.rows.len();
-        self.rows.push(Match {
+        let captures: SmallVec<[Root; 3]> = PROGRAM.rules[rule]
+            .captures
+            .iter()
+            .map(|&slot| slots[slot])
+            .collect();
+        if !self.entries.insert(Match {
             root,
             rule,
-            start: self.values.len(),
-        });
-        self.values.extend_from_slice(&values);
-        self.seen.insert_unique(hash, row, |&row| {
-            let old = self.rows[row];
-            let end = old.start + PROGRAM.rules[old.rule].captures.len();
-            self.hasher
-                .hash_one((old.root, old.rule, &self.values[old.start..end]))
-        });
-        // Charge the three header fields too, even for zero-capture rules.
-        if self.rows.len() * 3 + self.values.len() < self.limit {
-            Ok(())
-        } else {
+            captures,
+        }) {
+            return Ok(());
+        }
+        self.remaining -= 1;
+        if self.remaining == 0 {
             Err(Limit::Matches)
+        } else {
+            Ok(())
         }
     }
 }
@@ -247,10 +244,12 @@ impl Machine {
         graph: &Graph,
         body: &FuncBody,
         queries: &[Query],
+        matches: usize,
         fuel: &mut usize,
     ) -> Result<(), Limit> {
+        let scope = graph.profile.scope("egraph.search", 0);
         self.index.clear();
-        self.matches.begin(*fuel);
+        self.matches.begin(matches);
         let result = queries.iter().try_for_each(|query| {
             let root = query.root;
             if body.dfg().as_const(root.value()).is_some() {
@@ -272,6 +271,21 @@ impl Machine {
         // Keep backing allocations for the next round.
         self.cursors.clear();
         self.index.clear();
+        graph
+            .profile
+            .count("matches", self.matches.entries.len() as u64);
+        if graph.profile.enabled() {
+            let mut rules = vec![0u64; PROGRAM.rules.len()];
+            for matched in &self.matches.entries {
+                rules[matched.rule] += 1;
+            }
+            for (rule, count) in PROGRAM.rules.iter().zip(rules) {
+                if count != 0 {
+                    graph.profile.count(rule.name, count);
+                }
+            }
+        }
+        scope.success();
         result
     }
 
@@ -280,7 +294,7 @@ impl Machine {
         graph: &Graph,
         body: &FuncBody,
         query: &Query,
-        input: usize,
+        input: TriggerId,
         fuel: &mut usize,
     ) -> Result<(), Limit> {
         let entry = trigger(input);
@@ -418,9 +432,13 @@ impl Machine {
         graph: &mut Graph,
         ir: &mut Expressions<'_>,
     ) -> Result<(), Limit> {
+        let scope = graph.profile.scope("egraph.apply", 0);
         let mut status = Ok(());
-        for row in 0..self.matches.rows.len() {
-            let matched = self.matches.rows[row];
+        // Move the set out while rewriting so its keys remain immutable. Drain
+        // every saved match, including after a node-budget stop, then reuse its
+        // allocation next round. No discovery order is required.
+        let mut pending = core::mem::take(&mut self.matches.entries);
+        for matched in pending.drain() {
             let root = graph.canonicalize(matched.root);
             if ir.body().dfg().as_const(root.value()).is_some() {
                 continue;
@@ -428,17 +446,15 @@ impl Machine {
             let rule = &PROGRAM.rules[matched.rule];
             self.values.resize(rule.slots, root.value());
             self.values[0] = root.value();
-            for (slot, &value) in self.matches.values
-                [matched.start..matched.start + rule.captures.len()]
-                .iter()
-                .enumerate()
-            {
+            for (slot, &value) in matched.captures.iter().enumerate() {
                 self.values[slot + 1] = graph.canonicalize(value).value();
             }
             if let Err(limit) = self.rewrite(graph, ir, rule) {
                 status = Err(limit);
             }
         }
+        self.matches.entries = pending;
+        scope.success();
         status
     }
 
@@ -465,7 +481,7 @@ impl Machine {
                     dst,
                     constant: index,
                 } => {
-                    let value = graph.literal(ir, constant(index))?;
+                    let value = graph.literal(ir, constant(index));
                     self.values[dst] = value;
                 }
                 Op::Build { dst, opcode, args } => {
@@ -492,7 +508,7 @@ impl Machine {
     }
 
     /// Open a source with static bindings and an input checked when bound.
-    fn open(&mut self, cursor: usize, source: Source, bindings: Bindings, input: usize) {
+    fn open(&mut self, cursor: usize, source: Source, bindings: Bindings, input: TriggerId) {
         let id = self.index.len();
         let relation = *self.index.entry(source).or_insert_with(|| {
             let cursor = RuleCursor { source, row: 0 };
@@ -530,7 +546,7 @@ impl Machine {
     ) -> bool {
         let cursor = self.cursors[cursor].as_mut().expect("opened query cursor");
         let relation = &mut self.relations[cursor.relation];
-        let input = trigger(cursor.input).slot;
+        let input_slot = trigger(cursor.input).slot;
         let seeds = &query.inputs[&cursor.input];
         while *fuel > 0 {
             *fuel -= 1;
@@ -556,7 +572,7 @@ impl Machine {
             }
 
             if binding.iter().zip(row).any(|(&slot, &arg)| {
-                slot == input
+                slot == input_slot
                     && seeds
                         .binary_search_by_key(&arg, |&seed| seed.root(graph))
                         .is_err()

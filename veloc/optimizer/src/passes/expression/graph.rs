@@ -3,7 +3,7 @@ use super::{Limit, matching};
 use crate::evaluate::Fold;
 use core::hash::BuildHasher;
 use cranelift_entity::{EntityRef, SecondaryMap, packed_option::PackedOption};
-use hashbrown::{HashMap, HashSet, HashTable, hash_map::DefaultHashBuilder};
+use hashbrown::{HashMap, HashTable, hash_map::DefaultHashBuilder};
 use smallvec::SmallVec;
 use veloc_mir::constant::ScalarConst;
 use veloc_mir::function::Expressions;
@@ -195,6 +195,7 @@ impl ClassIndex {
 /// dependency indexes over existing values/instructions. A class containing a
 /// constant is rooted at that unique MIR literal; no separate fact table exists.
 pub(super) struct Graph {
+    pub(super) profile: crate::Profile,
     pub(super) values: Vec<Value>,
     classes: UnionFind,
     pub(super) kinds: SecondaryMap<Inst, InstKind>,
@@ -206,12 +207,14 @@ pub(super) struct Graph {
     memo: HashTable<Inst>,
     hashes: SecondaryMap<Inst, u64>,
     hasher: DefaultHashBuilder,
-    pub(super) limit: usize,
+    /// Detached instructions still allowed; literals and import never consume it.
+    pub(super) remaining_nodes: usize,
 }
 
 impl Graph {
     pub(super) fn new() -> Self {
         Self {
+            profile: crate::Profile::default(),
             values: Vec::new(),
             classes: UnionFind::default(),
             kinds: SecondaryMap::new(),
@@ -222,7 +225,7 @@ impl Graph {
             memo: HashTable::new(),
             hashes: SecondaryMap::new(),
             hasher: DefaultHashBuilder::default(),
-            limit: usize::MAX,
+            remaining_nodes: usize::MAX,
         }
     }
 
@@ -491,6 +494,7 @@ impl Graph {
     /// bounded reduction never creates operations, only literals or equalities;
     /// unlike exploratory rules it also completes when search fuel is exhausted.
     pub(super) fn rebuild(&mut self, ir: &mut Expressions<'_>) {
+        let scope = self.profile.scope("egraph.rebuild", 0);
         while let Some(inst) = self.rebuild_work.pop() {
             if self.kinds[inst] == InstKind::Folded {
                 continue;
@@ -520,6 +524,7 @@ impl Graph {
             }
         }
         self.compact_indexes(ir.body());
+        scope.success();
     }
 
     /// Derive cleanup work from mutations at the stable rebuild boundary. Only
@@ -559,10 +564,14 @@ impl Graph {
     /// matcher plan. Each root/opcode batch keeps all affected input positions;
     /// seeds at the same position are searched together, not as separate tasks.
     pub(super) fn schedule(&mut self, f: &FuncBody, queries: &mut Vec<matching::Query>) {
+        let scope = self.profile.scope("egraph.schedule", 0);
         let mut changes = core::mem::take(&mut self.changes);
         let mut batches = HashMap::new();
-        let mut frontier = HashSet::new();
-        let mut next = HashSet::new();
+        let mut frontier = SmallVec::<[Root; 8]>::new();
+        let mut next = SmallVec::<[Root; 8]>::new();
+        // One entry per generated path, reused across seeds in this immutable
+        // scheduling phase. No runtime hashing of path descriptions is needed.
+        let mut paths = vec![(None, SmallVec::<[Root; 8]>::new()); matching::PATHS.len()];
         for change in changes.drain(..) {
             let (seed, entries) = match change {
                 Change::Added(inst) => (
@@ -580,8 +589,21 @@ impl Graph {
                 if !trigger.accepts(f, class) {
                     continue;
                 }
-                self.trace_parents(class, trigger.path, &mut frontier, &mut next);
-                for &root in &frontier {
+                // Different rule inputs often walk the same reverse path from
+                // this seed. Cache the roots independently of their predicates.
+                let (seed_class, roots) = &mut paths[trigger.path.index()];
+                if *seed_class != Some(class) {
+                    self.trace_parents(
+                        class,
+                        matching::PATHS[trigger.path.index()],
+                        &mut frontier,
+                        &mut next,
+                    );
+                    roots.clear();
+                    roots.extend_from_slice(&frontier);
+                    *seed_class = Some(class);
+                }
+                for &root in roots.iter() {
                     if self.alternatives(root, trigger.root).is_empty() {
                         continue;
                     }
@@ -608,19 +630,22 @@ impl Graph {
             }
         }
         queries.sort_unstable_by_key(|query| (query.root, query.opcode as usize));
+        self.profile.count("queries", queries.len() as u64);
+        scope.success();
     }
 
     /// Follow a nested pattern outward from its changed input to query roots.
-    /// Reuse both sets across triggers; each step deduplicates merged classes.
+    /// Most reverse paths have few parents. Reuse compact buffers and deduplicate
+    /// after each edge instead of hashing every intermediate class.
     fn trace_parents(
         &self,
         seed: Root,
         path: &[matching::Edge],
-        frontier: &mut HashSet<Root>,
-        next: &mut HashSet<Root>,
+        frontier: &mut SmallVec<[Root; 8]>,
+        next: &mut SmallVec<[Root; 8]>,
     ) {
         frontier.clear();
-        frontier.insert(seed);
+        frontier.push(seed);
         for edge in path {
             next.clear();
             for &class in frontier.iter() {
@@ -630,6 +655,8 @@ impl Graph {
                     }
                 }
             }
+            next.sort_unstable();
+            next.dedup();
             core::mem::swap(frontier, next);
             if frontier.is_empty() {
                 break;
@@ -637,17 +664,10 @@ impl Graph {
         }
     }
 
-    pub(super) fn literal(
-        &mut self,
-        ir: &mut Expressions<'_>,
-        value: ScalarConst,
-    ) -> Result<Value, Limit> {
+    pub(super) fn literal(&mut self, ir: &mut Expressions<'_>, value: ScalarConst) -> Value {
         let result = ir.constant(value.into());
-        if self.classes.parents[result].is_none() && self.values.len() >= self.limit {
-            return Err(Limit::Nodes);
-        }
         self.register_value(ir.body(), result);
-        Ok(result)
+        result
     }
 
     pub(super) fn build(
@@ -669,9 +689,7 @@ impl Graph {
                 Fold::Operand(index) => self.replacement(ir.body(), args[index]),
                 Fold::Constant(c) => {
                     // A literal is a terminal answer, not a speculative node.
-                    let value = ir.constant(c.into());
-                    self.register_value(ir.body(), value);
-                    value
+                    self.literal(ir, c)
                 }
             });
         }
@@ -683,7 +701,7 @@ impl Graph {
                 .first_result(inst)
                 .expect("expression result"));
         }
-        if self.values.len() >= self.limit {
+        if self.remaining_nodes == 0 {
             return Err(Limit::Nodes);
         }
         // Detached candidates may use representatives; executable operands are
@@ -696,6 +714,7 @@ impl Graph {
             },
             &[ty],
         );
+        self.remaining_nodes -= 1;
         assert!(
             can_analyze(ir.body(), inst),
             "rule operation lacks a semantic recipe"

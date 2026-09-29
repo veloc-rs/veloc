@@ -4,7 +4,7 @@ use super::{
     graph::{Graph, InstKind, Root},
 };
 use cranelift_entity::SecondaryMap;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 use veloc_analyzer::Dominators;
@@ -15,18 +15,16 @@ use veloc_mir::{Block, FuncBody, Inst, Value, ValueDef};
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Input {
     Existing(Value),
-    Result { step: usize, index: usize },
+    Result { step: StepId, index: usize },
 }
 
-struct Recipe {
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StepId(usize);
+
+struct PlannedInst {
+    before: Inst,
     source: Inst,
     args: SmallVec<[Input; 3]>,
-}
-
-struct Step {
-    before: Inst,
-    recipe: Recipe,
-    needed: bool,
 }
 
 struct Rewrite {
@@ -35,42 +33,33 @@ struct Rewrite {
     input: Input,
 }
 
-/// A complete plan, not a global class-to-value preference. Steps are in
-/// dependency order, and each use names an occurrence available at that use.
-/// Planning never edits MIR; budget exhaustion leaves no partially emitted code.
+/// An accepted plan with fixed instruction IDs, analyzed liveness and changed
+/// uses. Live instructions include all their dependencies, which precede them
+/// in the plan. Only applying this plan edits executable MIR.
 #[derive(Default)]
 pub(super) struct Extraction {
-    steps: Vec<Step>,
+    steps: Vec<PlannedInst>,
+    live: Vec<bool>,
     rewrites: Vec<Rewrite>,
 }
 
 impl Extraction {
     pub(super) fn apply(self, ir: &mut FrozenExpressions<'_>) -> u64 {
-        if self.rewrites.is_empty() {
-            return 0;
-        }
-        let mut results = Vec::<SmallVec<[Value; 2]>>::with_capacity(self.steps.len());
-        for step in self.steps {
-            if !step.needed {
-                results.push(SmallVec::new());
+        // Keep result slots indexed by the original StepId, including dead slots.
+        let mut results = vec![SmallVec::<[Value; 2]>::new(); self.steps.len()];
+        for (id, step) in self.steps.into_iter().enumerate() {
+            if !self.live[id] {
                 continue;
             }
-            let args: SmallVec<[Value; 3]> = step
-                .recipe
-                .args
-                .iter()
-                .map(|arg| arg.value(&results))
-                .collect();
-            let inst = ir.place(step.before, step.recipe.source, &args);
-            results.push(ir.body().dfg().inst_results(inst).into());
+            let args: SmallVec<[Value; 3]> =
+                step.args.iter().map(|arg| arg.value(&results)).collect();
+            let inst = ir.place(step.before, step.source, &args);
+            results[id] = ir.body().dfg().inst_results(inst).into();
         }
-        let mut changed = 0;
+        let changed = self.rewrites.len() as u64;
         for rewrite in self.rewrites {
             let value = rewrite.input.value(&results);
-            if ir.body().dfg().operands(rewrite.inst)[rewrite.operand as usize] != value {
-                ir.replace_input(rewrite.inst, rewrite.operand, value);
-                changed += 1;
-            }
+            ir.replace_input(rewrite.inst, rewrite.operand, value);
         }
         changed
     }
@@ -80,40 +69,64 @@ impl Input {
     fn value(self, results: &[SmallVec<[Value; 2]>]) -> Value {
         match self {
             Self::Existing(value) => value,
-            Self::Result { step, index } => results[step][index],
+            Self::Result { step, index } => results[step.0][index],
         }
     }
 }
 
-/// A checkpoint only covers the current use's new dependencies. Restoring it
-/// never walks the previously committed plan or changes existing MIR.
-#[derive(Clone, Copy, Default)]
+/// Search checkpoints cover only tentative instructions and bindings. Already
+/// selected uses are never rolled back by a later operand's search.
+#[derive(Clone, Copy)]
 struct Mark {
     steps: usize,
     bound: usize,
 }
 
 #[derive(Default)]
-struct Plan {
-    steps: Vec<Recipe>,
-    inputs: SecondaryMap<Root, Option<Input>>,
-    bound: Vec<Root>,
-    operations: HashMap<Inst, usize>,
+struct Draft {
+    // Instruction IDs are shared by all anchors. Successful searches can leave
+    // unused instructions here; later uses may still reuse their result bindings.
+    steps: Vec<PlannedInst>,
+    // Keep unchanged uses until final DAG analysis: they can retain old work.
+    uses: Vec<Rewrite>,
+    bindings: Bindings,
 }
 
-impl Plan {
+impl Draft {
     fn mark(&self) -> Mark {
         Mark {
             steps: self.steps.len(),
-            bound: self.bound.len(),
+            bound: self.bindings.bound.len(),
         }
     }
 
     fn restore(&mut self, mark: Mark) {
-        for recipe in self.steps.drain(mark.steps..) {
-            self.operations.remove(&recipe.source);
-        }
-        for class in self.bound.drain(mark.bound..) {
+        self.steps.truncate(mark.steps);
+        self.bindings.restore(mark.bound);
+    }
+}
+
+/// One available occurrence per class. Bindings never shadow each other;
+/// both candidate rollback and dominator scopes remove an appended suffix.
+#[derive(Default)]
+struct Bindings {
+    inputs: SecondaryMap<Root, Option<Input>>,
+    bound: Vec<Root>,
+    scopes: Vec<usize>,
+}
+
+impl Bindings {
+    fn enter(&mut self) {
+        self.scopes.push(self.bound.len());
+    }
+
+    fn leave(&mut self) {
+        let mark = self.scopes.pop().expect("dominator scope");
+        self.restore(mark);
+    }
+
+    fn restore(&mut self, mark: usize) {
+        for class in self.bound.drain(mark..) {
             self.inputs[class] = None;
         }
     }
@@ -125,6 +138,11 @@ impl Plan {
     }
 }
 
+struct Analysis {
+    cost: usize,
+    live: Vec<bool>,
+}
+
 /// Explicit DFS frames avoid native-stack growth for deep expressions. Each
 /// frame tries alternatives until all dependencies can be placed at this use.
 struct Frame {
@@ -132,6 +150,32 @@ struct Frame {
     candidates: Candidates,
     state: State,
     mark: Mark,
+}
+
+/// Frame lifetime and cycle detection must advance together on every exit path.
+#[derive(Default)]
+struct SearchStack {
+    frames: Vec<Frame>,
+    active: SecondaryMap<Root, bool>,
+}
+
+impl SearchStack {
+    fn push(&mut self, class: Root, mark: Mark) {
+        debug_assert!(!self.active[class]);
+        self.frames.push(Frame::new(class, mark));
+        self.active[class] = true;
+    }
+
+    fn pop(&mut self) {
+        let frame = self.frames.pop().expect("active search frame");
+        self.active[frame.class] = false;
+    }
+
+    fn clear(&mut self) {
+        for frame in self.frames.drain(..) {
+            self.active[frame.class] = false;
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -142,7 +186,7 @@ enum State {
 }
 
 enum Resolve {
-    Ready,
+    Ready(Input),
     Unavailable,
 }
 
@@ -180,6 +224,11 @@ impl Frame {
             mark,
         }
     }
+
+    fn retry(&mut self, draft: &mut Draft) {
+        draft.restore(self.mark);
+        self.state = State::Choose;
+    }
 }
 
 /// Enter/leave events let selection use a single binding per class. Leaving a
@@ -191,31 +240,44 @@ enum Visit {
     Leave,
 }
 
-#[derive(Default)]
-struct Scope {
-    inputs: SecondaryMap<Root, Option<Input>>,
-    undo: Vec<(Root, Option<Input>)>,
-    marks: Vec<usize>,
+/// Tree cost first, then depth. Unknown estimates sort after finite ones.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Rank {
+    cost: usize,
+    depth: usize,
 }
 
-impl Scope {
-    fn bind(&mut self, class: Root, input: Input) {
-        self.undo.push((class, self.inputs[class]));
-        self.inputs[class] = Some(input);
-    }
+impl Rank {
+    const ZERO: Self = Self { cost: 0, depth: 0 };
+    const UNKNOWN: Self = Self {
+        cost: usize::MAX,
+        depth: usize::MAX,
+    };
 
-    fn leave(&mut self) {
-        let mark = self.marks.pop().expect("dominator scope");
-        for (class, old) in self.undo.drain(mark..).rev() {
-            self.inputs[class] = old;
+    fn operation(cost: usize, inputs: impl Iterator<Item = Self>) -> Self {
+        let mut rank = Self {
+            cost: cost.max(1),
+            depth: 0,
+        };
+        for input in inputs {
+            rank.cost = rank.cost.saturating_add(input.cost);
+            rank.depth = rank.depth.max(input.depth);
         }
+        rank.depth = rank.depth.saturating_add(1);
+        rank
+    }
+}
+
+impl Default for Rank {
+    fn default() -> Self {
+        Self::UNKNOWN
     }
 }
 
 #[derive(Clone, Copy)]
 struct Candidate {
     value: Value,
-    rank: (usize, usize),
+    rank: Rank,
 }
 
 struct Planner<'a> {
@@ -225,21 +287,26 @@ struct Planner<'a> {
     candidates: SecondaryMap<Root, SmallVec<[Candidate; 2]>>,
     dom: &'a Dominators,
     order: InstOrder,
-    available: Scope,
-    active: SecondaryMap<Root, bool>,
 }
 
 impl Graph {
-    fn price(&self, f: &FuncBody, value: Value, model: &dyn CostModel) -> usize {
+    fn estimate_rank(
+        &self,
+        f: &FuncBody,
+        value: Value,
+        model: &dyn CostModel,
+        best: &SecondaryMap<Root, Rank>,
+    ) -> Rank {
         if let Some(inst) = self.floating_inst(f, value) {
             let result = f.dfg().inst_results(inst)[0];
-            model
-                .operation(f.dfg().opcode(inst), f.dfg().value_type(result))
-                .max(1)
+            Rank::operation(
+                model.operation(f.dfg().opcode(inst), f.dfg().value_type(result)),
+                self.args(f, value).iter().map(|&arg| best[self.find(arg)]),
+            )
         } else {
             // A pinned definition is an existing input to extraction. Its own
             // execution cost is outside the movable expression being rebuilt.
-            0
+            Rank::ZERO
         }
     }
 
@@ -248,34 +315,30 @@ impl Graph {
     /// charges each newly planned instruction once, including multi-result ops.
     /// Repeated dependencies are intentionally counted repeatedly here. Exact
     /// sharing depends on the selected occurrences, not just class membership.
+    /// The budget bounds propagation; initialization and final candidate ranking
+    /// still scan the graph once each, even when propagation runs out of fuel.
     fn candidates(
         &self,
         f: &FuncBody,
         model: &dyn CostModel,
         work: &mut usize,
     ) -> SecondaryMap<Root, SmallVec<[Candidate; 2]>> {
-        let mut costs = SecondaryMap::with_default((usize::MAX, usize::MAX));
-        let mut ranks = SecondaryMap::with_default((usize::MAX, usize::MAX));
-        let mut pending = VecDeque::new();
+        let scope = self.profile.scope("egraph.rank", 0);
+        let mut best = SecondaryMap::<Root, Rank>::new();
         let mut queued = SecondaryMap::<Value, bool>::new();
-        let mut candidates = SecondaryMap::<Root, SmallVec<[Candidate; 2]>>::new();
-        for &value in &self.values {
-            if f.dfg()
+        let mut pending = VecDeque::new();
+        let values = self.values.iter().copied().filter(|&value| {
+            !f.dfg()
                 .value_inst(value)
                 .is_some_and(|inst| self.kinds[inst] == InstKind::Folded)
-            {
-                continue;
-            }
+        });
+        for value in values.clone() {
             let class = self.find(value);
             // A literal is the answer, not an alternative to rank or place.
             if f.dfg().as_const(class.value()).is_some() {
-                costs[class] = (0, 0);
+                best[class] = Rank::ZERO;
                 continue;
             }
-            candidates[class].push(Candidate {
-                value,
-                rank: (usize::MAX, usize::MAX),
-            });
             pending.push_back(value);
             queued[value] = true;
         }
@@ -286,17 +349,9 @@ impl Graph {
             *work -= 1;
             queued[value] = false;
             let class = self.find(value);
-            let mut price = self.price(f, value, model);
-            let mut depth = 0usize;
-            for &arg in self.args(f, value) {
-                let arg = self.find(arg);
-                price = price.saturating_add(costs[arg].0);
-                depth = depth.max(costs[arg].1);
-            }
-            depth = depth.saturating_add(usize::from(self.floating_inst(f, value).is_some()));
-            ranks[value] = (price, depth);
-            if price != usize::MAX && (price, depth) < costs[class] {
-                costs[class] = (price, depth);
+            let rank = self.estimate_rank(f, value, model, &best);
+            if rank.cost != usize::MAX && rank < best[class] {
+                best[class] = rank;
                 for &user in self.users(class) {
                     for &result in f.dfg().inst_results(user) {
                         if f.dfg().as_const(self.find(result).value()).is_none() && !queued[result]
@@ -309,16 +364,27 @@ impl Graph {
             }
         }
         if !pending.is_empty() {
+            self.profile.count("budget_stops", 1);
             log::debug!("egraph ranking limited: {:?}", Limit::RankWork);
         }
-        for values in candidates.values_mut() {
-            for candidate in values.iter_mut() {
-                candidate.rank = ranks[candidate.value];
+        // Use the same final class estimates for every candidate, including
+        // candidates still pending when propagation exhausted its budget.
+        let mut candidates = SecondaryMap::<Root, SmallVec<[Candidate; 2]>>::new();
+        for value in values {
+            let class = self.find(value);
+            if f.dfg().as_const(class.value()).is_none() {
+                candidates[class].push(Candidate {
+                    value,
+                    rank: self.estimate_rank(f, value, model, &best),
+                });
             }
-            // A budget stop leaves partial estimates intact. Unestimated
-            // candidates retain MAX and sort last, but remain eligible to plan.
+        }
+        for values in candidates.values_mut() {
+            // Dependencies may still have unknown costs after a budget stop.
+            // Their candidates sort last, but remain eligible to plan.
             values.sort_by_key(|candidate| (candidate.rank, candidate.value));
         }
+        scope.success();
         candidates
     }
 
@@ -345,39 +411,14 @@ impl Graph {
             candidates,
             dom,
             order: InstOrder::default(),
-            available: Scope::default(),
-            active: SecondaryMap::new(),
         };
         let visits = planner.visits(anchors);
-        let mut original = Extraction::default();
-        for &inst in anchors {
-            for (operand, &value) in body.dfg().operands(inst).iter().enumerate() {
-                original.rewrites.push(Rewrite {
-                    inst,
-                    operand: operand as u32,
-                    input: Input::Existing(value),
-                });
-            }
-        }
-        let original_cost = planner.cost(&mut original, model);
-        let mut extraction = match planner.select(&visits) {
-            Ok(extraction) => extraction,
-            Err(limit) => {
-                log::debug!("egraph extraction limited: {limit:?}");
-                return Extraction::default();
-            }
-        };
-        // Price the complete DAG once, including reused original instructions.
-        // Ranking is only a heuristic; retain the original if placement loses.
-        let cost = planner.cost(&mut extraction, model);
+        let draft = planner.select(&visits);
         if *planner.work == 0 {
+            self.profile.count("budget_stops", 1);
             log::debug!("egraph extraction limited: {:?}", Limit::ExtractWork);
         }
-        if cost <= original_cost {
-            extraction
-        } else {
-            Extraction::default()
-        }
+        planner.finish(draft, anchors, model)
     }
 }
 
@@ -402,75 +443,110 @@ impl Planner<'_> {
         visits
     }
 
-    /// Build one plan in dominance order. MIR stays frozen until the complete
-    /// plan passes the cost check; candidates can still backtrack locally.
-    fn select(&mut self, visits: &[Visit]) -> Result<Extraction, Limit> {
-        let mut extraction = Extraction::default();
-        let mut plan = Plan::default();
-        let mut stack = Vec::new();
+    /// Build a draft in dominance order. MIR stays frozen until the complete
+    /// draft passes the cost check; candidates can still backtrack locally.
+    /// When search runs out of fuel, retain completed operand plans and fill
+    /// remaining uses with their original values so DAG pricing stays complete.
+    fn select(&mut self, visits: &[Visit]) -> Draft {
+        let scope = self.graph.profile.scope("egraph.select", 0);
+        let mut draft = Draft::default();
+        let mut stack = SearchStack::default();
         for visit in visits {
             let anchor = match *visit {
                 Visit::Enter => {
-                    self.available.marks.push(self.available.undo.len());
+                    draft.bindings.enter();
                     continue;
                 }
                 Visit::Leave => {
-                    self.available.leave();
+                    // Completed uses keep their instructions. Only availability
+                    // ends here, so siblings cannot reuse this subtree's values.
+                    draft.bindings.leave();
                     continue;
                 }
                 Visit::Anchor(anchor) => anchor,
             };
-            if *self.work == 0 {
-                return Err(Limit::ExtractWork);
-            }
-            *self.work -= 1;
-            plan.restore(Mark::default());
-            let base = extraction.steps.len();
             for (operand, &root) in self.body.dfg().operands(anchor).iter().enumerate() {
                 let class = self.graph.find(root);
-                let mark = plan.mark();
-                match self.resolve(anchor, base, class, &mut plan, &mut stack)? {
-                    Resolve::Ready => {}
-                    Resolve::Unavailable => {
-                        plan.restore(mark);
-                        plan.bind(class, Input::Existing(root));
+                let input = if *self.work == 0 {
+                    Input::Existing(root)
+                } else {
+                    match self.resolve(anchor, class, &mut draft, &mut stack) {
+                        Ok(Resolve::Ready(input)) => input,
+                        Ok(Resolve::Unavailable) => {
+                            draft.bindings.bind(class, Input::Existing(root));
+                            Input::Existing(root)
+                        }
+                        Err(limit) => {
+                            debug_assert_eq!(limit, Limit::ExtractWork);
+                            Input::Existing(root)
+                        }
                     }
-                }
-                extraction.rewrites.push(Rewrite {
+                };
+                draft.uses.push(Rewrite {
                     inst: anchor,
                     operand: operand as u32,
-                    input: plan.inputs[class].expect("planned executable use"),
+                    input,
                 });
             }
-            for &class in &plan.bound {
-                self.available
-                    .bind(class, plan.inputs[class].expect("bound class"));
-            }
-            extraction
-                .steps
-                .extend(plan.steps.drain(..).map(|recipe| Step {
-                    before: anchor,
-                    recipe,
-                    needed: false,
-                }));
-            plan.operations.clear();
         }
-        Ok(extraction)
+        scope.success();
+        draft
+    }
+
+    /// Accept the full computation DAG before filtering unchanged uses. Preserve
+    /// instruction IDs and transfer analyzed liveness directly to the final plan;
+    /// search bindings are discarded, and emission only reads the liveness mask.
+    fn finish(&self, draft: Draft, anchors: &[Inst], model: &dyn CostModel) -> Extraction {
+        let original = anchors
+            .iter()
+            .flat_map(|&inst| self.body.dfg().operands(inst).iter().copied())
+            .map(Input::Existing);
+        let original_cost = self.analyze(original, &[], model).cost;
+        let analysis = self.analyze(
+            draft.uses.iter().map(|usage| usage.input),
+            &draft.steps,
+            model,
+        );
+        if analysis.cost > original_cost {
+            return Extraction::default();
+        }
+
+        let rewrites = draft
+            .uses
+            .into_iter()
+            .filter(|usage| {
+                usage.input
+                    != Input::Existing(self.body.dfg().operands(usage.inst)[usage.operand as usize])
+            })
+            .collect();
+        Extraction {
+            steps: draft.steps,
+            live: analysis.live,
+            rewrites,
+        }
     }
 
     /// Charge the selected computation DAG, including original definitions kept
-    /// by any root. Counting only new recipes would incorrectly make a reused
+    /// by any root. Counting only new instructions would incorrectly make a reused
     /// instruction free, or miss an old computation still needed by another use.
     /// Liveness belongs to occurrences, never to equivalence classes.
-    /// Finish this finite traversal even if it exhausts the search budget: a
-    /// complete selection must not be discarded halfway through pricing it.
-    fn cost(&mut self, extraction: &mut Extraction, model: &dyn CostModel) -> usize {
+    /// Analysis is a complete traversal, independent of candidate-search fuel.
+    /// Liveness is returned separately; the draft itself stays unchanged.
+    fn analyze(
+        &self,
+        inputs: impl Iterator<Item = Input>,
+        steps: &[PlannedInst],
+        model: &dyn CostModel,
+    ) -> Analysis {
+        let scope = self.graph.profile.scope("egraph.cost", 0);
         let mut seen = HashSet::new();
-        let mut pending: Vec<_> = extraction.rewrites.iter().map(|r| r.input).collect();
-        let mut cost = 0usize;
+        let mut pending: Vec<_> = inputs.collect();
+        let mut analysis = Analysis {
+            cost: 0,
+            live: vec![false; steps.len()],
+        };
         while let Some(input) = pending.pop() {
-            *self.work = self.work.saturating_sub(1);
-            let price = match input {
+            let inst = match input {
                 Input::Existing(value) => {
                     let ValueDef::Inst(inst) = self.body.dfg().value_def(value) else {
                         continue;
@@ -490,38 +566,32 @@ impl Planner<'_> {
                                 .copied()
                                 .map(Input::Existing),
                         );
-                        let result = self.body.dfg().inst_results(inst)[0];
-                        model
-                            .operation(
-                                self.body.dfg().opcode(inst),
-                                self.body.dfg().value_type(result),
-                            )
-                            .max(1)
+                        inst
                     } else {
                         continue;
                     }
                 }
                 Input::Result { step, .. } => {
-                    let step = &mut extraction.steps[step];
-                    if step.needed {
+                    if analysis.live[step.0] {
                         continue;
                     }
-                    step.needed = true;
-                    let Recipe { source, args } = &step.recipe;
-
-                    pending.extend(args.iter().copied());
-                    let value = self.body.dfg().inst_results(*source)[0];
-                    model
-                        .operation(
-                            self.body.dfg().opcode(*source),
-                            self.body.dfg().value_type(value),
-                        )
-                        .max(1)
+                    analysis.live[step.0] = true;
+                    let step = &steps[step.0];
+                    pending.extend(step.args.iter().copied());
+                    step.source
                 }
             };
-            cost = cost.saturating_add(price);
+            let result = self.body.dfg().inst_results(inst)[0];
+            let price = model
+                .operation(
+                    self.body.dfg().opcode(inst),
+                    self.body.dfg().value_type(result),
+                )
+                .max(1);
+            analysis.cost = analysis.cost.saturating_add(price);
         }
-        cost
+        scope.success();
+        analysis
     }
 
     fn inst_dominates(&mut self, def: Inst, anchor: Inst) -> bool {
@@ -560,7 +630,7 @@ impl Planner<'_> {
     /// on every optimizer invocation instead of keeping their own definition.
     fn preferred(&mut self, class: Root, anchor: Inst) -> Option<Value> {
         let mut best = None;
-        let mut rank = (usize::MAX, usize::MAX);
+        let mut rank = Rank::UNKNOWN;
         for index in 0..self.candidates[class].len() {
             let candidate = self.candidates[class][index];
             if candidate.rank > rank {
@@ -586,47 +656,95 @@ impl Planner<'_> {
         best
     }
 
+    /// Record a floating instruction after all of its operand classes are bound.
+    /// Reuse the original occurrence when possible, otherwise append one instruction;
+    /// bind every result so later dependencies can share the same computation.
+    fn plan_instruction(&mut self, anchor: Inst, value: Value, draft: &mut Draft) {
+        debug_assert!(draft.bindings.inputs[self.graph.find(value)].is_none());
+        let args = self.graph.args(self.body, value);
+        let source = self
+            .graph
+            .floating_inst(self.body, value)
+            .expect("floating expression");
+        let args: SmallVec<[Input; 3]> = args
+            .iter()
+            .map(|&arg| draft.bindings.inputs[self.graph.find(arg)].expect("planned operand"))
+            .collect();
+        let reuse = self.dominates(value, anchor)
+            && self
+                .body
+                .dfg()
+                .operands(source)
+                .iter()
+                .zip(&args)
+                .all(|(&old, &new)| new == Input::Existing(old));
+        let step = if reuse {
+            None
+        } else {
+            let step = StepId(draft.steps.len());
+            draft.steps.push(PlannedInst {
+                before: anchor,
+                source,
+                args,
+            });
+            Some(step)
+        };
+        // Record the instruction and all its result bindings before the next
+        // checkpoint. Rollback removes them together; success makes every result
+        // available to later operands and dominated anchors without publishing.
+        for (index, &result) in self.body.dfg().inst_results(source).iter().enumerate() {
+            let class = self.graph.find(result);
+            if draft.bindings.inputs[class].is_some() {
+                continue;
+            }
+            let input = if self.body.dfg().as_const(class.value()).is_some() {
+                Input::Existing(class.value())
+            } else {
+                step.map_or(Input::Existing(result), |step| Input::Result {
+                    step,
+                    index,
+                })
+            };
+            draft.bindings.bind(class, input);
+        }
+    }
+
+    /// Resolve one operand transactionally. Success retains its dependencies;
+    /// failure restores the incoming draft. Every exit leaves the search empty.
     fn resolve(
         &mut self,
         anchor: Inst,
-        base: usize,
         root: Root,
-        plan: &mut Plan,
-        stack: &mut Vec<Frame>,
+        draft: &mut Draft,
+        stack: &mut SearchStack,
     ) -> Result<Resolve, Limit> {
-        if plan.inputs[root].is_some() {
-            return Ok(Resolve::Ready);
+        debug_assert!(stack.frames.is_empty());
+        if let Some(input) = draft.bindings.inputs[root] {
+            return Ok(Resolve::Ready(input));
         }
-        debug_assert!(stack.is_empty());
-        stack.push(Frame::new(root, plan.mark()));
-        self.active[root] = true;
-        while let Some(frame) = stack.last_mut() {
+        let mark = draft.mark();
+        stack.push(root, mark);
+        let outcome = loop {
+            let Some(frame) = stack.frames.last_mut() else {
+                break Ok(Resolve::Ready(
+                    draft.bindings.inputs[root].expect("resolved root"),
+                ));
+            };
             if *self.work == 0 {
-                for frame in stack.drain(..) {
-                    self.active[frame.class] = false;
-                }
-                return Err(Limit::ExtractWork);
+                break Err(Limit::ExtractWork);
             }
             *self.work -= 1;
             let class = frame.class;
             // A dependency can also produce another result that satisfies
             // this suspended frame. No further candidate search is needed.
-            if plan.inputs[class].is_some() {
-                self.active[class] = false;
+            if draft.bindings.inputs[class].is_some() {
                 stack.pop();
                 continue;
             }
             match frame.state {
                 State::Start => {
                     if self.body.dfg().as_const(class.value()).is_some() {
-                        plan.bind(class, Input::Existing(class.value()));
-                        self.active[class] = false;
-                        stack.pop();
-                        continue;
-                    }
-                    if let Some(input) = self.available.inputs[class] {
-                        plan.bind(class, input);
-                        self.active[class] = false;
+                        draft.bindings.bind(class, Input::Existing(class.value()));
                         stack.pop();
                         continue;
                     }
@@ -638,20 +756,16 @@ impl Planner<'_> {
                     let Some(value) = frame.candidates.next(&self.candidates[class]) else {
                         // This dependency has no viable representative. Reject
                         // the parent's candidate, restoring its checkpoint.
-                        plan.restore(frame.mark);
-                        self.active[class] = false;
                         stack.pop();
-                        let Some(parent) = stack.last_mut() else {
-                            return Ok(Resolve::Unavailable);
+                        let Some(parent) = stack.frames.last_mut() else {
+                            break Ok(Resolve::Unavailable);
                         };
-                        plan.restore(parent.mark);
-                        parent.state = State::Choose;
+                        parent.retry(draft);
                         continue;
                     };
                     if self.graph.floating_inst(self.body, value).is_none() {
                         if self.dominates(value, anchor) {
-                            plan.bind(class, Input::Existing(value));
-                            self.active[class] = false;
+                            draft.bindings.bind(class, Input::Existing(value));
                             stack.pop();
                         }
                         continue;
@@ -662,76 +776,29 @@ impl Planner<'_> {
                     let args = self.graph.args(self.body, value);
                     if let Some(&arg) = args.get(next) {
                         let arg = self.graph.find(arg);
-                        if plan.inputs[arg].is_some() {
+                        if draft.bindings.inputs[arg].is_some() {
                             frame.state = State::Inputs {
                                 value,
                                 next: next + 1,
                             };
-                        } else if self.active[arg] {
+                        } else if stack.active[arg] {
                             // A cyclic candidate cannot produce a finite plan.
                             // Keep the candidate cursor and try the next one.
-                            plan.restore(frame.mark);
-                            frame.state = State::Choose;
+                            frame.retry(draft);
                         } else {
-                            stack.push(Frame::new(arg, plan.mark()));
-                            self.active[arg] = true;
+                            stack.push(arg, draft.mark());
                         }
                         continue;
                     }
-                    let source = self
-                        .graph
-                        .floating_inst(self.body, value)
-                        .expect("floating expression");
-                    let args: SmallVec<[Input; 3]> = args
-                        .iter()
-                        .map(|&arg| plan.inputs[self.graph.find(arg)].expect("planned operand"))
-                        .collect();
-                    let reuse = self.dominates(value, anchor)
-                        && self.body.dfg().operands(source).iter().zip(&args).all(
-                            |(&old, &new)| match new {
-                                Input::Existing(value) => value == old,
-                                Input::Result { .. } => false,
-                            },
-                        );
-                    let step = if reuse {
-                        None
-                    } else {
-                        let step = if let Some(&step) = plan.operations.get(&source) {
-                            step
-                        } else {
-                            let step = base + plan.steps.len();
-                            plan.steps.push(Recipe { source, args });
-                            plan.operations.insert(source, step);
-                            step
-                        };
-                        Some(step)
-                    };
-                    // Planning one instruction makes every result available,
-                    // including to later operands of this same anchor. Record
-                    // all bindings in the plan so backtracking undoes them.
-                    for (index, &result) in self.body.dfg().inst_results(source).iter().enumerate()
-                    {
-                        let class = self.graph.find(result);
-                        if plan.inputs[class].is_some() {
-                            continue;
-                        }
-                        let input = if self.body.dfg().as_const(class.value()).is_some() {
-                            Input::Existing(class.value())
-                        } else if let Some(input) = self.available.inputs[class] {
-                            input
-                        } else {
-                            step.map_or(Input::Existing(result), |step| Input::Result {
-                                step,
-                                index,
-                            })
-                        };
-                        plan.bind(class, input);
-                    }
-                    self.active[class] = false;
+                    self.plan_instruction(anchor, value, draft);
                     stack.pop();
                 }
             }
+        };
+        stack.clear();
+        if !matches!(outcome, Ok(Resolve::Ready(_))) {
+            draft.restore(mark);
         }
-        Ok(Resolve::Ready)
+        outcome
     }
 }

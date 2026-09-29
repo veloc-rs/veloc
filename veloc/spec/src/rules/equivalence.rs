@@ -1154,19 +1154,28 @@ impl Bytecode {
         let mut added: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         let mut changed = Vec::new();
         let mut indexes: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        let mut paths = Vec::new();
         for (id, trigger) in self.triggers.iter().enumerate() {
             match trigger.event {
                 Event::Added(op) => added.entry(op).or_default().push(id),
                 Event::ClassChanged => changed.push(id),
             }
-            let path = trigger
-                .path
+            let path = crate::bytecode::intern(&mut paths, trigger.path.clone());
+            for edge in &trigger.path {
+                indexes
+                    .entry(edge.opcode)
+                    .or_default()
+                    .extend(&edge.columns);
+            }
+            writeln!(output, "Trigger {{ root: {opcode}::{}, entry: {}, slot: {}, scan: {:?}, path: PathId({path}), types: {}, constants: &{:?} }},",
+                self.opcodes[trigger.root], trigger.entry, trigger.slot, trigger.scan, trigger.types, trigger.constants).unwrap();
+        }
+        writeln!(output, "];").unwrap();
+        writeln!(output, "pub(super) static PATHS: &[&[Edge]] = &[").unwrap();
+        for path in paths {
+            let edges = path
                 .iter()
                 .map(|edge| {
-                    indexes
-                        .entry(edge.opcode)
-                        .or_default()
-                        .extend(&edge.columns);
                     format!(
                         "Edge {{ opcode: {opcode}::{}, columns: &{:?} }}",
                         self.opcodes[edge.opcode], edge.columns
@@ -1174,22 +1183,34 @@ impl Bytecode {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            writeln!(output, "Trigger {{ root: {opcode}::{}, entry: {}, slot: {}, scan: {:?}, path: &[{path}], types: {}, constants: &{:?} }},",
-                self.opcodes[trigger.root], trigger.entry, trigger.slot, trigger.scan, trigger.types, trigger.constants).unwrap();
+            writeln!(output, "&[{edges}],").unwrap();
         }
         writeln!(output, "];").unwrap();
+        let trigger_ids = |ids: &[usize]| {
+            ids.iter()
+                .map(|id| format!("TriggerId({id})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         writeln!(
             output,
-            "pub(super) fn added(op: {opcode}) -> &'static [usize] {{ match op {{"
+            "pub(super) fn added(op: {opcode}) -> &'static [TriggerId] {{ match op {{"
         )
         .unwrap();
         for (op, ids) in added {
-            writeln!(output, "{opcode}::{} => &{:?},", self.opcodes[op], ids).unwrap();
+            writeln!(
+                output,
+                "{opcode}::{} => &[{}],",
+                self.opcodes[op],
+                trigger_ids(&ids)
+            )
+            .unwrap();
         }
         writeln!(output, "_ => &[], }} }}").unwrap();
         writeln!(
             output,
-            "pub(super) const CLASS_TRIGGERS: &[usize] = &{changed:?};"
+            "pub(super) const CLASS_TRIGGERS: &[TriggerId] = &[{}];",
+            trigger_ids(&changed)
         )
         .unwrap();
         writeln!(
