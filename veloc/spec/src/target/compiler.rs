@@ -119,7 +119,7 @@ impl Plan {
                 select::check_construction(rule, &final_inst_defs, &types).map_err(&input_error)?;
             }
         }
-        encoding::compile(definitions, &mut final_inst_defs).map_err(&definition_error)?;
+        encoding::compile(definitions, arch, &mut final_inst_defs).map_err(&definition_error)?;
         assembly::compile(definitions.declarations(), &mut final_inst_defs)
             .map_err(&definition_error)?;
         for (name, inst) in &final_inst_defs {
@@ -165,7 +165,7 @@ impl Plan {
         let arch = self.arch.as_str();
         let mut fragment = String::new();
         match kind {
-            crate::Emit::Encoder => encoding::generate(&mut fragment, final_inst_defs),
+            crate::Emit::Encoder => encoding::generate(&mut fragment, arch, final_inst_defs),
             crate::Emit::Assembly => assembly::generate(&mut fragment, final_inst_defs),
             crate::Emit::Selector => select::generate_select_instruction(
                 &mut fragment,
@@ -196,7 +196,7 @@ impl Plan {
         generate::generate_validation(&mut output, &final_inst_defs);
         select::generate_generic_inst_metadata(&mut output, &module, &final_inst_defs);
         output.push_str("\n// Machine-code emission.\n");
-        encoding::generate(&mut output, &final_inst_defs);
+        encoding::generate(&mut output, arch, &final_inst_defs);
         output.push_str("\n// Assembly rendering.\n");
         assembly::generate(&mut output, &final_inst_defs);
         select::generate_select_instruction(

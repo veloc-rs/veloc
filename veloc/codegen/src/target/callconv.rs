@@ -50,6 +50,9 @@ impl CallConv {
 
     fn descriptor(&self, arch: TargetArch) -> Result<&'static AbiDescriptor, crate::error::Error> {
         match (self, arch) {
+            (CallConv::SystemV | CallConv::RiscvABI, TargetArch::Riscv64) => {
+                Ok(&crate::target::riscv64::ABI)
+            }
             (CallConv::SystemV, TargetArch::X86_64) => Ok(x86_64_systemv_descriptor()),
             (CallConv::WindowsFastcall, TargetArch::X86_64) => Ok(x86_64_win64_descriptor()),
             _ => Err(crate::error::Error::codegen(format!(

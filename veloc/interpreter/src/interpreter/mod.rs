@@ -64,12 +64,37 @@ pub(crate) enum DispatchExit {
 // interpreter state in registers without a push/pop pair per instruction. The
 // table pointer is threaded through the chain so handlers do not rematerialize
 // its address before every dispatch.
+#[cfg(not(target_arch = "riscv64"))]
 pub(crate) type OpcodeHandler<M> = unsafe extern "rust-preserve-none" fn(
     *mut DispatchContext<M>,
     *const CodeWord,
     *mut InterpreterValue,
     *const OpcodeHandlers<M>,
 ) -> DispatchExit;
+#[cfg(target_arch = "riscv64")]
+#[allow(improper_ctypes_definitions)]
+pub(crate) type OpcodeHandler<M> = unsafe extern "C" fn(
+    *mut DispatchContext<M>,
+    *const CodeWord,
+    *mut InterpreterValue,
+    *const OpcodeHandlers<M>,
+) -> DispatchExit;
+
+// LLVM cannot lower preserve-none musttail calls on RV64. Use its supported
+// C tail-call ABI there; handler semantics and threaded dispatch stay shared.
+#[cfg(target_arch = "riscv64")]
+macro_rules! handler_fn {
+    ($(#[$meta:meta])* pub(crate) unsafe fn $($rest:tt)*) => {
+        $(#[$meta])* #[allow(improper_ctypes_definitions)]
+        pub(crate) unsafe extern "C" fn $($rest)*
+    };
+}
+#[cfg(not(target_arch = "riscv64"))]
+macro_rules! handler_fn {
+    ($(#[$meta:meta])* pub(crate) unsafe fn $($rest:tt)*) => {
+        $(#[$meta])* pub(crate) unsafe extern "rust-preserve-none" fn $($rest)*
+    };
+}
 
 /// Low-level generator shared by the semantic handler macros below.
 macro_rules! define_handlers {
@@ -101,6 +126,7 @@ macro_rules! define_handlers {
         } => $body:block
     )*) => {
         $(
+            handler_fn! {
             $(#[$meta])*
             #[allow(
                 non_snake_case,
@@ -110,7 +136,7 @@ macro_rules! define_handlers {
                 unused_mut,
                 unused_variables
             )]
-            pub(crate) unsafe extern "rust-preserve-none" fn $name<M>(
+            pub(crate) unsafe fn $name<M>(
                 $context_ptr: *mut DispatchContext<M>,
                 $ip: *const CodeWord,
                 mut $values_ptr: *mut InterpreterValue,
@@ -157,6 +183,7 @@ macro_rules! define_handlers {
                     $body
                     dispatch_next!($next_ip, $values_ptr);
                 }
+            }
             }
         )*
     };

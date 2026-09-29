@@ -76,7 +76,7 @@ clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 
 # --- External Local Dependencies ---
-elf_loader = { version = "0.14.1" }
+elf_loader = { version = "0.17.0", default-features = false, features = ["libc", "object"] }
 
 [dependencies]
 veloc-mir = { workspace = true }
@@ -90,3 +90,8 @@ std = []
 
 [profile.release]
 debug = "line-tables-only"
+
+# elf_loader 0.17.0 initializes default section groups inside debug_assert_eq!.
+# Keep those initializers until the dependency fixes release object loading.
+[profile.release.package.elf_loader]
+debug-assertions = true

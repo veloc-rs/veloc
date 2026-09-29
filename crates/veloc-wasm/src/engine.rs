@@ -79,7 +79,15 @@ impl Engine {
     pub fn with_config(config: Config) -> Self {
         Self {
             inner: Arc::new(EngineInner {
-                backend: Backend::new(),
+                backend: Backend::with_target_config(veloc::codegen::TargetConfig {
+                    arch: if cfg!(target_arch = "riscv64") {
+                        veloc::codegen::TargetArch::Riscv64
+                    } else {
+                        veloc::codegen::TargetArch::X86_64
+                    },
+                    ..Default::default()
+                })
+                .expect("host codegen target"),
                 config,
             }),
         }

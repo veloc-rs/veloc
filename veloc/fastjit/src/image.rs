@@ -32,7 +32,7 @@ fn symbol(
         value: 0,
         size: 0,
         kind: SymbolKind::Text,
-        scope: SymbolScope::Linkage,
+        scope: SymbolScope::Dynamic,
         weak: false,
         section: SymbolSection::Undefined,
         flags: SymbolFlags::None,
@@ -49,8 +49,8 @@ pub(crate) fn compile<T: Target>(
     let text = object.section_id(StandardSection::Text);
     let mut names = HashMap::new();
     for (id, func) in module.functions() {
-        let sym = symbol(&mut object, &mut names, &func.decl.name);
         let Some(body) = func.body else { continue };
+        let sym = symbol(&mut object, &mut names, &func.decl.name);
         let sig = &module.signatures()[func.decl.signature];
         let scope = profile.entity_scope("function", 0, || func.decl.name.clone());
         let result = T::compile(module, body, sig);
@@ -67,7 +67,7 @@ pub(crate) fn compile<T: Target>(
         let base = object.add_symbol_data(sym, text, &code.bytes, 16);
         object.symbol_mut(sym).scope = match func.decl.linkage {
             Linkage::Local => SymbolScope::Compilation,
-            Linkage::Import | Linkage::Export => SymbolScope::Linkage,
+            Linkage::Import | Linkage::Export => SymbolScope::Dynamic,
         };
         for reloc in code.relocations {
             let target = symbol(&mut object, &mut names, reloc.symbol);

@@ -5,27 +5,39 @@ use std::{
 use veloc_spec::{Decisions, Emit, Options, Source, Target};
 
 fn load(path: impl AsRef<Path>) -> Source {
-    let source = Source::load(path).expect("load compiler definitions");
-    for path in source.dependencies() {
-        println!("cargo:rerun-if-changed={}", path.display());
+    let path = path.as_ref();
+    let source = Source::load(path).unwrap_or_else(|err| panic!("load {}: {err}", path.display()));
+    for dependency in source.dependencies() {
+        println!("cargo:rerun-if-changed={}", dependency.display());
     }
     source
 }
 
-fn main() {
-    println!("cargo:rerun-if-changed=../../rustfmt.toml");
-    println!("cargo:rerun-if-env-changed=RUSTFMT");
-    let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
-    let lir = load("../lir/defs/module.spec");
-    let rules = load("defs/x86_64/legalize.spec");
-    let target = load("defs/x86_64/module.spec");
-    let contracts = load("defs/x86_64/instructions.spec");
-    let decisions = rules
-        .generate(
-            &[Emit::Decisions],
+/// All generated files use the same write/format path and retain source context
+/// in build errors. Architecture-specific code only supplies generator options.
+struct Generator {
+    out: PathBuf,
+    files: Vec<PathBuf>,
+}
+impl Generator {
+    fn emit(&mut self, source: &Source, kind: Emit, options: Options<'_>, name: &str) {
+        let artifacts = source
+            .generate(&[kind], options)
+            .unwrap_or_else(|err| panic!("generate {name}: {err}"));
+        let path = self.out.join(name);
+        fs::write(&path, artifacts.get(kind).expect("requested artifact"))
+            .unwrap_or_else(|err| panic!("write {}: {err}", path.display()));
+        self.files.push(path);
+    }
+
+    fn legalizer(&mut self, arch: &str, lir: &Source) {
+        let source = load(format!("defs/{arch}/legalize.spec"));
+        self.emit(
+            &source,
+            Emit::Decisions,
             Options {
                 decisions: Some(Decisions {
-                    definitions: &lir,
+                    definitions: lir,
                     rust: veloc_spec::rules::DecisionRust {
                         dialect: "lir",
                         function: "program",
@@ -37,44 +49,62 @@ fn main() {
                 }),
                 ..Default::default()
             },
-        )
-        .expect("compile legalization decisions");
-    let machine = target
-        .generate(
-            &[Emit::Target],
+            &format!("legalize_{arch}.rs"),
+        );
+    }
+
+    fn machine(&mut self, arch: &str, lir: &Source, context: &str, host: &str) {
+        let source = load(format!("defs/{arch}/module.spec"));
+        let contracts = load(format!("defs/{arch}/instructions.spec"));
+        self.emit(
+            &source,
+            Emit::Target,
             Options {
                 target: Some(Target {
-                    input: Some(("lir", &lir)),
-                    arch: "x86_64",
-                    context: "crate::target::x86_64::lowering::X86LoweringContext",
+                    input: Some(("lir", lir)),
+                    arch,
+                    context,
                     definitions: &contracts,
                 }),
                 ..Default::default()
             },
-        )
-        .expect("compile target definitions");
-    let host = contracts
-        .generate(
-            &[Emit::Interfaces],
+            &format!("machine_{arch}.rs"),
+        );
+        self.emit(
+            &contracts,
+            Emit::Interfaces,
             Options {
-                interfaces: Some("crate::target::x86_64::emitter::host"),
+                interfaces: Some(host),
                 ..Default::default()
             },
-        )
-        .expect("compile encoder host contracts");
-    let mut files = Vec::new();
-    for (name, text) in [
-        (
-            "legalize_x86_64.rs",
-            decisions.get(Emit::Decisions).unwrap(),
-        ),
-        ("machine_x86_64.rs", machine.get(Emit::Target).unwrap()),
-        ("encoding_host.rs", host.get(Emit::Interfaces).unwrap()),
-    ] {
-        let path = dir.join(name);
-        fs::write(&path, text).expect("write codegen artifacts");
-        files.push(path);
+            &format!("encoding_host_{arch}.rs"),
+        );
     }
-    veloc_spec::format_rust(&files, Path::new("../../rustfmt.toml"))
+}
+
+fn main() {
+    println!("cargo:rerun-if-changed=../../rustfmt.toml");
+    println!("cargo:rerun-if-env-changed=RUSTFMT");
+    let lir = load("../lir/defs/module.spec");
+    let mut generator = Generator {
+        out: PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR")),
+        files: Vec::new(),
+    };
+    for arch in ["x86_64", "riscv64"] {
+        generator.legalizer(arch, &lir);
+    }
+    generator.machine(
+        "x86_64",
+        &lir,
+        "crate::target::x86_64::lowering::X86LoweringContext",
+        "crate::target::x86_64::emitter::host",
+    );
+    generator.machine(
+        "riscv64",
+        &lir,
+        "crate::target::riscv64::SelectionContext",
+        "crate::target::riscv64::emitter::host",
+    );
+    veloc_spec::format_rust(&generator.files, Path::new("../../rustfmt.toml"))
         .expect("format codegen artifacts");
 }

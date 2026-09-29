@@ -26,6 +26,13 @@ impl ObjectFileBuilder {
     pub(crate) fn new(target: &dyn TargetMachine) -> Result<Self> {
         let (format, architecture, endian) = object_format_for_target(target.desc().arch)?;
         let mut object = Object::new(format, architecture, endian);
+        if target.desc().arch == TargetArch::Riscv64 {
+            object.flags = object::FileFlags::Elf {
+                os_abi: 0,
+                abi_version: 0,
+                e_flags: object::elf::EF_RISCV_FLOAT_ABI_DOUBLE,
+            };
+        }
         let text_section = object.section_id(StandardSection::Text);
 
         Ok(Self {
@@ -57,9 +64,20 @@ impl ObjectFileBuilder {
                         symbol: target_symbol,
                         addend: relocation.addend,
                         flags: RelocationFlags::Generic {
-                            kind: RelocationKind::Relative,
-                            encoding: RelocationEncoding::X86Branch,
-                            size: 32,
+                            kind: match relocation.kind {
+                                crate::RelocationKind::RelativeBranch32 => RelocationKind::Relative,
+                                crate::RelocationKind::Absolute64 => RelocationKind::Absolute,
+                            },
+                            encoding: match relocation.kind {
+                                crate::RelocationKind::RelativeBranch32 => {
+                                    RelocationEncoding::X86Branch
+                                }
+                                crate::RelocationKind::Absolute64 => RelocationEncoding::Generic,
+                            },
+                            size: match relocation.kind {
+                                crate::RelocationKind::RelativeBranch32 => 32,
+                                crate::RelocationKind::Absolute64 => 64,
+                            },
                         },
                     },
                 )
@@ -73,10 +91,6 @@ impl ObjectFileBuilder {
         }
 
         Ok(())
-    }
-
-    pub(crate) fn add_undefined_function(&mut self, func: &FunctionRef) {
-        self.ensure_function_symbol(func);
     }
 
     pub(crate) fn finish(self) -> Result<std::vec::Vec<u8>> {
@@ -118,7 +132,7 @@ impl ObjectFileBuilder {
             value: 0,
             size: 0,
             kind: SymbolKind::Text,
-            scope: SymbolScope::Linkage,
+            scope: SymbolScope::Dynamic,
             weak: false,
             section: SymbolSection::Undefined,
             flags: SymbolFlags::None,
@@ -149,7 +163,7 @@ fn object_format_for_target(arch: TargetArch) -> Result<(BinaryFormat, Architect
 fn symbol_scope(linkage: Linkage) -> SymbolScope {
     match linkage {
         Linkage::Local => SymbolScope::Compilation,
-        Linkage::Import | Linkage::Export => SymbolScope::Linkage,
+        Linkage::Import | Linkage::Export => SymbolScope::Dynamic,
     }
 }
 
@@ -190,7 +204,7 @@ mod tests {
         let symbol = parse_symbol(&object, "main").unwrap();
 
         assert_eq!(object.format(), BinaryFormat::Elf);
-        assert_eq!(symbol.scope(), SymbolScope::Linkage);
+        assert_eq!(symbol.scope(), SymbolScope::Dynamic);
         assert!(!symbol.is_undefined());
         assert!(symbol.size() > 0);
     }
@@ -223,7 +237,7 @@ mod tests {
         let ext = parse_symbol(&object, "ext_func").unwrap();
 
         assert!(!main.is_undefined());
-        assert_eq!(main.scope(), SymbolScope::Linkage);
+        assert_eq!(main.scope(), SymbolScope::Dynamic);
         assert!(!helper.is_undefined());
         assert_eq!(helper.scope(), SymbolScope::Compilation);
         assert!(ext.is_undefined());

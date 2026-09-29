@@ -97,7 +97,7 @@ pub(crate) fn stack_address(
 // no current instruction happens to call.
 pub(crate) mod host {
     use veloc_encoder::x86_64::{Branch, Form, Immediate, Legacy};
-    include!(concat!(env!("OUT_DIR"), "/encoding_host.rs"));
+    include!(concat!(env!("OUT_DIR"), "/encoding_host_x86_64.rs"));
 }
 
 /// Codegen owns symbolic targets; the standalone encoder never sees them.

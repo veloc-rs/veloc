@@ -2,6 +2,7 @@
 #![no_std]
 extern crate self as veloc_encoder;
 
+pub mod riscv64;
 pub mod x86_64;
 
 /// A signed PC-relative field. Its target identity belongs to the caller.

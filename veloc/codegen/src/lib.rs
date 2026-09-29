@@ -5,7 +5,9 @@ pub mod backend;
 pub mod driver;
 mod emitter;
 pub mod error;
-pub use emitter::{EmittedCode, Emitter, ExternalRelocation, Target as FixupTarget};
+pub use emitter::{
+    EmittedCode, Emitter, ExternalRelocation, RelocationKind, Target as FixupTarget,
+};
 // Exported macros use the dependency's canonical name for hygienic paths.
 #[doc(hidden)]
 pub use veloc_lir;
@@ -34,6 +36,9 @@ pub fn create_target_machine(config: TargetConfig) -> Result<std::boxed::Box<dyn
         TargetArch::X86_64 => Ok(std::boxed::Box::new(
             target::x86_64::X86_64TargetMachine::new(config)?,
         )),
+        TargetArch::Riscv64 => Ok(Box::new(target::riscv64::Riscv64TargetMachine::new(
+            config,
+        )?)),
         _ => Err(Error::target_machine_unavailable(config.arch)),
     }
 }

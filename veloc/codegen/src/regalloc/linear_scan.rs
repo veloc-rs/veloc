@@ -344,12 +344,7 @@ impl<'a> RegisterAllocator<'a> {
     fn spill(&mut self, reg: Reg, f: &MachineFunction, frame: &mut StackBatch) -> Result<()> {
         let ty = f.vreg_data(reg).ty;
         let layout = &self.target.desc().data_layout;
-        self.target
-            .desc()
-            .registers
-            .special_regs
-            .frame_pointer
-            .ok_or_else(|| Error::codegen("spilling requires a frame pointer"))?;
+        // Stack slots remain abstract until the target chooses their base register.
         let layout = layout
             .layout_of(ty)
             .ok_or_else(|| Error::codegen(format!("unknown storage layout: {ty:?}")))?;

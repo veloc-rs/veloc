@@ -1382,7 +1382,11 @@ impl Checker<'_> {
             }
         }
         if matches!(declaration.body(), Some(FunctionBody::Vm { .. })) {
-            return Err(Error::at(self.source, declaration.offset, "VM operation is only available in rule programs"));
+            return Err(Error::at(
+                self.source,
+                declaration.offset,
+                "VM operation is only available in rule programs",
+            ));
         }
         let body = match &declaration.kind {
             DeclKind::Constant { value: None, .. }
@@ -1758,13 +1762,17 @@ impl Checker<'_> {
                 let function = self.function(name, node.offset)?;
                 self.call(function, Vec::new(), args, node.offset, env, signature)?
             }
-            Kind::List(nodes) if matches!(expected, Some(Ty::Array(_, _))) => {
-                let Some(Ty::Array(ty, n)) = expected else {
-                    unreachable!()
+            Kind::List(nodes) if matches!(expected, Some(Ty::Array(_, _) | Ty::Sequence(_))) => {
+                let ty = match expected.unwrap() {
+                    Ty::Array(ty, n) => {
+                        if nodes.len() != *n {
+                            return Err(fail("projection array length mismatch"));
+                        }
+                        ty
+                    }
+                    Ty::Sequence(ty) => ty,
+                    _ => unreachable!(),
                 };
-                if nodes.len() != *n {
-                    return Err(fail("projection array length mismatch"));
-                }
                 Expr {
                     types: None,
                     ty: expected.unwrap().clone(),
@@ -2130,7 +2138,12 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Some(e) => format!("Some({})", self.term(e)),
             ExprKind::Array(args) => format!(
-                "[{}]",
+                "{}[{}]",
+                if matches!(term.ty, Ty::Sequence(_)) {
+                    "&"
+                } else {
+                    ""
+                },
                 args.iter()
                     .map(|e| self.term(e))
                     .collect::<Vec<_>>()

@@ -180,7 +180,7 @@ impl<'a> WasmTranslator<'a> {
                 let res = self.builder.ins().reinterpret(v, VelocType::F64);
                 self.stack.push(res);
             }
-            _ => unreachable!("Non-numeric operator in translate_numeric"),
+            _ => unreachable!("unsupported WebAssembly operator: {op:?}"),
         }
         Ok(())
     }

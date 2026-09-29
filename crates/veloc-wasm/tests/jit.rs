@@ -1,4 +1,7 @@
-#![cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#![cfg(all(
+    any(target_arch = "x86_64", target_arch = "riscv64"),
+    target_os = "linux"
+))]
 
 use veloc_wasm::engine::{Config, Strategy};
 use veloc_wasm::{Engine, Linker, Module, Store, Val};

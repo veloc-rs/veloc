@@ -6,9 +6,10 @@ pub mod types;
 use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use elf_loader::Loader;
 use elf_loader::image::LoadedObject;
+use elf_loader::image::{SyntheticModule, SyntheticSymbol};
 use elf_loader::input::ElfBinary;
+use elf_loader::{Loader, Relocator};
 
 use crate::Result;
 use crate::engine::{Engine, Strategy};
@@ -382,35 +383,95 @@ impl Module {
 
             // Load JIT object and relocate
             profile.measure("jit.link", 0, || {
-                let mut loader = Loader::new();
+                let loader = Loader::new();
                 let lib = loader.load_object(ElfBinary::new("wasm_module", &object_data))?;
-                let loaded = lib
-                    .relocator()
-                    .pre_find_fn(|name| match name {
-                        "wasm_host_call" => Some(host::wasm_host_call as *const ()),
-                        "wasm_trap_handler" => Some(runtime::wasm_trap_handler as *const ()),
-                        "wasm_memory_size" => Some(runtime::wasm_memory_size as *const ()),
-                        "wasm_memory_grow" => Some(runtime::wasm_memory_grow as *const ()),
-                        "wasm_table_size" => Some(runtime::wasm_table_size as *const ()),
-                        "wasm_table_grow" => Some(runtime::wasm_table_grow as *const ()),
-                        "wasm_table_fill" => Some(runtime::wasm_table_fill as *const ()),
-                        "wasm_table_copy" => Some(runtime::wasm_table_copy as *const ()),
-                        "wasm_table_init" => Some(runtime::wasm_table_init as *const ()),
-                        "wasm_elem_drop" => Some(runtime::wasm_elem_drop as *const ()),
-                        "wasm_memory_init" => Some(runtime::wasm_memory_init as *const ()),
-                        "wasm_data_drop" => Some(runtime::wasm_data_drop as *const ()),
-                        "wasm_memory_copy" => Some(runtime::wasm_memory_copy as *const ()),
-                        "wasm_memory_fill" => Some(runtime::wasm_memory_fill as *const ()),
-                        "wasm_init_table_element" => {
-                            Some(runtime::wasm_init_table_element as *const ())
-                        }
-                        "wasm_init_memory_data" => {
-                            Some(runtime::wasm_init_memory_data as *const ())
-                        }
-                        "wasm_init_table" => Some(runtime::wasm_init_table as *const ()),
-                        _ => None,
-                    })
-                    .relocate()?;
+                let host = SyntheticModule::new(
+                    "__veloc_runtime",
+                    [
+                        SyntheticSymbol::function(
+                            "wasm_host_call",
+                            host::wasm_host_call as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_trap_handler",
+                            runtime::wasm_trap_handler as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_memory_size",
+                            runtime::wasm_memory_size as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_memory_grow",
+                            runtime::wasm_memory_grow as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_table_size",
+                            runtime::wasm_table_size as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_table_grow",
+                            runtime::wasm_table_grow as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_table_fill",
+                            runtime::wasm_table_fill as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_table_copy",
+                            runtime::wasm_table_copy as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_table_init",
+                            runtime::wasm_table_init as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_elem_drop",
+                            runtime::wasm_elem_drop as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_memory_init",
+                            runtime::wasm_memory_init as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_data_drop",
+                            runtime::wasm_data_drop as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_memory_copy",
+                            runtime::wasm_memory_copy as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_memory_fill",
+                            runtime::wasm_memory_fill as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_init_table_element",
+                            runtime::wasm_init_table_element as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_init_memory_data",
+                            runtime::wasm_init_memory_data as *const (),
+                        ),
+                        SyntheticSymbol::function(
+                            "wasm_init_table",
+                            runtime::wasm_init_table as *const (),
+                        ),
+                    ],
+                );
+                let loaded = Relocator::new().run(lib).modules([host]).relocate()?;
+                #[cfg(all(target_arch = "riscv64", target_os = "linux"))]
+                {
+                    // Synchronize all harts, including after thread migration.
+                    const SYS_RISCV_FLUSH_ICACHE: libc::c_long = 259;
+                    if unsafe { libc::syscall(SYS_RISCV_FLUSH_ICACHE, 0usize, usize::MAX, 0usize) }
+                        != 0
+                    {
+                        return Err(crate::error::Error::Compile(format!(
+                            "flush JIT instruction cache: {}",
+                            std::io::Error::last_os_error()
+                        )));
+                    }
+                }
                 Ok::<_, crate::error::Error>(ModuleArtifact::Jit(loaded))
             })?
         } else {

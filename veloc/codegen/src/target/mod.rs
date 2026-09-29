@@ -2,6 +2,7 @@
 //!
 //! 提供目标架构的抽象接口，支持多后端（x86_64, ARM, RISC-V 等）
 
+pub mod riscv64;
 pub mod x86_64;
 
 mod abi;

@@ -27,8 +27,14 @@ struct Branch {
     target: Block,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelocationKind {
+    RelativeBranch32,
+    Absolute64,
+}
 #[derive(Debug, Clone)]
 pub struct ExternalRelocation {
+    pub kind: RelocationKind,
     pub offset: u64,
     pub symbol: SymbolId,
     pub addend: i64,
@@ -39,8 +45,16 @@ pub struct EmittedCode {
     pub relocations: Vec<ExternalRelocation>,
 }
 
+struct LocalFixup {
+    start: usize,
+    len: usize,
+    target: Block,
+    patch: fn(&mut [u8], i64) -> core::result::Result<(), veloc_encoder::Error>,
+}
 #[derive(Default)]
 pub struct Emitter {
+    local_fixups: Vec<LocalFixup>,
+    absolute_relocations: Vec<ExternalRelocation>,
     data: Vec<u8>,
     labels: HashMap<Block, usize>,
     fixups: Vec<Pending>,
@@ -59,6 +73,34 @@ impl Emitter {
             self.labels.insert(block, self.position()).is_none(),
             "duplicate block label"
         );
+    }
+    /// Fixed-size bytes used by architectures without branch relaxation.
+    pub fn bytes(&mut self, bytes: &[u8]) {
+        self.data.extend_from_slice(bytes);
+    }
+    /// A target encoder patches the instruction fields; layout owns labels.
+    pub fn local_fixup(
+        &mut self,
+        target: Block,
+        bytes: &[u8],
+        patch: fn(&mut [u8], i64) -> core::result::Result<(), veloc_encoder::Error>,
+    ) {
+        self.local_fixups.push(LocalFixup {
+            start: self.position(),
+            len: bytes.len(),
+            target,
+            patch,
+        });
+        self.bytes(bytes);
+    }
+    pub fn absolute64(&mut self, symbol: SymbolId) {
+        self.absolute_relocations.push(ExternalRelocation {
+            offset: self.position() as u64,
+            symbol,
+            addend: 0,
+            kind: RelocationKind::Absolute64,
+        });
+        self.bytes(&[0; 8]);
     }
     pub fn instruction<const N: usize>(
         &mut self,
@@ -179,12 +221,27 @@ impl Emitter {
                         .checked_add(i64::from(fixup.field.offset) - i64::from(fixup.field.base))
                         .ok_or_else(|| Error::codegen("relocation addend overflow"))?;
                     result.relocations.push(ExternalRelocation {
+                        kind: RelocationKind::RelativeBranch32,
                         offset: (start + usize::from(fixup.field.offset)) as u64,
                         symbol,
                         addend,
                     });
                 }
             }
+        }
+        for fixup in self.local_fixups {
+            let start = positions.at(fixup.start);
+            let target = *self
+                .labels
+                .get(&fixup.target)
+                .ok_or_else(|| Error::codegen("missing local fixup label"))?;
+            let offset = positions.at(target) as i64 - start as i64;
+            (fixup.patch)(&mut result.data[start..start + fixup.len], offset)
+                .map_err(|e| Error::codegen(format!("local fixup: {e}")))?;
+        }
+        for mut relocation in self.absolute_relocations {
+            relocation.offset = positions.at(relocation.offset as usize) as u64;
+            result.relocations.push(relocation);
         }
         Ok(result)
     }

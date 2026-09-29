@@ -149,12 +149,8 @@ impl<'a> CodegenPipeline<'a> {
                 }
             }
 
-            for (_, func) in module.functions() {
-                if func.decl.linkage == veloc_mir::Linkage::Import {
-                    object.add_undefined_function(&func);
-                }
-            }
-
+            // Referenced imports are created while emitting relocations. Unused
+            // declarations must not require runtime symbol resolution.
             object.finish()
         })
     }
