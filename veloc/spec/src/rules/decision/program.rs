@@ -3,20 +3,55 @@
 use super::*;
 use crate::bytecode::{Assembler, Encoded};
 use crate::rules::typed::{Call, Inst};
-use veloc_bytecode::Lebs;
+use veloc_bytecode::{Lebs, Words};
 
 #[derive(Default)]
 pub(super) struct Program {
     pub asm: Assembler,
     pub labels: usize,
     pub tests: Vec<Test>,
-    pub sets: Vec<Vec<String>>,
     pub features: Vec<String>,
     pub feature_source: Option<String>,
     pub actions: Vec<String>,
     types: Vec<String>,
     fields: Vec<String>,
     recipes: BTreeMap<Vec<Vec<u8>>, usize>,
+    type_constants: Vec<(usize, TypeConstant)>,
+}
+
+/// Rust evaluates the host type codec into fixed-width bytecode operands.
+/// Keeping their width fixed lets the assembler resolve branches beforehand.
+struct TypeConstant {
+    offset: usize,
+    ty: String,
+    exact_pattern: bool,
+}
+
+fn pattern_words(patterns: &[Pattern]) -> (Vec<usize>, Vec<TypeConstant>) {
+    let mut words = Vec::new();
+    let mut constants = Vec::new();
+    for pattern in patterns {
+        let (header, types): (PatternHeader, &[String]) = match pattern {
+            Pattern::Exact(ty) => (PatternHeader::Exact(0), std::slice::from_ref(ty)),
+            Pattern::Set(types) => (PatternHeader::Set(types.len()), types),
+            Pattern::Bind(types) => (PatternHeader::Bind(types.len()), types),
+            Pattern::Same(slot) => (PatternHeader::Same(*slot), &[]),
+        };
+        let exact = matches!(header, PatternHeader::Exact(_));
+        if !exact {
+            words.push(header.encode());
+        }
+        for ty in types {
+            constants.push(TypeConstant {
+                // Account for the Words length prefix.
+                offset: 4 + words.len() * 4,
+                ty: ty.clone(),
+                exact_pattern: exact,
+            });
+            words.push(if exact { header.encode() } else { 0 });
+        }
+    }
+    (words, constants)
 }
 
 pub(super) enum Output {
@@ -29,28 +64,28 @@ pub(super) enum Output {
 
 impl Program {
     pub fn signature(
-        &mut self,
         sig: &Signature,
         expr: &Expressions<'_>,
         offset: usize,
     ) -> Result<Test, Error> {
         let mut bindings = BTreeMap::new();
-        let mut pattern = |ty: &crate::rules::typed::Ty| -> Result<TypePattern, Error> {
+        let mut pattern = |ty: &crate::rules::typed::Ty| -> Result<Pattern, Error> {
             if let Some(&slot) = bindings.get(&ty.name) {
-                return Ok(TypePattern::Same(slot));
+                return Ok(Pattern::Same(slot));
             }
             let values = ty
                 .domain
                 .iter()
                 .map(|name| expr.constant(name, offset))
                 .collect::<Result<Vec<_>, _>>()?;
-            let set = intern(&mut self.sets, values);
-            if sig.generics.contains_key(&ty.name) && ty.domain.len() > 1 {
+            if let [ty] = values.as_slice() {
+                Ok(Pattern::Exact(ty.clone()))
+            } else if sig.generics.contains_key(&ty.name) {
                 let slot = bindings.len();
                 bindings.insert(ty.name.clone(), slot);
-                Ok(TypePattern::Bind(set))
+                Ok(Pattern::Bind(values))
             } else {
-                Ok(TypePattern::Set(set))
+                Ok(Pattern::Set(values))
             }
         };
         let results = sig
@@ -69,24 +104,40 @@ impl Program {
     pub fn test(&mut self, id: usize, failure: usize) {
         let op = match &self.tests[id] {
             Test::Signature { results, inputs } => {
-                let results: Vec<_> = results.iter().map(|pattern| pattern.encode()).collect();
-                let inputs: Vec<_> = inputs.iter().map(|pattern| pattern.encode()).collect();
-                self.asm.branch(
-                    Op::CheckSignature {
-                        results: Lebs::Values(&results),
-                        inputs: Lebs::Values(&inputs),
-                        failure: 0,
-                    },
-                    "failure",
-                    failure,
-                );
+                let (results, result_types) = pattern_words(results);
+                let (inputs, input_types) = pattern_words(inputs);
+                let op = Op::CheckSignature {
+                    results: TypePatterns::from_words(Words::Values(&results)),
+                    inputs: TypePatterns::from_words(Words::Values(&inputs)),
+                    failure: 0,
+                };
+                for (field, constants) in [("results", result_types), ("inputs", input_types)] {
+                    let offset = op.field_offset(field).unwrap();
+                    for mut constant in constants {
+                        constant.offset += offset;
+                        self.type_constants
+                            .push((self.asm.instructions.len(), constant));
+                    }
+                }
+                self.asm.branch(op, "failure", failure);
                 return;
             }
-            Test::Type { value, set } => Op::CheckType {
-                value: value.encode(),
-                set: *set,
-                failure: 0,
-            },
+            Test::Type { value, ty } => {
+                let op = Op::CheckType {
+                    value: *value,
+                    ty: 0,
+                    failure: 0,
+                };
+                self.type_constants.push((
+                    self.asm.instructions.len(),
+                    TypeConstant {
+                        offset: op.field_offset("ty").unwrap(),
+                        ty: ty.clone(),
+                        exact_pattern: false,
+                    },
+                ));
+                op
+            }
             Test::Signed {
                 field,
                 bits,
@@ -445,7 +496,11 @@ impl Program {
 
     pub fn render(&self, out: &mut String, code: &Encoded, config: DecisionRust<'_>) {
         // Decode for human-readable generated output using the same opcode schema.
-        writeln!(out, "#[rustfmt::skip]\nconst CODE: &[u8] = &[").unwrap();
+        writeln!(
+            out,
+            "// Type operands are placeholders filled by the const expressions below.\n#[rustfmt::skip]\nconst CODE: &[u8] = &{{ let mut code = ["
+        )
+        .unwrap();
         for (bytes, offset) in code.instructions.iter().zip(&code.offsets) {
             let op = Op::read(&mut veloc_bytecode::Reader { bytes, pc: 0 });
             writeln!(out, "    // @{offset:04x} {op:?}").unwrap();
@@ -455,6 +510,21 @@ impl Program {
             out.push('\n');
         }
         out.push_str("];\n");
+        for (instruction, constant) in &self.type_constants {
+            let offset = code.offsets[*instruction] + constant.offset;
+            let encoded = format!("{}::TypeCodec::encode({})", config.runtime, constant.ty);
+            let encoded = if constant.exact_pattern {
+                format!("veloc_bytecode::signature::PatternHeader::Exact({encoded}).encode()")
+            } else {
+                encoded
+            };
+            writeln!(out, "// Inline type at @{offset:04x}: {}", constant.ty).unwrap();
+            writeln!(out, "let bytes = ({encoded} as u32).to_le_bytes();").unwrap();
+            for i in 0..4 {
+                writeln!(out, "code[{}] = bytes[{i}];", offset + i).unwrap();
+            }
+        }
+        out.push_str("code };\n");
         for id in 0..self.labels {
             writeln!(out, "const ENTRY_{id}: usize = {};", code.labels[id]).unwrap();
         }
@@ -473,17 +543,7 @@ impl Program {
         ] {
             writeln!(out, "{name}: &[{}],", table.join(",\n")).unwrap();
         }
-        writeln!(
-            out,
-            "sets: &[{}], features: &[{}],",
-            self.sets
-                .iter()
-                .map(|s| format!("&[{}]", s.join(",")))
-                .collect::<Vec<_>>()
-                .join(","),
-            self.features.join(",")
-        )
-        .unwrap();
+        writeln!(out, "features: &[{}],", self.features.join(",")).unwrap();
         out.push_str("};\n");
     }
 }

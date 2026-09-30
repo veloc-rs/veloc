@@ -17,6 +17,9 @@ pub enum Strategy {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub codegen: veloc::codegen::CodegenOptions,
+    /// Explicit host CPU model and ISA overrides for native code generation.
+    pub cpu: String,
+    pub cpu_features: Vec<String>,
     pub strategy: Strategy,
     /// Use protected linear memory and signal traps for interpreter loads/stores.
     /// Currently supported on Linux x86-64 with glibc.
@@ -45,6 +48,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             codegen: Default::default(),
+            cpu: "generic".into(),
+            cpu_features: Vec::new(),
             strategy: Strategy::Auto,
             hardware_memory_checks: false,
             dump_ir: false,
@@ -80,6 +85,8 @@ impl Engine {
         Self {
             inner: Arc::new(EngineInner {
                 backend: Backend::with_target_config(veloc::codegen::TargetConfig {
+                    cpu: config.cpu.clone(),
+                    features: config.cpu_features.clone(),
                     arch: if cfg!(target_arch = "riscv64") {
                         veloc::codegen::TargetArch::Riscv64
                     } else {

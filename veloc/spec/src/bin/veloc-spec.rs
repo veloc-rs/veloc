@@ -22,9 +22,9 @@ struct Args {
     #[arg(long)]
     out_dir: Option<PathBuf>,
     /// Target architecture for machine-specific artifacts.
-    #[arg(long, requires = "definitions")]
+    #[arg(long)]
     arch: Option<String>,
-    /// Instruction contracts for machine-specific artifacts.
+    /// Operation definitions for transformation rules.
     #[arg(long)]
     definitions: Option<PathBuf>,
     /// Rust namespace for generated interfaces.
@@ -141,9 +141,6 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .transpose()?,
             arch,
             context: required(args.context.as_deref(), "context")?,
-            definitions: definitions
-                .as_ref()
-                .ok_or("target requires --definitions")?,
         })
     } else {
         None

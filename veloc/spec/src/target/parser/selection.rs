@@ -125,10 +125,35 @@ impl Reader<'_> {
                             .fields
                             .insert(field, Pattern::And(vec![binding, pattern]));
                     }
+                    Kind::Call(op, args)
+                        if matches!(op.as_str(), "fits_signed" | "fits_unsigned")
+                            && args.len() == 2 =>
+                    {
+                        let bits = self.number(&args[1])?;
+                        let signed = op == "fits_signed";
+                        if !(1..=64).contains(&bits) {
+                            return Err(self.error(condition, "invalid immediate bit width"));
+                        }
+                        let field = self.selection_field(&args[0], root, &state)?;
+                        let binding = Pattern::Variable(state.field(field.clone()));
+                        if !matches!(state.fields[&field], Pattern::Variable(_)) {
+                            return Err(self.error(condition, "duplicate field constraint"));
+                        }
+                        state.fields.insert(
+                            field,
+                            Pattern::And(vec![
+                                binding,
+                                Pattern::IntRange {
+                                    bits: bits as u8,
+                                    signed,
+                                },
+                            ]),
+                        );
+                    }
                     _ => {
                         return Err(self.error(
                             condition,
-                            "expected type_is<T>(value) or matches(value, literal)",
+                            "expected type_is, matches, fits_signed or fits_unsigned",
                         ));
                     }
                 },

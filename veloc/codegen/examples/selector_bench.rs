@@ -6,6 +6,7 @@ use std::{
     hint::black_box,
     time::{Duration, Instant},
 };
+use veloc_codegen::analysis::FunctionAnalysisCtx;
 use veloc_codegen::isel::InstructionSelector;
 use veloc_codegen::{CodegenOptions, CodegenPipeline, TargetConfig, create_target_machine};
 use veloc_lir::{InstBuild, MachineFunction, MachineOpcode, Type};
@@ -116,8 +117,10 @@ fn main() {
         ("stack_loads", memory_workload(true)),
         ("indexed_loads", memory_workload(false)),
     ] {
+        let mut analyses = FunctionAnalysisCtx::default();
+        let cfg = analyses.cfg(&source, &*target);
         let mut check = source.clone();
-        selector.select(&mut check).unwrap();
+        selector.select(&mut check, cfg).unwrap();
         check.check_refs().unwrap();
         let fingerprint = hash(check.format_for_dump().as_bytes());
         let mut times = Vec::new();
@@ -125,7 +128,7 @@ fn main() {
             let mut batch: Vec<_> = (0..64).map(|_| source.clone()).collect();
             let start = Instant::now();
             for f in &mut batch {
-                selector.select(black_box(f)).unwrap();
+                selector.select(black_box(f), cfg).unwrap();
             }
             let elapsed = start.elapsed();
             black_box(&batch);

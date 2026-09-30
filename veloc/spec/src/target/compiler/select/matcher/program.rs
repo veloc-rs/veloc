@@ -331,6 +331,20 @@ impl Code {
                         failure,
                     );
                 }
+                Guard::IntRange { bits, signed } => {
+                    let (node, schema, field) = resolve_field(plan, root, field);
+                    let field = self.field(adapters, schema, field, Access::Attribute);
+                    self.branch(
+                        Op::CheckIntRange {
+                            node,
+                            field,
+                            bits: usize::from(*bits),
+                            signed: usize::from(*signed),
+                            failure: 0,
+                        },
+                        failure,
+                    );
+                }
                 Guard::Integer(_) | Guard::Condition(_) => {
                     let (access, constant) = match guard {
                         Guard::Integer(value) => (Access::Attribute, value.to_string()),
@@ -507,6 +521,19 @@ impl Code {
                 constant,
                 ..
             } => format!("n{node} {} == {}", field(f), self.integers[constant]),
+            Op::CheckIntRange {
+                node,
+                field: f,
+                bits,
+                signed,
+                ..
+            } => {
+                format!(
+                    "n{node} {} fits {}{bits}",
+                    field(f),
+                    if signed != 0 { "i" } else { "u" }
+                )
+            }
             Op::CheckFeatures { set, .. } => self.features[set].join(" + "),
             Op::CallPredicate { value, id, .. } => format!("{}(v{value})", adapters.predicates[id]),
             Op::CheckFoldable {

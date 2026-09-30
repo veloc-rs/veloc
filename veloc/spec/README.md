@@ -1544,7 +1544,7 @@ cargo run -p veloc-spec --features cli -- veloc/mir/defs/module.spec \
 
 cargo run -p veloc-spec --features cli -- veloc/codegen/defs/x86_64/module.spec \
   --emit target --arch x86_64 --context crate::target::x86_64::lowering::X86LoweringContext \
-  --definitions veloc/codegen/defs/x86_64/instructions.spec -o /tmp/machine.rs
+  --source-definitions veloc/lir/defs/module.spec --source-dialect lir -o /tmp/machine.rs
 ```
 
 `--emit` accepts a comma-separated list or repeated options. `-o -` writes
@@ -1558,8 +1558,16 @@ combinations are errors, not empty compatibility outputs.
 - Rust bindings: `data-types`, `interfaces` (with `--namespace`).
 - Machine descriptions: `target` generates the complete integration unit;
   `selector`, `encoder`, `assembly` generate fragments for that unit's host
-  scope, not standalone Rust crates.
+  scope, not standalone Rust crates. All target artifacts read the same root
+  module. `Target::input` supplies the separate input IR dialect.
 - Transformations: `rules` and `decisions`, with explicit IR and Rust bindings.
+
+Both codegen targets use `module.spec` as their root. Each `lower/*.spec` family
+owns its instruction definitions, encodings, assembly and selection rules;
+`common.spec` contains shared types, host interfaces and helpers. RISC-V groups
+families by ISA extension, while x86_64 groups them by operation family and
+optional extensions. `lower.spec` controls family import order; rule order within
+each input opcode determines matching priority.
 
 ```sh
 cargo run -p veloc-spec --features cli -- veloc/codegen/defs/x86_64/legalize.spec \

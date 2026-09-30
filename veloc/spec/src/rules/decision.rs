@@ -6,11 +6,13 @@ use crate::{
     Definitions, Error, interfaces,
     syntax::{Decl, DeclKind, Kind, Node},
 };
-use predicate::Test;
+use predicate::{Pattern, Test};
 use program::{Output, Program};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
-use veloc_bytecode::rewrite::{Instruction as Op, OperandRef, TypePattern};
+use veloc_bytecode::OperandRef;
+use veloc_bytecode::rewrite::RawInstruction as Op;
+use veloc_bytecode::signature::{PatternHeader, TypePatterns};
 
 #[derive(Clone, Copy)]
 pub struct DecisionRust<'a> {
@@ -164,7 +166,7 @@ fn compile(
             let mut guards = Vec::new();
             let structural = sig.dynamic;
             if !structural {
-                guards.push(program.signature(&sig, &expressions, d.offset)?);
+                guards.push(Program::signature(&sig, &expressions, d.offset)?);
             }
             for condition in &case.guards {
                 expressions.guard(condition, &mut program, &mut guards)?;

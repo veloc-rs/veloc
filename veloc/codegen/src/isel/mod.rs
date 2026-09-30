@@ -24,9 +24,10 @@ impl<'a> FunctionPass for InstructionSelectionPass<'a> {
     fn run(
         &self,
         mfunc: &mut veloc_lir::MachineFunction,
-        _ctx: &mut FunctionPassContext<'_>,
+        ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
-        select::InstructionSelector::new(self.selector).select(mfunc)?;
+        let cfg = ctx.function_analyses.cfg(mfunc, ctx.target);
+        select::InstructionSelector::new(self.selector).select(mfunc, cfg)?;
         Ok(PassEffect::new(
             ChangeSet::SELECTED_OPCODES | ChangeSet::INST_SEMANTICS | ChangeSet::INST_OPERANDS,
         ))

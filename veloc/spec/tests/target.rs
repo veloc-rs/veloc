@@ -4,7 +4,6 @@ use veloc_spec::target::{Def, parse};
 #[test]
 fn production_target_contracts_generate_all_consumers() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../codegen/defs/x86_64");
-    let definitions = veloc_spec::Source::load(root.join("instructions.spec")).unwrap();
     let input = veloc_spec::Source::load(root.join("module.spec")).unwrap();
     let lir = veloc_spec::Source::load(root.join("../../../lir/defs/module.spec")).unwrap();
     let compile = || {
@@ -16,7 +15,6 @@ fn production_target_contracts_generate_all_consumers() {
                         input: Some(("lir", &lir)),
                         arch: "x86_64",
                         context: "crate::target::x86_64::lowering::X86LoweringContext",
-                        definitions: &definitions,
                     }),
                     ..Default::default()
                 },
@@ -37,9 +35,9 @@ fn production_target_contracts_generate_all_consumers() {
         "REG_R15D",
         "constraints: &[OperandConstraint",
         "pub fn validate",
-        "pub fn required_features",
+        "pub const fn required_features",
         "Self::X86Popcnt32 => FeatureSet::empty().with(Feature::POPCNT)",
-        "Op::CheckFeatures as u8",
+        "CheckFeatures {",
         "features: &[FeatureSet::empty().with(Feature::POPCNT).as_words()]",
         "pub fn write_assembly",
         "pub fn emit",
@@ -55,8 +53,8 @@ fn production_target_contracts_generate_all_consumers() {
         );
     }
     assert_eq!(output, &compile()[veloc_spec::Emit::Target]);
-    assert!(output.contains("Op::BuildInst as u8"));
-    assert!(output.contains("Op::GetDef as u8"));
+    assert!(output.contains("BuildInst {"));
+    assert!(output.contains("GetDef {"));
     assert!(!output.contains("match candidate"));
     assert!(!output.contains("SelectorHost"));
     assert!(output.contains("matching::Field::Input("));
@@ -124,4 +122,61 @@ fn parse_typed_selection_cases() {
     assert!(parse("select named(n: lir::Add) { choose {} }").is_err());
     assert!(parse("select() { choose {} }").is_err());
     assert!(parse("select(n: lir::Add) { choose {} }").is_err());
+}
+
+#[test]
+fn riscv_selection_generates_immediate_guards_and_extension_fallbacks() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../codegen/defs/riscv64");
+    let input = veloc_spec::Source::load(root.join("module.spec")).unwrap();
+    let lir = veloc_spec::Source::load(root.join("../../../lir/defs/module.spec")).unwrap();
+    let artifacts = input
+        .generate(
+            &[veloc_spec::Emit::Target],
+            veloc_spec::Options {
+                target: Some(veloc_spec::Target {
+                    input: Some(("lir", &lir)),
+                    arch: "riscv64",
+                    context: "crate::target::riscv64::SelectionContext",
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let output = &artifacts[veloc_spec::Emit::Target];
+    for contract in [
+        "CheckIntRange {",
+        "GetDef {",
+        "CheckFeatures {",
+        "Self::RvRol32 => FeatureSet::empty().with(Feature::Zbb)",
+        "Self::RvSh1Add => FeatureSet::empty().with(Feature::Zba)",
+        "Self::RvMul32 => FeatureSet::empty().with(Feature::M)",
+        "fn construct_rvrotl32(",
+        "fn construct_rvrol32(",
+        "fn construct_rvadd32imm(",
+    ] {
+        assert!(
+            output.contains(contract),
+            "missing generated contract: {contract}"
+        );
+    }
+}
+
+#[test]
+fn immediate_guard_widths_are_checked() {
+    for guard in ["fits_signed", "fits_unsigned"] {
+        let source = |width| {
+            format!(
+                r#"
+            select(n: lir::Add) {{
+                let c = def<lir::Constant>(n.rhs);
+                require({guard}(c.imm, {width}));
+                replace(n, build(AddImm(n.lhs, c.imm)));
+            }}
+        "#
+            )
+        };
+        assert!(parse(&source(64)).is_ok());
+        assert!(parse(&source(65)).is_err());
+        assert!(parse(&source(0)).is_err());
+    }
 }

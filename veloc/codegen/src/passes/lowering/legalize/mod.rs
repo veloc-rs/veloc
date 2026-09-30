@@ -1,15 +1,14 @@
+mod bytecode;
 pub mod info;
 pub mod vm;
 
 pub use info::*;
 
-#[cfg(test)]
-mod tests;
-
 use crate::error::{Error, Result};
+use crate::target::TargetMachine;
 use std::collections::VecDeque;
 use veloc_lir::function::EditChanges;
-use veloc_lir::{FuncEditor, InstId, MachineFunction};
+use veloc_lir::{InstId, MachineFunction, SymbolTable};
 
 pub struct Legalizer<'a> {
     target: LegalizePolicy<'a>,
@@ -40,12 +39,13 @@ impl<'a> Legalizer<'a> {
     }
 
     /// The worklist schedules changed instructions until all are legal.
-    /// Explicit libcall actions use a service that creates a fully ABI-lowered
+    /// Explicit libcall actions invoke ABI lowering to create a fully lowered
     /// call. Ordinary calls must already have passed through ABI lowering.
     pub fn legalize(
         &self,
         function: &mut MachineFunction,
-        mut emit_libcall: impl FnMut(&mut FuncEditor<'_>, InstId, &str) -> Result<()>,
+        target: &dyn TargetMachine,
+        symbols: &mut SymbolTable,
     ) -> Result<bool> {
         let mut modified = false;
         let mut pending: VecDeque<_> = function
@@ -55,7 +55,7 @@ impl<'a> Legalizer<'a> {
         let mut queued: hashbrown::HashSet<_> = pending.iter().copied().collect();
         while let Some(id) = pending.pop_front() {
             queued.remove(&id);
-            let Some(changes) = self.step(function, id, &mut emit_libcall)? else {
+            let Some(changes) = self.step(function, id, target, symbols)? else {
                 continue;
             };
             modified = true;
@@ -86,12 +86,12 @@ impl Legalizer<'_> {
         &self,
         function: &mut MachineFunction,
         id: InstId,
-        emit_libcall: &mut impl FnMut(&mut FuncEditor<'_>, InstId, &str) -> Result<()>,
+        target: &dyn TargetMachine,
+        symbols: &mut SymbolTable,
     ) -> Result<Option<EditChanges>> {
         if function.inst_block(id).is_none() {
             return Ok(None);
         }
-        check_call_abi(function, id)?;
         let inst = function.inst(id);
         if !inst.is_generic() || inst.is_invalid() || inst.is_call_frame() {
             return Ok(None);
@@ -113,7 +113,9 @@ impl Legalizer<'_> {
                 let mut ctx = RewriteContext::new(id, edit.editor());
                 vm::apply(program, entry, slots, &mut ctx)
             }
-            vm::Action::Libcall { symbol, .. } => emit_libcall(edit, id, symbol),
+            vm::Action::Libcall { symbol, .. } => {
+                super::abi::emit_libcall(target, symbols, edit, id, symbol)
+            }
             vm::Action::Legal => unreachable!("legal instructions do not rewrite"),
         });
         result?;

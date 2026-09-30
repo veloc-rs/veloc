@@ -11,6 +11,7 @@ pub struct InstCursor {
     block: Option<BlockId>,
     next: Option<InstId>,
     single_block: bool,
+    reverse: bool,
 }
 
 impl InstCursor {
@@ -20,6 +21,7 @@ impl InstCursor {
             block,
             next: block.and_then(|b| function.layout().first_inst(b)),
             single_block: false,
+            reverse: false,
         }
     }
 
@@ -29,7 +31,16 @@ impl InstCursor {
             block: Some(block),
             next: function.layout().first_inst(block),
             single_block: true,
+            reverse: false,
         }
+    }
+
+    /// Visit the original instructions of one block from last to first.
+    pub fn reverse_block(function: &MachineFunction, block: BlockId) -> Self {
+        let mut cursor = Self::block(function, block);
+        cursor.next = function.layout().last_inst(block);
+        cursor.reverse = true;
+        cursor
     }
 
     pub fn next(&mut self, function: &MachineFunction) -> Option<InstId> {
@@ -44,7 +55,11 @@ impl InstCursor {
                     Some(block),
                     "cursor continuation was removed or moved"
                 );
-                self.next = function.layout().next_inst(id);
+                self.next = if self.reverse {
+                    function.layout().prev_inst(id)
+                } else {
+                    function.layout().next_inst(id)
+                };
                 return Some(id);
             }
             self.block = if self.single_block {

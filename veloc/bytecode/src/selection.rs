@@ -8,6 +8,7 @@ crate::bytecode! {
         CheckOpcode { node: uleb, opcode: uleb, failure: u32 },
         CheckType { value: uleb, set: uleb, failure: u32 },
         CheckInt { node: uleb, field: uleb, constant: uleb, failure: u32 },
+        CheckIntRange { node: uleb, field: uleb, bits: uleb, signed: uleb, failure: u32 },
         CheckFeatures { set: uleb, failure: u32 },
         CallPredicate { value: uleb, id: uleb, failure: u32 },
         CheckFoldable { definition: uleb, consumer: uleb, failure: u32 },

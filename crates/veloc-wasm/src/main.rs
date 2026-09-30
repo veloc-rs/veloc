@@ -21,6 +21,12 @@ struct Args {
     /// Execution strategy
     #[arg(short, long, value_enum, default_value = "interpreter")]
     strategy: Strategy,
+    /// CPU model for the native backend (for example, c908 on K230)
+    #[arg(long, default_value = "generic")]
+    cpu: String,
+    /// ISA overrides, for example --cpu-features=-Zbb,-Zba
+    #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
+    cpu_features: Vec<String>,
 
     /// Use guard pages for interpreter linear-memory bounds checks
     #[arg(long)]
@@ -106,6 +112,8 @@ fn main() -> Result<()> {
 
     // 1. 初始化引擎
     let config = Config {
+        cpu: args.cpu,
+        cpu_features: args.cpu_features,
         fast_egraph: args.fast_egraph,
         codegen: veloc_wasm::veloc::codegen::CodegenOptions {
             dump_after: args.dump_after,

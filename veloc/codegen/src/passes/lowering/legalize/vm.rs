@@ -1,13 +1,12 @@
 //! A read-only decision VM followed by a deferred value-rewrite recipe.
 //! The driver owns edit tracking, convergence and worklist updates.
+pub use super::bytecode::TypeCodec;
+use super::bytecode::{Instruction as Op, TypePatterns};
 use super::info::{LegalizePolicy, RewriteContext};
 use crate::error::{Error, Result};
 use smallvec::SmallVec;
 pub use veloc_bytecode::rewrite::OperandRef;
-use veloc_bytecode::{
-    Lebs, Reader,
-    rewrite::{Instruction as Op, TypePattern},
-};
+use veloc_bytecode::{Reader, signature::TypePattern};
 use veloc_lir::{FieldValue, GenericOpcode, Reg};
 use veloc_lir::{InstId, MachineFunction};
 use veloc_mir::Type;
@@ -15,7 +14,6 @@ use veloc_mir::Type;
 pub struct Program {
     pub entries: &'static [Option<usize>],
     pub code: &'static [u8],
-    pub sets: &'static [&'static [Type]],
     pub features: &'static [&'static [u64]],
     pub actions: &'static [Action],
     pub types: &'static [TypeSource],
@@ -87,19 +85,12 @@ pub(super) fn select(
                 inputs,
                 failure,
             } => {
-                if !types.matches_signature(results, inputs, program.sets) {
+                if !types.matches_signature(results, inputs) {
                     reader.pc = failure;
                 }
             }
-            Op::CheckType {
-                value,
-                set,
-                failure,
-            } => {
-                if !types
-                    .get(OperandRef::decode(value))
-                    .is_some_and(|ty| program.sets[set].contains(&ty))
-                {
+            Op::CheckType { value, ty, failure } => {
+                if types.get(value) != Some(ty) {
                     reader.pc = failure;
                 }
             }
@@ -216,39 +207,36 @@ struct InstTypes<'a> {
 }
 
 impl<'a> InstTypes<'a> {
-    fn matches_signature(&self, results: Lebs<'_>, inputs: Lebs<'_>, sets: &[&[Type]]) -> bool {
-        if results.len() != self.inst.results().len() || inputs.len() != self.inst.inputs().len() {
-            return false;
-        }
+    fn matches_signature(&self, results: TypePatterns<'_>, inputs: TypePatterns<'_>) -> bool {
         // Bindings belong to this signature match; failed candidates cannot
         // leak type variables into later branches of the decision bytecode.
         let mut bindings = SmallVec::<[Type; 4]>::new();
-        results
-            .iter()
-            .enumerate()
-            .map(|(i, pattern)| (OperandRef::Result(i), pattern))
-            .chain(
-                inputs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, pattern)| (OperandRef::Input(i), pattern)),
-            )
-            .all(|(operand, pattern)| {
-                let Some(ty) = self.get(operand) else {
+        for (patterns, operands) in [(results, self.inst.results()), (inputs, self.inst.inputs())] {
+            let mut patterns = patterns.iter();
+            for &reg in operands {
+                let Some(pattern) = patterns.next() else {
                     return false;
                 };
-                match TypePattern::decode(pattern) {
-                    TypePattern::Set(set) => sets[set].contains(&ty),
-                    TypePattern::Bind(set) => {
-                        if !sets[set].contains(&ty) {
-                            return false;
-                        }
-                        bindings.push(ty);
-                        true
+                let ty = self.function.vreg_data(reg).ty;
+                let matches = match pattern {
+                    TypePattern::Exact(expected) => ty == expected,
+                    TypePattern::Set(types) | TypePattern::Bind(types) => {
+                        types.iter().any(|expected| ty == expected)
                     }
                     TypePattern::Same(slot) => ty == bindings[slot],
+                };
+                if !matches {
+                    return false;
                 }
-            })
+                if matches!(pattern, TypePattern::Bind(_)) {
+                    bindings.push(ty);
+                }
+            }
+            if patterns.next().is_some() {
+                return false;
+            }
+        }
+        true
     }
 
     fn new(function: &'a MachineFunction, id: InstId) -> Result<Self> {

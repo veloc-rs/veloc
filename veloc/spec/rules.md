@@ -177,6 +177,10 @@ The operations are:
 - `root.field`: read a source field, optionally named with `let value = root.field;`.
 - `require(type_is<T>(value))`: constrain a source value's logical type.
 - `require(matches(root.field, literal))`: match an integer or condition code.
+- `require(fits_signed(node.field, bits))` and `fits_unsigned`: check an i64
+  attribute against an immediate width in 1..=64. Definition fields are supported;
+  unsigned checks reject negative attributes. These lower to shared bytecode
+  range checks, without target-specific callbacks.
 - `temp(Type::I32)`: declare a fresh register with an explicit concrete type.
   The argument currently resolves to one declared type constant (including template
   substitution). Its bank is determined by target operand constraints, never copied
@@ -420,14 +424,37 @@ both explicit enum discriminants and the recipe's numeric codes; the generated
 program-local opcode remapping table. These numbers are build-local, not a
 stable serialized ABI across compiler versions.
 
-`CheckSignature` contains inline result and input patterns. Each pattern uses
-a tagged ULEB operand that checks a type set, binds a local type variable, or requires
-the same type as a previous binding. Results are visited before inputs; bindings
+`CheckSignature` contains inline result and input patterns. Each pattern starts
+with a tagged u32 word: an exact type code, a set/binding with an inline type-code
+list, or a reference to a previous binding. Results are visited before inputs; bindings
 are local to one signature match. For example, `Add<T: Word>` binds `T` at its
 result and checks both inputs against it. Arity, type domains and generic type
 equality are checked together. Concrete singleton domains need no variable
-binding. There is no separate signature table; type sets remain shared.
-Extra type predicates still use `CheckType`.
+binding. There are no signature or type-set tables. Extra exact type predicates
+use `CheckType` with an inline type code. The generated Rust evaluates the host
+`TypeCodec::encode` in constant expressions and writes the codes directly into
+the byte array. Fixed-width operands keep branch offsets independent of those
+expressions; the spec compiler does not assign or duplicate host type IDs.
+
+Field semantics and wire formats are declared separately. All bytecode dialects
+use the same `bytecode!` macro, which accepts optional codec type parameters.
+The rewrite schema is bound as `Instruction<RawWord>` in the compiler and
+`Instruction<TypeCodec>` in the VM through ordinary Rust type aliases.
+A `(codec C)` field uses `FieldCodec` for reading, writing and sizing;
+`WordCodec` supplies the interpretation shared by scalar `Word<C>` fields and
+`List<C>` fields. Lists expose borrowed `Values<C>` iterators. These primitives
+live in `veloc_bytecode::codec`; inline type patterns and their codec live in
+`veloc_bytecode::signature`, available to every dialect.
+
+For example, a schema can declare `ty: (codec Word<T>)` and
+`types: (codec List<T>)` under `Instruction<T: WordCodec>`. Both decode through
+the supplied codec, so adding typed fields needs no dialect-specific macro or
+separate decoder. Existing plain `u32`, `uleb` and list fields use the same macro.
+The runtime decodes rewrite `CheckType` into an `OperandRef` and a `Type`.
+Signature patterns expose exact types and borrowed type-set iterators through
+the same codec. Matching compares semantic types, with no integer conversion or
+temporary type array in the VM. These are compile-time bindings; the bytecode
+crate does not depend on the host type crate.
 
 Operand positions use the shared `OperandRef::Input` / `OperandRef::Result`
 representation, including recipe type sources. Only the wire codec packs the

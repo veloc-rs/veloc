@@ -97,6 +97,8 @@ fn run_once(
     let outcome = (|| -> Result<Vec<Val>> {
         let config = Config {
             codegen: Default::default(),
+            cpu: "generic".into(),
+            cpu_features: Vec::new(),
             strategy,
             hardware_memory_checks: false,
             dump_ir,

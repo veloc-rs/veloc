@@ -3,10 +3,12 @@
 
 mod operand;
 pub use operand::OperandRef;
+pub mod codec;
 
 pub mod equivalence;
 pub mod rewrite;
 pub mod selection;
+pub mod signature;
 
 /// Build-time encoding contract shared by all bytecode dialects.
 pub trait Encode {
@@ -16,27 +18,47 @@ pub trait Encode {
 
 /// Describe a bytecode once for its compiler, interpreter and disassembler.
 /// Fields choose fixed little-endian u32 or ULEB128 encoding. Lists use the
-/// same encoding for their length prefix and elements.
+/// same encoding for their length prefix and elements. `(codec C)` binds a
+/// semantic field type and its encoding through `FieldCodec`.
+/// Optional generic parameters bind host codecs without duplicating the schema.
 #[macro_export]
 macro_rules! bytecode {
-    ($vis:vis enum $inst:ident, $opcode:ident {
+    ($vis:vis enum $inst:ident $(<$($param:ident : $bound:path),+>)?, $opcode:ident {
         $($name:ident { $($field:ident : $kind:tt),* $(,)? }),* $(,)?
     }) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         #[repr(u8)]
         $vis enum $opcode { $($name),* }
 
-        #[derive(Clone, Copy, Debug)]
-        $vis enum $inst<'a> {
+        $vis enum $inst<'a $(, $($param: $bound),+)?> {
             $($name { $($field: $crate::bytecode!(@ty $kind, 'a)),* }),*
         }
 
-        impl $crate::Encode for $inst<'_> {
+        // Generic enums containing type macros cannot use built-in derives.
+        // FieldCodec requires Copy + Debug, so all fields support these impls.
+        impl<'a $(, $($param: $bound),+)?> Copy for $inst<'a $(, $($param),+)?> {}
+        impl<'a $(, $($param: $bound),+)?> Clone for $inst<'a $(, $($param),+)?> {
+            fn clone(&self) -> Self { *self }
+        }
+        impl<'a $(, $($param: $bound),+)?> core::fmt::Debug for $inst<'a $(, $($param),+)?> {
+            #[allow(unused_mut)]
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self {
+                    $(Self::$name { $($field),* } => {
+                        let mut debug = f.debug_struct(stringify!($name));
+                        $(debug.field(stringify!($field), $field);)*
+                        debug.finish()
+                    }),*
+                }
+            }
+        }
+
+        impl<'a $(, $($param: $bound),+)?> $crate::Encode for $inst<'a $(, $($param),+)?> {
             fn encode(&self, out: &mut impl Extend<u8>) { self.encode(out); }
             fn field_offset(&self, name: &str) -> Option<usize> { self.field_offset(name) }
         }
 
-        impl<'a> $inst<'a> {
+        impl<'a $(, $($param: $bound),+)?> $inst<'a $(, $($param),+)?> {
             #[inline]
             $vis fn read(reader: &mut $crate::Reader<'a>) -> Self {
                 match reader.byte() {
@@ -78,12 +100,17 @@ macro_rules! bytecode {
     (@ty uleb, $lt:lifetime) => { usize };
     (@ty [uleb], $lt:lifetime) => { $crate::Lebs<$lt> };
     (@ty [u32], $lt:lifetime) => { $crate::Words<$lt> };
+    (@ty (codec $codec:ty), $lt:lifetime) => { <$codec as $crate::codec::FieldCodec<$lt>>::Value };
     (@read $r:ident, u32) => { $r.u32() };
     (@read $r:ident, uleb) => { $r.uleb() };
     (@read $r:ident, [uleb]) => { $r.lebs() };
     (@read $r:ident, [u32]) => { $r.words() };
+    (@read $r:ident, (codec $codec:ty)) => { <$codec as $crate::codec::FieldCodec<'_>>::read($r) };
     (@encode $out:ident, $v:ident, u32) => { $out.extend($crate::encode_u32(*$v)) };
     (@encode $out:ident, $v:ident, uleb) => { $out.extend($crate::encode_uleb(*$v)) };
+    (@encode $out:ident, $v:ident, (codec $codec:ty)) => {
+        <$codec as $crate::codec::FieldCodec<'_>>::write(*$v, $out)
+    };
     (@encode $out:ident, $v:ident, [uleb]) => {
         $out.extend($crate::encode_uleb($v.len()));
         for value in $v.iter() { $out.extend($crate::encode_uleb(value)); }
@@ -99,6 +126,7 @@ macro_rules! bytecode {
             + $v.iter().map(|v| $crate::encode_uleb(v).len()).sum::<usize>()
     };
     (@size $v:ident, [u32]) => { 4 + $v.len() * 4 };
+    (@size $v:ident, (codec $codec:ty)) => { <$codec as $crate::codec::FieldCodec<'_>>::size(*$v) };
 }
 
 /// Borrowed list used both by the encoder and by zero-allocation decoding.
@@ -118,6 +146,20 @@ impl Words<'_> {
 
     pub fn is_empty(self) -> bool {
         self.len() == 0
+    }
+
+    pub fn split_at(self, index: usize) -> (Self, Self) {
+        assert!(index <= self.len(), "bytecode word range");
+        match self {
+            Self::Values(values) => {
+                let (head, tail) = values.split_at(index);
+                (Self::Values(head), Self::Values(tail))
+            }
+            Self::Encoded(bytes) => {
+                let (head, tail) = bytes.split_at(index * 4);
+                (Self::Encoded(head), Self::Encoded(tail))
+            }
+        }
     }
 
     pub fn iter(self) -> impl ExactSizeIterator<Item = usize> + DoubleEndedIterator {

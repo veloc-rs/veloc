@@ -8,7 +8,7 @@ pub(crate) mod host {
 pub enum Emission {
     Instructions(Vec<Instruction>),
     Jump(veloc_lir::BlockId),
-    Branch(R, veloc_lir::BlockId),
+    Branch(u32, R, R, veloc_lir::BlockId),
     Call(veloc_lir::SymbolId),
 }
 impl host::Emission for Emission {
@@ -18,8 +18,8 @@ impl host::Emission for Emission {
     fn jump(target: veloc_lir::BlockId) -> Self {
         Self::Jump(target)
     }
-    fn branch(cond: R, target: veloc_lir::BlockId) -> Self {
-        Self::Branch(cond, target)
+    fn branch(funct3: u32, lhs: R, rhs: R, target: veloc_lir::BlockId) -> Self {
+        Self::Branch(funct3, lhs, rhs, target)
     }
     fn call(target: veloc_lir::SymbolId) -> Self {
         Self::Call(target)
@@ -56,8 +56,9 @@ pub(crate) fn encode_instruction(e: &mut crate::Emitter, emission: Emission) -> 
             }
         }
         Emission::Jump(block) => jump(e, block),
-        Emission::Branch(cond, target) => {
-            instruction(e, Instruction::B(0, cond, R::X0, 12))?;
+        Emission::Branch(funct3, lhs, rhs, target) => {
+            // Invert the condition to skip the long-range jump.
+            instruction(e, Instruction::B(funct3 ^ 1, lhs, rhs, 12))?;
             jump(e, target);
         }
         Emission::Call(symbol) => {

@@ -6,12 +6,12 @@ use crate::syntax::FunctionBody;
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Test {
     Signature {
-        results: Vec<TypePattern>,
-        inputs: Vec<TypePattern>,
+        results: Vec<Pattern>,
+        inputs: Vec<Pattern>,
     },
     Type {
         value: OperandRef,
-        set: usize,
+        ty: String,
     },
     Signed {
         field: usize,
@@ -19,6 +19,15 @@ pub(super) enum Test {
         expected: bool,
     },
     Features(usize),
+}
+
+/// Type expressions stay symbolic until Rust evaluates the shared type codec.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) enum Pattern {
+    Exact(String),
+    Set(Vec<String>),
+    Bind(Vec<String>),
+    Same(usize),
 }
 
 impl Expressions<'_> {
@@ -209,14 +218,13 @@ impl Expressions<'_> {
                 if self.defs.type_domain(ty).is_none() {
                     return Err(fail());
                 }
-                let set = intern(&mut program.sets, vec![self.constant(ty, rhs.offset)?]);
                 out.push(Test::Type {
                     value: match domain {
                         Domain::Input => OperandRef::Input(index),
                         Domain::Result => OperandRef::Result(index),
                         Domain::Attribute => unreachable!("checked value field"),
                     },
-                    set,
+                    ty: self.constant(ty, rhs.offset)?,
                 });
                 return Ok(());
             }

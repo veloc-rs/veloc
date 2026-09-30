@@ -56,29 +56,25 @@ pub(crate) struct Plan {
 }
 impl Plan {
     pub(crate) fn prepare(
-        input: &crate::Source,
+        source: &crate::Source,
         arch: &str,
         context: &str,
-        definitions: &crate::Source,
         input_definitions: Option<(&str, &crate::Source)>,
     ) -> Result<Self, crate::SourceError> {
-        let input_error =
-            |message: String| input.locate(crate::Error::at(input.text(), 0, message));
-        let definition_error =
-            |message: String| definitions.locate(crate::Error::at(definitions.text(), 0, message));
+        let error = |message: String| source.locate(crate::Error::at(source.text(), 0, message));
         if !crate::rules::identifier(arch) {
-            return Err(input_error(
+            return Err(error(
                 "architecture must be a Rust module identifier".into(),
             ));
         }
-        crate::interfaces::rust_path(input.text(), 0, context).map_err(|e| input.locate(e))?;
-        input.check_imports()?;
-        let contracts = definitions.contracts()?;
-        let mut module = parser::declarations(input.text(), input.declarations())
-            .map_err(|e| input.locate(e))?;
+        crate::interfaces::rust_path(source.text(), 0, context).map_err(|e| source.locate(e))?;
+        source.check_imports()?;
+        let contracts = source.contracts()?;
+        let mut module = parser::declarations(source.text(), source.declarations())
+            .map_err(|e| source.locate(e))?;
         module
             .defs
-            .extend(contracts::registers(definitions.declarations()).map_err(&definition_error)?);
+            .extend(contracts::registers(source.declarations()).map_err(&error)?);
         let input_contracts = input_definitions
             .map(|(_, source)| source.contracts())
             .transpose()?;
@@ -94,9 +90,9 @@ impl Plan {
             for def in &mut module.defs {
                 if let Def::SelectRule(rule) = def {
                     selection::resolve(rule, dialect, input_contracts.as_ref().unwrap(), &types)
-                        .map_err(&input_error)?;
-                    select::check_temps(rule).map_err(&input_error)?;
-                    select::check_storage(rule, &input_layouts).map_err(&input_error)?;
+                        .map_err(&error)?;
+                    select::check_temps(rule).map_err(&error)?;
+                    select::check_storage(rule, &input_layouts).map_err(&error)?;
                 }
             }
         } else if module
@@ -104,24 +100,22 @@ impl Plan {
             .iter()
             .any(|def| matches!(def, Def::SelectRule(_)))
         {
-            return Err(input_error(
+            return Err(error(
                 "selection requires input operation definitions".into(),
             ));
         }
-        let extractors = collect_extractors(&module).map_err(&input_error)?;
-        select::check_predicates(&module).map_err(&input_error)?;
-        let types = crate::types::Types::compile(definitions.declarations(), definitions.text())
-            .map_err(|e| definitions.locate(e))?;
-        let mut final_inst_defs =
-            contracts::compile(contracts, &module, &types).map_err(&definition_error)?;
+        let extractors = collect_extractors(&module).map_err(&error)?;
+        select::check_predicates(&module).map_err(&error)?;
+        let types = crate::types::Types::compile(source.declarations(), source.text())
+            .map_err(|e| source.locate(e))?;
+        let mut final_inst_defs = contracts::compile(contracts, &module, &types).map_err(&error)?;
         for def in &module.defs {
             if let Def::SelectRule(rule) = def {
-                select::check_construction(rule, &final_inst_defs, &types).map_err(&input_error)?;
+                select::check_construction(rule, &final_inst_defs, &types).map_err(&error)?;
             }
         }
-        encoding::compile(definitions, arch, &mut final_inst_defs).map_err(&definition_error)?;
-        assembly::compile(definitions.declarations(), &mut final_inst_defs)
-            .map_err(&definition_error)?;
+        encoding::compile(source, arch, &mut final_inst_defs).map_err(&error)?;
+        assembly::compile(source.declarations(), &mut final_inst_defs).map_err(&error)?;
         for (name, inst) in &final_inst_defs {
             if inst.schedule_latency.is_some()
                 && (inst.memory.is_some()
@@ -140,14 +134,14 @@ impl Plan {
                         )
                     }))
             {
-                return Err(definition_error(format!(
+                return Err(error(format!(
                     "{name}: scheduled instructions must have explicit register dependencies and no control/stack operands; only EFLAGS clobbers are supported"
                 )));
             }
         }
         // Validate fallible target metadata even when only one artifact is requested.
-        let cpu = cpu::Plan::prepare(&module).map_err(&input_error)?;
-        generate::check_abi_descriptors(&module).map_err(&input_error)?;
+        let cpu = cpu::Plan::prepare(&module).map_err(&error)?;
+        generate::check_abi_descriptors(&module).map_err(&error)?;
         Ok(Self {
             module,
             extractors,

@@ -1,45 +1,18 @@
-//! Wire format for ordered rule queries and value-construction recipes.
-//! Execution and edit tracking belong to the consuming runtime.
-//! Type and feature sets index program tables. Operand references have a shared
-//! codec; runtimes and generators use explicit input/result identities.
-
+//! Queries and value-construction recipes, with a host-supplied type codec.
 pub use crate::OperandRef;
-
-/// A signature visits results before inputs. Each Bind introduces the next
-/// local slot; Same refers to a slot already bound in this signature match.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TypePattern {
-    Set(usize),
-    Bind(usize),
-    Same(usize),
-}
-
-impl TypePattern {
-    pub fn encode(self) -> usize {
-        let (index, tag) = match self {
-            Self::Set(set) => (set, 0),
-            Self::Bind(set) => (set, 1),
-            Self::Same(slot) => (slot, 2),
-        };
-        index.checked_mul(4).expect("type pattern index overflow") | tag
-    }
-
-    pub fn decode(value: usize) -> Self {
-        match value & 3 {
-            0 => Self::Set(value >> 2),
-            1 => Self::Bind(value >> 2),
-            2 => Self::Same(value >> 2),
-            _ => panic!("invalid type pattern tag"),
-        }
-    }
-}
+use crate::codec::{Operand, RawWord, Word, WordCodec};
+use crate::signature::PatternsCodec;
 
 crate::bytecode! {
-    pub enum Instruction, Opcode {
+    pub enum Instruction<T: WordCodec>, Opcode {
         Reject {},
         Jump { target: u32 },
-        CheckSignature { results: [uleb], inputs: [uleb], failure: u32 },
-        CheckType { value: uleb, set: uleb, failure: u32 },
+        CheckSignature {
+            results: (codec PatternsCodec<T>),
+            inputs: (codec PatternsCodec<T>),
+            failure: u32
+        },
+        CheckType { value: (codec Operand), ty: (codec Word<T>), failure: u32 },
         CheckSignedRange { field: uleb, bits: uleb, expected: uleb, failure: u32 },
         CheckFeatures { set: uleb, failure: u32 },
         Accept { action: uleb },
@@ -50,3 +23,5 @@ crate::bytecode! {
         Update { inputs: [uleb], fields: [uleb] },
     }
 }
+
+pub type RawInstruction<'a> = Instruction<'a, RawWord>;

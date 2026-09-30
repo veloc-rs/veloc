@@ -192,6 +192,8 @@ pub enum Pattern {
     Variable(String),
     /// 整数常量
     IntConst(i64),
+    /// An integer attribute representable in the given immediate width.
+    IntRange { bits: u8, signed: bool },
     /// 条件码
     CondCode(CondCode),
     /// 栈槽

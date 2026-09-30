@@ -6,7 +6,7 @@ use crate::analysis::{FunctionAnalysisCtx, ModuleAnalysisCtx};
 use crate::error::{Error, Result};
 use crate::isel::InstructionSelectionPass;
 use crate::object::ObjectFileBuilder;
-use crate::passes::{FrameFinalizePass, LegalizePass, PostIselOptimizePass};
+use crate::passes::{FrameFinalizePass, LegalizePass, PostIselOptimizePass, RemoveUnreachablePass};
 use crate::pipeline::{
     CompiledFunction, CompiledModule, FunctionPassContext, FunctionPassPipeline, ModulePassContext,
     ModulePassPipeline, run_function_pass,
@@ -326,6 +326,9 @@ impl<'a> CodegenPipeline<'a> {
         self.profile.measure("pre_isel", 0, || {
             target_pipelines.pre_isel.run(&mut mfunc, &mut ctx)
         })?;
+        // Target preparation may change the CFG. Selection always receives
+        // reachable blocks only, even when optional optimizations are disabled.
+        run_function_pass(&RemoveUnreachablePass, 0, &mut mfunc, &mut ctx)?;
         if self.options.verify {
             self.profile.measure("verify.legalized", 0, || {
                 crate::passes::lowering::Legalizer::new(self.target.legalizer()).verify(&mfunc)

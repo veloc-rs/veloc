@@ -55,7 +55,6 @@ impl Generator {
 
     fn machine(&mut self, arch: &str, lir: &Source, context: &str, host: &str) {
         let source = load(format!("defs/{arch}/module.spec"));
-        let contracts = load(format!("defs/{arch}/instructions.spec"));
         self.emit(
             &source,
             Emit::Target,
@@ -64,14 +63,13 @@ impl Generator {
                     input: Some(("lir", lir)),
                     arch,
                     context,
-                    definitions: &contracts,
                 }),
                 ..Default::default()
             },
             &format!("machine_{arch}.rs"),
         );
         self.emit(
-            &contracts,
+            &source,
             Emit::Interfaces,
             Options {
                 interfaces: Some(host),

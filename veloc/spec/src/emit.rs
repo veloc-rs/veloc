@@ -138,13 +138,13 @@ pub struct Decisions<'a> {
     pub definitions: &'a Source,
     pub rust: crate::rules::DecisionRust<'a>,
 }
+/// Bind a target module containing instructions, encodings and selection rules.
 pub struct Target<'a> {
     /// Logical input dialect and its operation definitions for selection.
     pub input: Option<(&'a str, &'a Source)>,
     pub arch: &'a str,
     /// Runtime trait implementing the declared selector predicates.
     pub context: &'a str,
-    pub definitions: &'a Source,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -251,13 +251,12 @@ impl Source {
                 kind if kind.target() => {
                     if target.is_none() {
                         let config = options.target.as_ref().ok_or_else(|| {
-                            fail("target output requires target architecture and definitions")
+                            fail("target output requires architecture and selector context")
                         })?;
                         target = Some(crate::target::Plan::prepare(
                             self,
                             config.arch,
                             config.context,
-                            config.definitions,
                             config.input,
                         )?);
                     }

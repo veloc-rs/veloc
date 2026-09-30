@@ -10,23 +10,8 @@ mod compiler;
 fn selector_types_share_domains_and_reject_unknown_types() {
     use veloc_spec::{Emit, Options, Target};
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../veloc");
-    let definitions = Source::load(root.join("codegen/defs/x86_64/instructions.spec")).unwrap();
     let lir = Source::load(root.join("lir/defs/module.spec")).unwrap();
-    let header = [
-        "types/defs/types.spec",
-        "defs/type_sets.spec",
-        "codegen/defs/x86_64/predicates.spec",
-        "codegen/defs/x86_64/cpu/features.spec",
-    ]
-    .map(|path| {
-        fs::read_to_string(root.join(path))
-            .unwrap()
-            .lines()
-            .filter(|line| !line.starts_with("import "))
-            .collect::<Vec<_>>()
-            .join("\n")
-    })
-    .join("\n");
+    let header = format!("import {:?};", root.join("codegen/defs/x86_64/module.spec"));
     let rule = r#"
 typeset Small = Type::I8 | Type::I16 | Type::I32;
 select(n: lir::Constant) {
@@ -48,7 +33,6 @@ select(n: lir::Constant) {
                         input: Some(("lir", &lir)),
                         arch: "x86_64",
                         context: "crate::Host",
-                        definitions: &definitions,
                     }),
                     ..Default::default()
                 },

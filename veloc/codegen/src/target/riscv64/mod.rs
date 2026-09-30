@@ -2,7 +2,8 @@
 //!
 //! Integer i32 values are kept sign-extended to XLEN, as required by the ABI.
 //! x5/x6 and f30/f31 are spill temporaries; x7 and x28..x31 are reserved for
-//! expansion of selected instructions. No optional bit-manipulation ISA is needed.
+//! expansion of selected instructions. C908 enables optional Zba/Zbb selection;
+//! the generic CPU retains base-ISA fallback sequences.
 pub mod emitter;
 #[allow(dead_code, unused_imports)]
 pub mod inst {
@@ -52,6 +53,18 @@ impl Riscv64TargetMachine {
             .features
             .resolve(&config.features)
             .map_err(crate::Error::codegen)?;
+        for required in [
+            inst::Feature::I,
+            inst::Feature::M,
+            inst::Feature::F,
+            inst::Feature::D,
+        ] {
+            if !features.contains(required) {
+                return Err(crate::Error::codegen(
+                    "RV64 backend requires I/M/F/D with LP64D",
+                ));
+            }
+        }
         Ok(Self {
             config,
             features,

@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 struct Field<'a> {
     value: bool,
+    integer: bool,
     ty: Option<&'a ValueType>,
     access: Option<String>,
 }
@@ -100,6 +101,9 @@ pub(super) fn resolve(
                 path(owner, name),
                 Field {
                     value: *value,
+                    integer: contract.inputs.iter().any(|input| {
+                        matches!(input, Operand::Attribute { name: attr, ty } if attr == name && ty == "i64")
+                    }),
                     ty: *ty,
                     access,
                 },
@@ -182,6 +186,11 @@ pub(super) fn resolve(
             .get(name)
             .ok_or_else(|| format!("unknown logical field {name}"))?;
         let mut constraints = Vec::new();
+        if has_range(pattern) && !field.integer {
+            return Err(format!(
+                "immediate range requires an i64 attribute, not {name}"
+            ));
+        }
         domains(pattern, &mut constraints);
         if !constraints.is_empty() && !field.value {
             return Err(format!("type_is requires a logical SSA value, not {name}"));
@@ -243,6 +252,14 @@ pub(super) fn resolve(
         })?;
     }
     Ok(())
+}
+
+fn has_range(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::IntRange { .. } => true,
+        Pattern::And(parts) => parts.iter().any(has_range),
+        _ => false,
+    }
 }
 
 fn domains(pattern: &Pattern, out: &mut Vec<Vec<String>>) {

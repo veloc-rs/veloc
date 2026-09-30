@@ -1,4 +1,5 @@
 import "../../../defs/type_sets.spec";
+import "registers.spec";
 
 // Ordered actions: exhausted register lists fall through to the next rule.
 // Domains reuse ordinary Spec typesets; there is no ABI classifier registry.

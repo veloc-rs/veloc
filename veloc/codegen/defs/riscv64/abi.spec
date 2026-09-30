@@ -1,4 +1,5 @@
 import "../../../defs/type_sets.spec";
+import "registers.spec";
 typeset AbiWord = Type::BOOL | ScalarInteger | Type::PTR;
 abi Rv64Lp64d {
     arch = Riscv64;

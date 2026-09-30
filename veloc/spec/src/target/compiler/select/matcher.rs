@@ -9,6 +9,7 @@ pub(super) use program::{Adapters, emit};
 enum Guard {
     Types(Vec<String>),
     Integer(i64),
+    IntRange { bits: u8, signed: bool },
     Condition(CondCode),
     Extractor(String),
 }
@@ -183,6 +184,10 @@ impl Plan {
                             out.push(Guard::Types(types));
                         }
                         Pattern::IntConst(value) => out.push(Guard::Integer(*value)),
+                        Pattern::IntRange { bits, signed } => out.push(Guard::IntRange {
+                            bits: *bits,
+                            signed: *signed,
+                        }),
                         Pattern::CondCode(cc) => out.push(Guard::Condition(*cc)),
                         Pattern::Opcode { opcode, .. } if extractors.contains_key(opcode) => {
                             out.push(Guard::Extractor(opcode.clone()))

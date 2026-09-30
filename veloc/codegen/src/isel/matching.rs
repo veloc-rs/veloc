@@ -1,6 +1,5 @@
 //! Selection bytecode. Matching is read-only; Accept enters construction.
 //! Accepted recipes insert before the source; the driver finishes replacement and edge transfers.
-use super::select::SelectResult;
 use smallvec::SmallVec;
 use std::vec::Vec;
 use veloc_lir::{FieldValue, GenericOpcode, InstId, InstInserter, InstRef, Reg};
@@ -88,7 +87,7 @@ pub(super) fn execute(
     source: InstId,
     out: &mut Vec<InstId>,
     edge_transfers: &mut Vec<(veloc_lir::EdgeId, veloc_lir::EdgeId)>,
-) -> Option<SelectResult> {
+) -> Option<()> {
     let mut reader = Reader {
         bytes: program.code,
         pc: program.entry as usize,
@@ -97,7 +96,6 @@ pub(super) fn execute(
     let mut values = SmallVec::<[Option<Reg>; 16]>::from_elem(None, program.values);
     let mut fields = SmallVec::<[Option<FieldSource>; 8]>::from_elem(None, program.fields);
     insts[0] = Some(source);
-    let start = out.len();
     let mut accepted = false;
     loop {
         let op = Op::read(&mut reader);
@@ -164,6 +162,26 @@ pub(super) fn execute(
                     .map(|field| field.integer(store.inst(insts[node].unwrap())))
                     == Some(program.integers[constant]))
                 {
+                    reader.pc = failure;
+                }
+            }
+            Op::CheckIntRange {
+                node,
+                field,
+                bits,
+                signed,
+                failure,
+            } => {
+                assert!(!accepted);
+                let fits = program.accesses[field].as_ref().is_some_and(|field| {
+                    let value = field.integer(store.inst(insts[node].unwrap()));
+                    if signed != 0 {
+                        bits == 64 || value == (value << (64 - bits)) >> (64 - bits)
+                    } else {
+                        value >= 0 && (bits == 64 || (value as u64) >> bits == 0)
+                    }
+                });
+                if !fits {
                     reader.pc = failure;
                 }
             }
@@ -274,11 +292,7 @@ pub(super) fn execute(
             }
             Op::Finish {} => {
                 assert!(accepted);
-                return Some(if out.len() - start == 1 {
-                    SelectResult::InPlace
-                } else {
-                    SelectResult::Replace
-                });
+                return Some(());
             }
         }
     }

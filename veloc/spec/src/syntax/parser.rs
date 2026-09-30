@@ -658,7 +658,9 @@ impl<'a> Parser<'a> {
                 })?;
                 self.expression(
                     depth,
-                    if matches!(name.as_str(), "meta" | "when") {
+                    if matches!(name.as_str(), "meta" | "when")
+                        || (name == "encoding" && mode == Fields::Properties)
+                    {
                         Context::Expr
                     } else if name == "replace" {
                         Context::Rewrite

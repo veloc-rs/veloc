@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_variables)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ty {
     I32,
 }
@@ -86,7 +86,29 @@ fn main() {
 
 mod vm {
     use super::*;
-    use veloc_bytecode::{Reader, rewrite::Instruction as Op};
+    pub use veloc_bytecode::OperandRef;
+    use veloc_bytecode::{Reader, codec::WordCodec, signature::TypePattern};
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct TypeCodec;
+    impl TypeCodec {
+        pub const fn encode(ty: Ty) -> usize {
+            match ty {
+                Ty::I32 => 0,
+            }
+        }
+    }
+    impl WordCodec for TypeCodec {
+        type Value = Ty;
+        fn decode(word: usize) -> Ty {
+            assert_eq!(word, 0);
+            Ty::I32
+        }
+        fn encode(ty: Ty) -> usize {
+            Self::encode(ty)
+        }
+    }
+    type Op<'a> = veloc_bytecode::rewrite::Instruction<'a, TypeCodec>;
     pub enum FieldSource {
         Constant(Field),
         Root(usize),
@@ -101,7 +123,7 @@ mod vm {
     }
     pub enum TypeSource {
         Exact(Ty),
-        Value { result: bool, index: usize },
+        Value(OperandRef),
     }
     #[derive(Clone, Copy)]
     pub enum Action {
@@ -115,7 +137,6 @@ mod vm {
     pub struct Program {
         pub entries: &'static [Option<usize>],
         pub code: &'static [u8],
-        pub sets: &'static [&'static [Ty]],
         pub features: &'static [&'static [u64]],
         pub actions: &'static [Action],
         pub types: &'static [TypeSource],
@@ -135,11 +156,16 @@ mod vm {
                     inputs,
                     failure,
                 } => {
-                    let matches = |result, sets: veloc_bytecode::Lebs<'_>| {
-                        query.arity(result) == sets.len()
-                            && sets.iter().enumerate().all(|(i, set)| {
-                                program.sets[set].contains(&query.value_type(result, i as u32))
-                            })
+                    let matches = |result,
+                                   patterns: veloc_bytecode::signature::TypePatterns<
+                        '_,
+                        TypeCodec,
+                    >| {
+                        let mut patterns = patterns.iter();
+                        (0..query.arity(result)).all(|i| {
+                            matches!(patterns.next(), Some(TypePattern::Exact(ty))
+                                if ty == query.value_type(result, i as u32))
+                        }) && patterns.next().is_none()
                     };
                     if !matches(true, results) || !matches(false, inputs) {
                         reader.pc = failure;
@@ -160,9 +186,7 @@ mod vm {
             values[..inputs.len()].copy_from_slice(inputs);
             let ty = |id: usize| match program.types[id] {
                 TypeSource::Exact(ty) => ty,
-                TypeSource::Value { result, index } => {
-                    types[if result { index } else { 1 + index }]
-                }
+                TypeSource::Value(operand) => *operand.get(&types[1..], &types[..1]).unwrap(),
             };
             let mut reader = Reader {
                 bytes: program.code,
