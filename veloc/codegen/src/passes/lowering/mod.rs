@@ -32,7 +32,9 @@ impl<'a> FunctionPass for LegalizePass<'a> {
         ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         let legalizer = Legalizer::new(self.legalizer);
-        let changed = legalizer.legalize(mfunc, |f, id| abi::lower_call(ctx.target, f, id))?;
+        let changed = legalizer.legalize(mfunc, |f, id, symbol| {
+            abi::emit_libcall(ctx.target, ctx.symbols, f, id, symbol)
+        })?;
         Ok(if changed {
             PassEffect::new(
                 ChangeSet::INST_SEMANTICS

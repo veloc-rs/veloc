@@ -119,9 +119,9 @@ impl<'a> Adapters<'a> {
                     "let metadata = target_inst_metadata(TargetInst::{opcode});"
                 )
                 .unwrap();
-                body.push_str("let mut uses = smallvec::SmallVec::<[Reg; 4]>::from_slice(metadata.implicit_uses);\nfor &reg in abi_uses { if !uses.contains(&reg) { uses.push(reg); } }\n");
-                writeln!(body, "writer.with_effects(&uses, metadata.implicit_defs).write(veloc_lir::MachineOpcode::Target(TargetInst::{opcode}.as_u32()), &[{}], &[{}], [{}])",
-                    results.join(", "), inputs.join(", "), fields.join(", ")).unwrap();
+
+                writeln!(body, "writer.with_effects(metadata.implicit_uses, metadata.implicit_defs).write(veloc_lir::MachineOpcode::Target(TargetInst::{opcode}.as_u32()), &[{}], abi_uses, [{}])",
+                    results.join(", "), fields.join(", ")).unwrap();
             } else {
                 writeln!(
                     body,

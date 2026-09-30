@@ -890,6 +890,7 @@ dependencies = [
  "cranelift-entity",
  "hashbrown 0.14.5",
  "smallvec",
+ "veloc-bytecode",
  "veloc-collections",
  "veloc-mir",
  "veloc-semantics",

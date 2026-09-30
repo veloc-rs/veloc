@@ -47,7 +47,7 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
                 id
             };
             Legalizer::new(target.legalizer())
-                .legalize(&mut f, |_, _| unreachable!("test contains no calls"))
+                .legalize(&mut f, |_, _, _| unreachable!("test contains no libcalls"))
                 .unwrap();
             let ids = f
                 .block_insts(veloc_lir::BlockId::from_u32(0))

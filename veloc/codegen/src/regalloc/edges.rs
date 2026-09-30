@@ -1,13 +1,11 @@
 //! SSA edge arguments become physical parallel copies only after allocation.
 use super::allocation::Transfer;
 use super::linear_scan::RegisterAllocator;
-use crate::target::SpillKind;
+use super::moves::{Location, Move, MoveResolver};
 use crate::{Error, Result};
 use smallvec::SmallVec;
-use std::format;
 use std::vec::Vec;
-use veloc_lir::{InstId, MachineFunction, Reg, StackBatch, StackSlot};
-use veloc_mir::Type;
+use veloc_lir::{InstId, MachineFunction, Reg, StackBatch};
 
 /// A physical move plan for one selected branch, emitted during materialization.
 pub struct EdgeAllocation {
@@ -25,14 +23,8 @@ impl EdgeAllocation {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Location {
-    Reg(Reg),
-    Stack(StackSlot),
-}
-
 impl RegisterAllocator<'_> {
-    fn location(&self, reg: Reg) -> Result<Location> {
+    pub(super) fn location(&self, reg: Reg) -> Result<Location> {
         if reg.is_preg() {
             return Ok(Location::Reg(reg));
         }
@@ -41,7 +33,7 @@ impl RegisterAllocator<'_> {
         }
         self.spill_slot(reg)
             .map(Location::Stack)
-            .ok_or_else(|| Error::codegen("unallocated edge value"))
+            .ok_or_else(|| Error::codegen("value has no allocated location"))
     }
 
     pub(super) fn plan_edges(
@@ -50,7 +42,7 @@ impl RegisterAllocator<'_> {
         frame: &mut StackBatch,
     ) -> Result<Vec<EdgeAllocation>> {
         let mut edges = Vec::new();
-        let mut cycle_slots = std::collections::BTreeMap::new();
+        let mut resolver = MoveResolver::default();
         let mut block = f.blocks().next();
         while let Some(current_block) = block {
             let next_block = f.layout().next_block(current_block);
@@ -91,41 +83,10 @@ impl RegisterAllocator<'_> {
                     let dst = self.location(dst)?;
                     let src = self.location(src)?;
                     if dst != src {
-                        pending.push((dst, src, ty));
+                        pending.push(Move { dst, src, ty });
                     }
                 }
-                let mut instructions = Vec::new();
-                // A destination may be overwritten only after its old value is no
-                // longer needed by another move. Save one source to break a cycle.
-                while !pending.is_empty() {
-                    if let Some(index) = pending
-                        .iter()
-                        .position(|(dst, _, _)| !pending.iter().any(|(_, src, _)| src == dst))
-                    {
-                        let (dst, src, ty) = pending.remove(index);
-                        self.move_location(&mut instructions, dst, src, ty)?;
-                    } else {
-                        let (_, src, ty) = pending[0];
-                        let layout = &self.target.desc().data_layout;
-                        let layout = layout.layout_of(ty).ok_or_else(|| {
-                            Error::codegen(format!("unknown storage layout: {ty:?}"))
-                        })?;
-                        let size = layout.alloc_size().ok_or_else(|| {
-                            Error::codegen(format!("stack allocation requires fixed size: {ty:?}"))
-                        })?;
-                        let align = layout.align;
-                        let slot = *cycle_slots.entry((size, align)).or_insert_with(|| {
-                            frame.alloc_object(veloc_lir::StackObject::Local, size, align)
-                        });
-                        let saved = Location::Stack(slot);
-                        self.move_location(&mut instructions, saved, src, ty)?;
-                        for (_, input, _) in &mut pending {
-                            if *input == src {
-                                *input = saved;
-                            }
-                        }
-                    }
-                }
+                let instructions = resolver.resolve(self.target, frame, pending, &[])?;
                 if !instructions.is_empty() {
                     edges.push(EdgeAllocation {
                         branch: id,
@@ -138,43 +99,5 @@ impl RegisterAllocator<'_> {
             block = next_block;
         }
         Ok(edges)
-    }
-
-    fn move_location(
-        &self,
-        out: &mut Vec<Transfer>,
-        dst: Location,
-        src: Location,
-        ty: Type,
-    ) -> Result<()> {
-        match (dst, src) {
-            (Location::Reg(dst), Location::Reg(src)) => {
-                out.push(Transfer::Copy { dst, src, ty });
-            }
-            (Location::Stack(dst), Location::Stack(src)) => {
-                let class = self.target.desc().reg_class_for_vreg(&ty, None);
-                let scratch =
-                    *self.target.spill_scratch(class).first().ok_or_else(|| {
-                        Error::codegen("edge stack copy needs a scratch register")
-                    })?;
-                self.move_location(out, Location::Reg(scratch), Location::Stack(src), ty)?;
-                self.move_location(out, Location::Stack(dst), Location::Reg(scratch), ty)?;
-            }
-            (Location::Reg(reg), Location::Stack(slot))
-            | (Location::Stack(slot), Location::Reg(reg)) => {
-                let load = matches!(dst, Location::Reg(_));
-                out.push(Transfer::Spill {
-                    kind: if load {
-                        SpillKind::Load
-                    } else {
-                        SpillKind::Store
-                    },
-                    reg,
-                    slot,
-                    ty,
-                });
-            }
-        }
-        Ok(())
     }
 }

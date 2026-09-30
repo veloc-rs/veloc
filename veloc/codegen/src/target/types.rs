@@ -167,6 +167,34 @@ impl TargetDescription {
         self.registers.default_reg_class_for_bank(bank, ty)
     }
 
+    /// Scalar transfer representation at a physical location. The SSA type is
+    /// unchanged; load/store/move selection also needs the register's bank.
+    pub fn scalar_storage_type(&self, reg: Reg, ty: Type) -> crate::Result<Type> {
+        let bytes = self
+            .data_layout
+            .layout_of(ty)
+            .and_then(|l| l.store_size.fixed_bytes())
+            .ok_or_else(|| crate::Error::codegen("unknown scalar transfer width"))?;
+        let bank = self
+            .registers
+            .reg_classes
+            .iter()
+            .find(|c| c.members.contains(&reg))
+            .map(|c| c.bank)
+            .ok_or_else(|| crate::Error::codegen("unknown physical register bank"))?;
+        match (bank, bytes) {
+            (RegisterBank::GPR, 1) => Ok(Type::I8),
+            (RegisterBank::GPR, 2) => Ok(Type::I16),
+            (RegisterBank::GPR, 4) => Ok(Type::I32),
+            (RegisterBank::GPR, 8) => Ok(Type::I64),
+            (RegisterBank::FPR, 4) => Ok(Type::F32),
+            (RegisterBank::FPR, 8) => Ok(Type::F64),
+            _ => Err(crate::Error::codegen(
+                "unsupported scalar transfer representation",
+            )),
+        }
+    }
+
     pub fn reg_class_for_type(&self, ty: &Type) -> RegClass {
         if ty.is_predicate() {
             self.default_reg_class_for_bank(RegisterBank::PR, ty)

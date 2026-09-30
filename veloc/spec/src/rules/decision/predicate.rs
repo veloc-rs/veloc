@@ -6,12 +6,11 @@ use crate::syntax::FunctionBody;
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Test {
     Signature {
-        results: Vec<usize>,
-        inputs: Vec<usize>,
+        results: Vec<TypePattern>,
+        inputs: Vec<TypePattern>,
     },
-    Same(Vec<usize>),
     Type {
-        value: usize,
+        value: OperandRef,
         set: usize,
     },
     Signed {
@@ -212,7 +211,11 @@ impl Expressions<'_> {
                 }
                 let set = intern(&mut program.sets, vec![self.constant(ty, rhs.offset)?]);
                 out.push(Test::Type {
-                    value: index * 2 + usize::from(domain == Domain::Result),
+                    value: match domain {
+                        Domain::Input => OperandRef::Input(index),
+                        Domain::Result => OperandRef::Result(index),
+                        Domain::Attribute => unreachable!("checked value field"),
+                    },
                     set,
                 });
                 return Ok(());

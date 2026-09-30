@@ -9,19 +9,16 @@ pub mod inst;
 mod legalize;
 pub mod lowering;
 mod machine;
-mod operand;
 mod pass_config;
 
 pub use emitter::X86_64CodeEmitter;
 pub use frame::X86_64FrameLowering;
-pub use operand::X86_64OperandLowering;
 pub use pass_config::{X86_64PassConfig, X86_64PostIsel};
 
 use crate::target::{
     RegClass, RegClassInfo, RegisterFile, SpecialRegs, SpillKind, TargetConfig, TargetDescription,
     TargetEmitter, TargetFrameLowering, TargetInfo, TargetInstructions, TargetMachine,
-    TargetOperandLowering, TargetPassConfig, TargetPostIsel, TargetRegalloc, TargetSchedule,
-    ValidationMode,
+    TargetPassConfig, TargetPostIsel, TargetRegalloc, TargetSchedule, ValidationMode,
 };
 use veloc_lir::RegisterBank;
 use veloc_types::{DataLayout, Type, TypeLayout};
@@ -105,7 +102,6 @@ pub struct X86_64TargetMachine {
     config: TargetConfig,
     desc: TargetDescription,
     features: inst::FeatureSet,
-    operand_lowering: X86_64OperandLowering,
     post_isel: X86_64PostIsel,
     frame_lowering: X86_64FrameLowering,
     pass_config: X86_64PassConfig,
@@ -134,7 +130,6 @@ impl X86_64TargetMachine {
             config,
             desc,
             features,
-            operand_lowering: X86_64OperandLowering,
             post_isel: X86_64PostIsel,
             frame_lowering: X86_64FrameLowering,
             pass_config: X86_64PassConfig,
@@ -211,7 +206,7 @@ impl TargetRegalloc for X86_64TargetMachine {
         src: veloc_lir::Reg,
         ty: veloc_mir::Type,
     ) -> crate::Result<veloc_lir::InstId> {
-        let opcode = lowering::x86_mov_opcode_for_type(ty)?;
+        let opcode = lowering::copy_opcode(&self.desc, dst, src, ty)?;
         Ok(opcode.write(writer, &[dst], &[src], []))
     }
 
@@ -223,7 +218,13 @@ impl TargetRegalloc for X86_64TargetMachine {
         slot: veloc_lir::StackSlot,
         ty: veloc_mir::Type,
     ) -> crate::error::Result<veloc_lir::InstId> {
-        machine::spill_instruction(writer, kind, reg, slot, ty)
+        machine::spill_instruction(
+            writer,
+            kind,
+            reg,
+            slot,
+            self.desc.scalar_storage_type(reg, ty)?,
+        )
     }
 }
 
@@ -249,10 +250,6 @@ impl TargetMachine for X86_64TargetMachine {
             metadata: |op| inst::target_inst_metadata(inst::TargetInst::from_u32(op)),
             predicate: &self.features,
         }
-    }
-
-    fn operand_lowering(&self) -> &dyn TargetOperandLowering {
-        &self.operand_lowering
     }
 
     fn post_isel(&self) -> &dyn TargetPostIsel {

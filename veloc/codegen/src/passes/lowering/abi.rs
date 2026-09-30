@@ -1,12 +1,12 @@
 use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::{Error, Result};
 use crate::pipeline::{FunctionPass, FunctionPassContext};
-use crate::target::{AbiAssignment, AbiLocation, AbiPlan, CallConv, TargetMachine};
+use crate::target::{AbiLocation, AbiPlan, CallConv, TargetMachine};
 use smallvec::SmallVec;
 use veloc_lir::{
-    CallFrameId, GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackObject, StackSlot,
+    GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackObject, StackSlot, Type,
 };
-use veloc_lir::{InstBuild, InstRead};
+use veloc_lir::{InstBuild, InstRead, OperandConstraint, OperandRef};
 use veloc_lir::{MemoryAccess, MemoryKind};
 
 pub struct AbiLoweringPass;
@@ -36,84 +36,44 @@ fn plan_signature(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Res
     Ok(plan)
 }
 
-fn registers(assignments: &[AbiAssignment]) -> impl Iterator<Item = Reg> + '_ {
-    assignments.iter().filter_map(|p| match p.loc {
-        AbiLocation::Reg(reg) => Some(reg),
-        AbiLocation::Stack { .. } => None,
-    })
+/// Prepare a stack slot and typed access. ABI slot size may exceed access width.
+fn stack_access(
+    target: &dyn TargetMachine,
+    insert: &mut veloc_lir::InstInserter<'_>,
+    object: StackObject,
+    size: u32,
+    align: u32,
+    ty: Type,
+    kind: MemoryKind,
+) -> (Reg, StackSlot, MemoryAccess) {
+    let slot = insert.alloc_stack_object(object, size, align);
+    let address = insert.alloc_vreg(Type::PTR);
+    insert.stack_addr(address, slot);
+    let bytes = target
+        .desc()
+        .data_layout
+        .layout_of(ty)
+        .and_then(|layout| layout.store_size.fixed_bytes())
+        .expect("checked ABI storage layout");
+    let mut access = MemoryAccess::new(kind, bytes);
+    access.alignment = align;
+    access.may_trap = false;
+    (address, slot, access)
 }
 
-/// Converts ABI locations into transfers; layout insertion is owned by LIR.
-struct Transfer<'a> {
-    target: &'a dyn TargetMachine,
-    func: veloc_lir::InstInserter<'a>,
-}
-
-impl<'a> Transfer<'a> {
-    fn new(target: &'a dyn TargetMachine, func: veloc_lir::InstInserter<'a>) -> Self {
-        Self { target, func }
-    }
-
-    fn address(&mut self, object: StackObject, size: u32, align: u32) -> (Reg, StackSlot) {
-        let slot = self.func.alloc_stack_object(object, size, align);
-        let address = self.func.alloc_vreg(veloc_lir::Type::PTR);
-        self.func.stack_addr(address, slot);
-        (address, slot)
-    }
-
-    fn access(&self, assignment: &AbiAssignment, align: u32, kind: MemoryKind) -> MemoryAccess {
-        let bytes = self
-            .target
-            .desc()
-            .data_layout
-            .layout_of(assignment.ty)
-            .and_then(|layout| layout.store_size.fixed_bytes())
-            .expect("checked ABI storage layout");
-        let mut access = MemoryAccess::new(kind, bytes);
-        access.alignment = align;
-        access.may_trap = false;
-        access
-    }
-
-    fn read(&mut self, dst: Reg, assignment: &AbiAssignment) {
-        match assignment.loc {
-            AbiLocation::Reg(reg) => self.func.copy(dst, reg),
-            AbiLocation::Stack {
-                offset,
-                size,
-                align,
-            } => {
-                let (address, _) = self.address(StackObject::Incoming { offset }, size, align);
-                let access = self.access(assignment, align, MemoryKind::Read);
-                self.func.with_memory(access).load(dst, address, 0)
-            }
-        };
-    }
-
-    fn write(
-        &mut self,
-        src: Reg,
-        assignment: &AbiAssignment,
-        frame: CallFrameId,
-    ) -> Option<StackSlot> {
-        match assignment.loc {
-            AbiLocation::Reg(reg) => {
-                self.func.copy(reg, src);
-                None
-            }
-            AbiLocation::Stack {
-                offset,
-                size,
-                align,
-            } => {
-                let (address, slot) =
-                    self.address(StackObject::Outgoing { frame, offset }, size, align);
-                let access = self.access(assignment, align, MemoryKind::Write);
-                self.func.with_memory(access).store(src, address, 0);
-                Some(slot)
-            }
-        }
-    }
+fn return_constraints(
+    plan: &AbiPlan,
+    operand: fn(usize) -> OperandRef,
+) -> impl Iterator<Item = OperandConstraint> + '_ {
+    plan.returns
+        .iter()
+        .enumerate()
+        .map(move |(index, assignment)| {
+            let AbiLocation::Reg(reg) = assignment.loc else {
+                unreachable!("checked register return")
+            };
+            OperandConstraint::fixed(operand(index), reg)
+        })
 }
 
 fn lower_formal_arguments(
@@ -128,18 +88,95 @@ fn lower_formal_arguments(
         "ABI parameter count mismatch"
     );
     let params = mfunc.take_params();
-    let mut transfer = Transfer::new(target, mfunc.at_start(entry));
+    let mut locations = Vec::new();
     for (dst, assignment) in params.into_iter().zip(&plan.args) {
-        transfer.read(dst, assignment);
+        match assignment.loc {
+            AbiLocation::Reg(reg) => {
+                mfunc.append_param(dst);
+                locations.push(reg.as_preg().expect("physical ABI location"));
+            }
+            AbiLocation::Stack {
+                offset,
+                size,
+                align,
+            } => {
+                let mut insert = mfunc.at_start(entry);
+                let (address, _, access) = stack_access(
+                    target,
+                    &mut insert,
+                    StackObject::Incoming { offset },
+                    size,
+                    align,
+                    assignment.ty,
+                    MemoryKind::Read,
+                );
+                insert.with_memory(access).load(dst, address, 0);
+            }
+        }
     }
+    mfunc.set_param_locations(locations);
 }
 
-pub(super) fn lower_call(
+/// Replace a checked value operation with a runtime call and establish its ABI
+/// contract in the same tracked edit. The rule supplies the symbol; the
+/// operation supplies the concrete signature and argument order.
+pub(super) fn emit_libcall(
+    target: &dyn TargetMachine,
+    symbols: &mut veloc_lir::SymbolTable,
+    mfunc: &mut veloc_lir::FuncEditor<'_>,
+    id: InstId,
+    symbol: &str,
+) -> Result<()> {
+    let inst = mfunc.inst(id);
+    if inst.memory().is_some()
+        || !inst.implicit_uses().is_empty()
+        || !inst.implicit_defs().is_empty()
+    {
+        return Err(Error::codegen(
+            "libcall replacement cannot discard memory facts or implicit register effects",
+        ));
+    }
+    let args = SmallVec::<[Reg; 4]>::from_slice(inst.inputs());
+    let results = SmallVec::<[Reg; 2]>::from_slice(inst.results());
+    let params: SmallVec<[veloc_mir::Type; 4]> =
+        args.iter().map(|&reg| mfunc.vreg_data(reg).ty).collect();
+    let returns: SmallVec<[veloc_mir::Type; 2]> =
+        results.iter().map(|&reg| mfunc.vreg_data(reg).ty).collect();
+    let sig = veloc_mir::Signature::new(params, returns, veloc_types::CallConv::SystemV);
+    // Diagnose unsupported ABI representations before replacing the operation.
+    let plan = plan_signature(target, &sig)?;
+    let callee = symbols.get_or_create_function(symbol, veloc_mir::Linkage::Import);
+    mfunc.replace(id).call(
+        &results,
+        callee,
+        &args,
+        veloc_lir::CallInfo {
+            sig,
+            clobbers: Default::default(),
+            frame: None,
+            stack_args: Default::default(),
+        },
+    );
+    apply_call_abi(target, mfunc, id, &plan);
+    Ok(())
+}
+
+fn lower_call(
     target: &dyn TargetMachine,
     mfunc: &mut veloc_lir::FuncEditor<'_>,
     id: InstId,
 ) -> Result<()> {
     let plan = plan_signature(target, &mfunc.call_info(id).sig)?;
+    apply_call_abi(target, mfunc, id, &plan);
+    Ok(())
+}
+
+fn apply_call_abi(
+    target: &dyn TargetMachine,
+    mfunc: &mut veloc_lir::FuncEditor<'_>,
+    id: InstId,
+    plan: &AbiPlan,
+) {
     let inst = mfunc.inst(id);
     let (results, args, callee) = match inst.view() {
         veloc_lir::InstView::Call(call) => (call.results, call.args, None),
@@ -153,65 +190,62 @@ pub(super) fn lower_call(
         "call result count mismatch"
     );
 
-    let results = SmallVec::<[Reg; 2]>::from_slice(results);
+    let logical_args = SmallVec::<[Reg; 8]>::from_slice(args);
     let frame = mfunc.alloc_call_frame(plan.stack);
     mfunc.before(id).call_frame_setup(frame);
 
-    // Place logical arguments in their ABI locations before the call.
+    let mut inputs = SmallVec::<[Reg; 8]>::new();
+    inputs.extend(callee);
+    let mut constraints = Vec::new();
     let mut stack_args = SmallVec::new();
     {
-        let mut transfer = Transfer::new(target, mfunc.before(id));
-        for (index, assignment) in plan.args.iter().enumerate() {
-            // Borrow only long enough to copy one ID; insertion may grow the store.
-            let src = transfer.func.inst(id).inputs()[index + usize::from(callee.is_some())];
-            stack_args.extend(transfer.write(src, assignment, frame));
+        let mut insert = mfunc.before(id);
+        for (&src, assignment) in logical_args.iter().zip(&plan.args) {
+            match assignment.loc {
+                AbiLocation::Reg(reg) => {
+                    constraints.push(OperandConstraint::fixed(
+                        OperandRef::Input(inputs.len()),
+                        reg,
+                    ));
+                    inputs.push(src);
+                }
+                AbiLocation::Stack {
+                    offset,
+                    size,
+                    align,
+                } => {
+                    let (address, slot, access) = stack_access(
+                        target,
+                        &mut insert,
+                        StackObject::Outgoing { frame, offset },
+                        size,
+                        align,
+                        assignment.ty,
+                        MemoryKind::Write,
+                    );
+                    insert.with_memory(access).store(src, address, 0);
+                    stack_args.push(slot);
+                }
+            }
         }
     }
-
-    // Commit the full ABI call before defining the original SSA results.
-    let args: SmallVec<[Reg; 8]> = registers(&plan.args).collect();
-    let returns: SmallVec<[Reg; 2]> = registers(&plan.returns).collect();
-    mfunc.set_call_abi(id, &returns, &args, frame, plan.abi.clobbers, stack_args);
-
-    // The old definitions are now released, so the copies can reuse their IDs.
-    let mut insert = mfunc.after(id);
-    for (&dst, assignment) in results.iter().zip(&plan.returns) {
-        let AbiLocation::Reg(reg) = assignment.loc else {
-            unreachable!("checked register return")
-        };
-        insert.copy(dst, reg);
-    }
-    insert.call_frame_destroy(frame);
-    Ok(())
+    constraints.extend(return_constraints(plan, OperandRef::Result));
+    // Keep SSA definitions and uses; physical locations are requirements at this call.
+    mfunc.set_call_abi(id, &inputs, frame, plan.abi.clobbers, stack_args);
+    mfunc.set_inst_constraints(id, constraints);
+    mfunc.after(id).call_frame_destroy(frame);
 }
 
-fn lower_return(
-    mfunc: &mut veloc_lir::FuncEditor<'_>,
-    id: InstId,
-    plan: &AbiPlan,
-    return_regs: &[Reg],
-) {
+fn lower_return(mfunc: &mut veloc_lir::FuncEditor<'_>, id: InstId, plan: &AbiPlan) {
     let veloc_lir::InstView::Return(ret) = mfunc.inst(id).view() else {
         unreachable!("planned return")
     };
-    let value_count = ret.values.len();
     assert_eq!(
-        value_count,
+        ret.values.len(),
         plan.returns.len(),
         "return value count mismatch"
     );
-
-    {
-        let mut insert = mfunc.before(id);
-        for (index, assignment) in plan.returns.iter().enumerate() {
-            let src = insert.inst(id).inputs()[index];
-            let AbiLocation::Reg(reg) = assignment.loc else {
-                unreachable!("checked register return")
-            };
-            insert.copy(reg, src);
-        }
-    }
-    mfunc.set_inst_inputs(id, return_regs);
+    mfunc.set_inst_constraints(id, return_constraints(plan, OperandRef::Input).collect());
 }
 
 impl FunctionPass for AbiLoweringPass {
@@ -225,7 +259,6 @@ impl FunctionPass for AbiLoweringPass {
         ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         let plan = plan_signature(ctx.target, ctx.func_sig)?;
-        let return_regs: SmallVec<[Reg; 4]> = registers(&plan.returns).collect();
 
         lower_formal_arguments(ctx.target, &mut mfunc.editor(), &plan);
         // The cursor saves the next original instruction before each rewrite.
@@ -237,7 +270,7 @@ impl FunctionPass for AbiLoweringPass {
                     lower_call(ctx.target, &mut mfunc.editor(), id)?;
                 }
                 MachineOpcode::Generic(GenericOpcode::Ret) => {
-                    lower_return(&mut mfunc.editor(), id, &plan, &return_regs);
+                    lower_return(&mut mfunc.editor(), id, &plan);
                 }
                 _ => {}
             }

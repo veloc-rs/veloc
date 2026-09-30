@@ -35,7 +35,7 @@ fn production_target_contracts_generate_all_consumers() {
         "REG_RAX",
         "REG_AL",
         "REG_R15D",
-        "register_constraints",
+        "constraints: &[OperandConstraint",
         "pub fn validate",
         "pub fn required_features",
         "Self::X86Popcnt32 => FeatureSet::empty().with(Feature::POPCNT)",

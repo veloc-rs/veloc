@@ -12,7 +12,6 @@ mod types;
 use crate::Emitter;
 pub use crate::passes::lowering::RewriteContext;
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
-use std::borrow::Cow;
 use std::boxed::Box;
 use std::vec::Vec;
 pub use veloc_lir::{InstId, MachineFunction, Reg, VReg};
@@ -137,9 +136,6 @@ pub trait TargetMachine: TargetRegalloc + TargetSchedule {
     /// Immutable selection rules and explicit host extensions.
     fn selector(&self) -> crate::isel::SelectPolicy<'_>;
 
-    /// 获取操作数/寄存器拷贝 lowering 组件。
-    fn operand_lowering(&self) -> &dyn TargetOperandLowering;
-
     /// 获取 post-isel 组件。
     fn post_isel(&self) -> &dyn TargetPostIsel;
 
@@ -199,24 +195,6 @@ pub enum RewriteResult {
     Remove,
 }
 
-/// A result and an input that must occupy the same physical register after allocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TiedOperandConstraint {
-    pub result: usize,
-    pub use_operand: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FixedUseConstraint {
-    pub use_operand: usize,
-    pub reg: Reg,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GenericInstMetadata {
-    pub fixed_uses: &'static [FixedUseConstraint],
-}
-
 /// pre-isel rewrite 规则表项。
 ///
 /// 规则以一个紧凑的 typed IR 存储，运行时不需要再解析字符串。
@@ -240,44 +218,13 @@ pub struct PreIselRewriteRuleData {
     pub priority: i64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct OperandConstraintSet {
-    pub fixed_uses: Cow<'static, [FixedUseConstraint]>,
-}
-
-impl OperandConstraintSet {
-    pub fn is_empty(&self) -> bool {
-        self.fixed_uses.is_empty()
-    }
-}
-
-impl GenericInstMetadata {
-    pub const EMPTY: Self = Self { fixed_uses: &[] };
-
-    pub fn operand_constraints(&self) -> OperandConstraintSet {
-        OperandConstraintSet {
-            fixed_uses: self.fixed_uses.into(),
-        }
-    }
-}
-
-/// Target-defined allowed physical registers for one explicit register operand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RegisterConstraint {
-    pub result: bool,
-    pub operand: usize,
-    pub registers: &'static [Reg],
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetInstMetadata {
-    pub register_constraints: &'static [RegisterConstraint],
+    pub constraints: &'static [veloc_lir::OperandConstraint],
     /// Fixed access encoded by this instruction; absence is not an effect proof.
     pub memory: Option<(veloc_lir::MemoryKind, u32)>,
     pub flow: veloc_lir::ControlFlow,
     pub schedule: Option<ScheduleInfo>,
-    pub tied_operands: &'static [TiedOperandConstraint],
-    pub fixed_uses: &'static [FixedUseConstraint],
     pub implicit_uses: &'static [Reg],
     pub implicit_defs: &'static [Reg],
     pub clobbers: &'static [&'static str],
@@ -285,70 +232,14 @@ pub struct TargetInstMetadata {
 
 impl TargetInstMetadata {
     pub const EMPTY: Self = Self {
-        register_constraints: &[],
+        constraints: &[],
         memory: None,
         flow: veloc_lir::ControlFlow::Next,
         schedule: None,
-        tied_operands: &[],
-        fixed_uses: &[],
         implicit_uses: &[],
         implicit_defs: &[],
         clobbers: &[],
     };
-
-    pub fn operand_constraints(&self) -> OperandConstraintSet {
-        OperandConstraintSet {
-            fixed_uses: self.fixed_uses.into(),
-        }
-    }
-}
-
-pub trait TargetOperandLowering: Send + Sync {
-    /// 查询一条 pre-isel 指令需要满足的操作数约束。
-    ///
-    /// 适合处理会在 isel 后丢失语义信息的 destructive/two-address 约束。
-    fn preselect_operand_constraints(
-        &self,
-        _inst: &veloc_lir::InstRef<'_>,
-        _mfunc: &MachineFunction,
-    ) -> OperandConstraintSet {
-        OperandConstraintSet::default()
-    }
-
-    /// 查询一条 selected LIR 指令需要满足的操作数约束。
-    ///
-    /// 适合处理固定寄存器等 target instruction 级别的约束。
-    fn postselect_operand_constraints(
-        &self,
-        _inst: &veloc_lir::InstRef<'_>,
-        _mfunc: &MachineFunction,
-    ) -> OperandConstraintSet {
-        OperandConstraintSet::default()
-    }
-
-    /// 为 pre-isel 约束阶段构造一条目标相关的寄存器拷贝指令。
-    ///
-    /// 当拷贝两端任一操作数已经绑定到物理寄存器时，调用方应优先使用这条
-    /// hook，而不是继续发射通用 `Copy`。这样可以保证位宽/寄存器别名等
-    /// 目标相关语义在进入后续阶段前已经明确。
-    fn build_preselect_reg_copy(
-        &self,
-        _mfunc: veloc_lir::InstInserter<'_>,
-        _dst: Reg,
-        _src: Reg,
-    ) -> Result<InstId, crate::error::Error> {
-        panic!("target does not support pre-select register copy construction",)
-    }
-
-    /// 为 post-isel 约束阶段构造一条目标相关的寄存器拷贝指令。
-    fn build_postselect_reg_copy(
-        &self,
-        _mfunc: veloc_lir::InstInserter<'_>,
-        _dst: Reg,
-        _src: Reg,
-    ) -> Result<InstId, crate::error::Error> {
-        panic!("target does not support post-select register copy construction",)
-    }
 }
 
 pub trait TargetPostIsel: Send + Sync {

@@ -5,6 +5,7 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
+veloc-bytecode = { workspace = true }
 veloc-collections = { workspace = true }
 veloc-types = { workspace = true }
 veloc-mir = { path = "../mir", default-features = false }

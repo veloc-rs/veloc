@@ -155,7 +155,7 @@ impl TargetRegalloc for Riscv64TargetMachine {
         ty: Type,
     ) -> crate::Result<InstId> {
         let load = kind == SpillKind::Load;
-        let op = spill_opcode(load, ty);
+        let op = spill_opcode(load, self.desc.scalar_storage_type(r, ty)?);
         let one = [r];
         Ok(op.write(
             w,
@@ -193,54 +193,6 @@ fn copy(w: veloc_lir::InstWriter<'_>, dst: Reg, src: Reg, ty: Type) -> InstId {
     };
     op.write(w, &[dst], &[src], [])
 }
-struct Operands;
-impl TargetOperandLowering for Operands {
-    fn preselect_operand_constraints(
-        &self,
-        i: &veloc_lir::InstRef<'_>,
-        _: &MachineFunction,
-    ) -> OperandConstraintSet {
-        i.generic_opcode()
-            .map(|op| inst::generic_inst_metadata(op).operand_constraints())
-            .unwrap_or_default()
-    }
-    fn postselect_operand_constraints(
-        &self,
-        i: &veloc_lir::InstRef<'_>,
-        _: &MachineFunction,
-    ) -> OperandConstraintSet {
-        match i.opcode() {
-            MachineOpcode::Target(op) => metadata(op).operand_constraints(),
-            _ => OperandConstraintSet::default(),
-        }
-    }
-
-    fn build_preselect_reg_copy(
-        &self,
-        mut i: veloc_lir::InstInserter<'_>,
-        dst: Reg,
-        src: Reg,
-    ) -> crate::Result<InstId> {
-        let ty = if src.is_vreg() {
-            i.vreg_data(src).ty
-        } else if dst.is_vreg() {
-            i.vreg_data(dst).ty
-        } else if src.0 >= 32 || dst.0 >= 32 {
-            Type::F64
-        } else {
-            Type::I64
-        };
-        Ok(copy(i.writer(), dst, src, ty))
-    }
-    fn build_postselect_reg_copy(
-        &self,
-        i: veloc_lir::InstInserter<'_>,
-        dst: Reg,
-        src: Reg,
-    ) -> crate::Result<InstId> {
-        self.build_preselect_reg_copy(i, dst, src)
-    }
-}
 struct Passes;
 impl TargetPostIsel for Passes {}
 impl TargetPassConfig for Passes {
@@ -274,9 +226,7 @@ impl TargetMachine for Riscv64TargetMachine {
             predicate: &self.features,
         }
     }
-    fn operand_lowering(&self) -> &dyn TargetOperandLowering {
-        &Operands
-    }
+
     fn post_isel(&self) -> &dyn TargetPostIsel {
         &Passes
     }

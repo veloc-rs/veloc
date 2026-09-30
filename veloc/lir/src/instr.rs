@@ -243,6 +243,9 @@ impl<'a> InstRef<'a> {
     pub fn effects(self) -> Option<crate::RegEffects<&'a [Reg]>> {
         self.store.effects(self.id)
     }
+    pub fn constraints(self) -> &'a [crate::OperandConstraint] {
+        self.store.constraints(self.id)
+    }
     pub fn memory(self) -> Option<crate::MemoryAccess> {
         self.store.memory(self.id)
     }

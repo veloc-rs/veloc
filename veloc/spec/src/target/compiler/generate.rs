@@ -56,11 +56,11 @@ pub(crate) fn generate_header(output: &mut String, arch: &str) {
     writeln!(output).unwrap();
     writeln!(
         output,
-        r#"use veloc_lir::{{FieldValue, Reg}};
+        r#"use veloc_lir::{{FieldValue, Reg, OperandRef, OperandConstraint, Placement}};
 use crate::target::{{
     AbiDescriptor, StackArea, AbiState, AbiLocation,
-    FixedUseConstraint, GenericInstMetadata, RegInfo,
-    TargetArch, TargetInstMetadata, TiedOperandConstraint,
+    RegInfo,
+    TargetArch, TargetInstMetadata,
 }};
 pub use veloc_mir::Type;
 
@@ -134,50 +134,6 @@ pub(crate) fn format_slice(entries: Vec<String>) -> String {
     } else {
         format!("&[{}]", entries.join(", "))
     }
-}
-
-fn format_ties(ties: &[(usize, usize)]) -> String {
-    format_slice(
-        ties.iter()
-            .map(|(def, input)| {
-                format!("TiedOperandConstraint {{ result: {def}, use_operand: {input} }}")
-            })
-            .collect(),
-    )
-}
-
-fn format_fixed_use_slice(
-    operands: &[OperandConstraint],
-    reg_names: &BTreeSet<String>,
-    inst_name: &str,
-) -> String {
-    let entries = operands
-        .iter()
-        .enumerate()
-        .filter_map(|(index, operand)| match operand {
-            OperandConstraint::FixedUse { reg, .. } => {
-                if !reg_names.contains(reg) {
-                    panic!(
-                        "instruction {} references unknown fixed register {}",
-                        inst_name, reg
-                    );
-                }
-                Some(format!(
-                    "FixedUseConstraint {{ use_operand: {}, reg: {} }}",
-                    operands[..index]
-                        .iter()
-                        .filter(|op| matches!(
-                            op,
-                            OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. }
-                        ))
-                        .count(),
-                    reg_const_name(reg)
-                ))
-            }
-            _ => None,
-        })
-        .collect();
-    format_slice(entries)
 }
 
 fn format_reg_metadata_slice(
@@ -278,15 +234,34 @@ pub(crate) fn generate_target_inst_metadata(
                 .find(|(name, _)| name == operand)
                 .expect("checked register constraint")
                 .1;
-            let registers = format_slice(registers.iter().map(|r| reg_const_name(r)).collect());
-            entries.push(format!("crate::target::RegisterConstraint {{ result: {result}, operand: {index}, registers: {registers} }}"));
+            let placement = if let [register] = registers.as_slice() {
+                format!("Placement::Fixed({})", reg_const_name(register))
+            } else {
+                format!(
+                    "Placement::Registers({})",
+                    format_slice(registers.iter().map(|r| reg_const_name(r)).collect())
+                )
+            };
+            let domain = if result { "Result" } else { "Input" };
+            entries.push(format!("OperandConstraint {{ operand: OperandRef::{domain}({index}), placement: {placement} }}"));
         }
-        writeln!(
-            output,
-            "    register_constraints: {},",
-            format_slice(entries)
-        )
-        .unwrap();
+        for &(dst, src) in &inst_def.ties {
+            let def = inst_def.operands[..dst]
+                .iter()
+                .filter(|op| matches!(op, OperandConstraint::Def(_)))
+                .count();
+            let input = inst_def.operands[..src]
+                .iter()
+                .filter(|op| {
+                    matches!(
+                        op,
+                        OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. }
+                    )
+                })
+                .count();
+            entries.push(format!("OperandConstraint {{ operand: OperandRef::Result({def}), placement: Placement::Reuse({input}) }}"));
+        }
+        writeln!(output, "    constraints: {},", format_slice(entries)).unwrap();
         let memory = match &inst_def.memory {
             Some((kind, bytes)) => format!("Some((veloc_lir::MemoryKind::{kind}, {bytes}))"),
             None => "None".into(),
@@ -296,36 +271,6 @@ pub(crate) fn generate_target_inst_metadata(
             output,
             "    flow: veloc_lir::ControlFlow::{},",
             inst_def.flow
-        )
-        .unwrap();
-        writeln!(
-            output,
-            "    tied_operands: {},",
-            format_ties(
-                &inst_def
-                    .ties
-                    .iter()
-                    .map(|&(dst, src)| (
-                        inst_def.operands[..dst]
-                            .iter()
-                            .filter(|op| matches!(op, OperandConstraint::Def(_)))
-                            .count(),
-                        inst_def.operands[..src]
-                            .iter()
-                            .filter(|op| matches!(
-                                op,
-                                OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. }
-                            ))
-                            .count()
-                    ))
-                    .collect::<Vec<_>>()
-            )
-        )
-        .unwrap();
-        writeln!(
-            output,
-            "    fixed_uses: {},",
-            format_fixed_use_slice(&inst_def.operands, &reg_names, name)
         )
         .unwrap();
         writeln!(
@@ -448,10 +393,11 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
             .operands
             .iter()
             .any(|op| matches!(op, OperandConstraint::Call(_)));
-        let count = if call { "<" } else { "!=" };
+        let boundary = call || instruction.flow == "Return";
+        let count = if boundary { "<" } else { "!=" };
         let mut checks = vec![format!("inst.fields().len() != {fields}")];
         for (domain, length) in [("results", results), ("inputs", inputs)] {
-            if !call || length != 0 {
+            if !boundary || length != 0 {
                 checks.push(format!("inst.{domain}().len() {count} {length}"));
             }
         }
@@ -461,8 +407,20 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
             checks.join(" || ")
         )
         .unwrap();
+        if boundary {
+            writeln!(out, "for &reg in inst.results()[{results}..].iter().chain(inst.inputs()[{inputs}..].iter()) {{ match mode {{ crate::target::ValidationMode::Allocated if !reg.is_preg() => return Err(invalid()), crate::target::ValidationMode::Virtual if reg.as_vreg().is_none_or(|v| function.vregs().get(v).is_none()) => return Err(invalid()), _ => {{}} }} }}").unwrap();
+        }
+        if boundary {
+            for (domain, start) in [("Input", inputs), ("Result", results)] {
+                let storage = if domain == "Input" {
+                    "inputs"
+                } else {
+                    "results"
+                };
+                writeln!(out, "for index in {start}..inst.{storage}().len() {{ if !inst.constraints().iter().any(|c| c.operand == OperandRef::{domain}(index) && matches!(c.placement, Placement::Fixed(_))) {{ return Err(invalid()); }} }}").unwrap();
+            }
+        }
         if call {
-            writeln!(out, "if inst.results()[{results}..].iter().chain(inst.inputs()[{inputs}..].iter()).any(|reg| !reg.is_preg()) {{ return Err(invalid()); }}").unwrap();
             out.push_str("if inst.fields().call_info().is_none_or(|info| info.frame.is_none()) { return Err(invalid()); }\n");
         }
         for op in &instruction.operands {

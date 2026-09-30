@@ -217,7 +217,7 @@ select(inst: lir::PtrAdd<Type::I64>) {
 }
 
 select<T: Scalar | Type::PTR>(inst: lir::Copy<T>) {
-    legal(inst);
+    replace(inst, build(inst.src));
 }
 
 select(inst: lir::Bitcast<Type::F32, Type::I32>) {

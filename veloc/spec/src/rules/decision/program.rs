@@ -18,6 +18,7 @@ pub(super) struct Program {
     fields: Vec<String>,
     recipes: BTreeMap<Vec<Vec<u8>>, usize>,
 }
+
 pub(super) enum Output {
     Value(String),
     Update {
@@ -27,19 +28,62 @@ pub(super) enum Output {
 }
 
 impl Program {
+    pub fn signature(
+        &mut self,
+        sig: &Signature,
+        expr: &Expressions<'_>,
+        offset: usize,
+    ) -> Result<Test, Error> {
+        let mut bindings = BTreeMap::new();
+        let mut pattern = |ty: &crate::rules::typed::Ty| -> Result<TypePattern, Error> {
+            if let Some(&slot) = bindings.get(&ty.name) {
+                return Ok(TypePattern::Same(slot));
+            }
+            let values = ty
+                .domain
+                .iter()
+                .map(|name| expr.constant(name, offset))
+                .collect::<Result<Vec<_>, _>>()?;
+            let set = intern(&mut self.sets, values);
+            if sig.generics.contains_key(&ty.name) && ty.domain.len() > 1 {
+                let slot = bindings.len();
+                bindings.insert(ty.name.clone(), slot);
+                Ok(TypePattern::Bind(set))
+            } else {
+                Ok(TypePattern::Set(set))
+            }
+        };
+        let results = sig
+            .results
+            .iter()
+            .map(&mut pattern)
+            .collect::<Result<_, _>>()?;
+        let inputs = sig
+            .inputs
+            .iter()
+            .map(|(_, ty)| pattern(ty))
+            .collect::<Result<_, _>>()?;
+        Ok(Test::Signature { results, inputs })
+    }
+
     pub fn test(&mut self, id: usize, failure: usize) {
         let op = match &self.tests[id] {
-            Test::Signature { results, inputs } => Op::CheckSignature {
-                results: Lebs::Values(results),
-                inputs: Lebs::Values(inputs),
-                failure: 0,
-            },
-            Test::Same(values) => Op::CheckSameType {
-                values: Lebs::Values(values),
-                failure: 0,
-            },
+            Test::Signature { results, inputs } => {
+                let results: Vec<_> = results.iter().map(|pattern| pattern.encode()).collect();
+                let inputs: Vec<_> = inputs.iter().map(|pattern| pattern.encode()).collect();
+                self.asm.branch(
+                    Op::CheckSignature {
+                        results: Lebs::Values(&results),
+                        inputs: Lebs::Values(&inputs),
+                        failure: 0,
+                    },
+                    "failure",
+                    failure,
+                );
+                return;
+            }
             Test::Type { value, set } => Op::CheckType {
-                value: *value,
+                value: value.encode(),
                 set: *set,
                 failure: 0,
             },
@@ -74,9 +118,14 @@ impl Program {
             .contains_key(name)
             .then(|| sig.anchor(name).unwrap())
         {
+            let operand = if result {
+                OperandRef::Result(index)
+            } else {
+                OperandRef::Input(index)
+            };
             format!(
-                "{}::TypeSource::Value {{ result: {result}, index: {index} }}",
-                config.runtime
+                "{}::TypeSource::Value({}::OperandRef::{operand:?})",
+                config.runtime, config.runtime,
             )
         } else {
             format!(

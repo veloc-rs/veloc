@@ -56,6 +56,7 @@ pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetInstructions) ->
                 )));
             }
             target.validate_instruction(f, &inst, ValidationMode::Allocated)?;
+            crate::regalloc::constraints::validate(inst, target, true)?;
         }
     }
     Ok(())
@@ -65,6 +66,11 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
     verify_call_frames(f, target)?;
     let fail = |message| Error::codegen(format!("machine SSA in {}: {message}", f.name));
     f.check_refs().map_err(|e| fail(e.into()))?;
+    if !f.param_locations().is_empty() && f.param_locations().len() != f.params().len() {
+        return Err(fail(
+            "incoming ABI locations do not match function parameters".into(),
+        ));
+    }
     let mut defs = HashMap::new();
     for &param in f.params() {
         if param.as_vreg().is_none_or(|v| f.vregs().get(v).is_none()) {
@@ -112,6 +118,7 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
             } else {
                 target.validate_instruction(f, &inst, ValidationMode::Virtual)?;
             }
+            crate::regalloc::constraints::validate(inst, target, false)?;
             for reg in inst.defs() {
                 if transferred && reg.is_vreg() {
                     return Err(fail(format!(

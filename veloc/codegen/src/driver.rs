@@ -190,7 +190,7 @@ impl<'a> CodegenPipeline<'a> {
         let mmodule = self.translate_module(module)?;
         let veloc_lir::MachineModule {
             name,
-            symbols,
+            mut symbols,
             functions,
         } = mmodule;
         let mut compiled_functions = Vec::new();
@@ -210,6 +210,7 @@ impl<'a> CodegenPipeline<'a> {
                 &func,
                 &module.signatures()[func.decl.signature],
                 mfunc,
+                &mut symbols,
                 module_analyses,
                 &function_pipelines,
             );
@@ -240,6 +241,7 @@ impl<'a> CodegenPipeline<'a> {
         func: &FunctionRef,
         sig: &veloc_mir::Signature,
         mfunc: MachineFunction,
+        symbols: &mut veloc_lir::SymbolTable,
         module_analyses: &mut ModuleAnalysisCtx,
         target_pipelines: &TargetFunctionPipelines,
     ) -> Result<CompiledFunction> {
@@ -260,6 +262,7 @@ impl<'a> CodegenPipeline<'a> {
         let final_mfunc = self.run_function_pipeline(
             mfunc,
             sig,
+            symbols,
             &mut function_analyses,
             module_analyses,
             target_pipelines,
@@ -279,6 +282,7 @@ impl<'a> CodegenPipeline<'a> {
         &self,
         mut mfunc: MachineFunction,
         func_sig: &veloc_mir::Signature,
+        symbols: &mut veloc_lir::SymbolTable,
         function_analyses: &mut FunctionAnalysisCtx,
         module_analyses: &mut ModuleAnalysisCtx,
         target_pipelines: &TargetFunctionPipelines,
@@ -288,6 +292,7 @@ impl<'a> CodegenPipeline<'a> {
         let mut ctx = FunctionPassContext::new(
             self.target,
             func_sig,
+            symbols,
             &self.options,
             &self.profile,
             function_analyses,
@@ -326,14 +331,6 @@ impl<'a> CodegenPipeline<'a> {
                 crate::passes::lowering::Legalizer::new(self.target.legalizer()).verify(&mfunc)
             })?;
         }
-        run_function_pass(
-            &crate::passes::constraints::PreSelectOperandConstraintPass::new(
-                self.target.operand_lowering(),
-            ),
-            0,
-            &mut mfunc,
-            &mut ctx,
-        )?;
         self.verify_function("pre-isel", &mfunc, verify)?;
         run_function_pass(
             &InstructionSelectionPass::new(self.target.selector()),
@@ -361,15 +358,6 @@ impl<'a> CodegenPipeline<'a> {
             &mut ctx,
         )?;
         self.verify_function("post-isel-optimized", &mfunc, verify_selected)?;
-        run_function_pass(
-            &crate::passes::constraints::PostSelectOperandConstraintPass::new(
-                self.target.operand_lowering(),
-            ),
-            0,
-            &mut mfunc,
-            &mut ctx,
-        )?;
-        self.verify_function("operand-constraints", &mfunc, verify_selected)?;
         run_function_pass(
             &crate::passes::schedule::SchedulePass,
             0,
@@ -570,6 +558,7 @@ block0(v0: ptr):
                 .run_function_pipeline(
                     f,
                     sig,
+                    &mut translated.symbols.clone(),
                     &mut FunctionAnalysisCtx::default(),
                     &mut ModuleAnalysisCtx::default(),
                     &target_pipelines,

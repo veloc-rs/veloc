@@ -295,7 +295,8 @@ Alternatives such as `lir::Add<T> | lir::Sub<T>` must have identical named
 value signatures. Candidates are tried in source order; the first matching
 candidate returns a plan. All `require` conditions precede construction.
 `let x = build(...)` names a constructed value without duplicating it; the
-terminal operation is `legal(inst)`, `replace(inst, value)`, or a named rewrite call.
+terminal operation is `legal(inst)`, `replace(inst, value)`,
+`libcall(inst, "symbol")`, or a named rewrite call.
 Candidate diagnostics identify source locations, not artificial rule names.
 
 Shared `rewrite` declarations are callable templates, not matching rules.
@@ -373,13 +374,40 @@ runtime module supplying the program tables and adapters. Selection only runs
 read-only predicates and returns a plan; the worklist applies it under edit
 tracking and revisits the affected operations.
 
+`libcall` is an explicit terminal action for converting a value operation to a
+runtime function. For example, a target with a matching runtime implementation
+could select:
+
+```text
+select(inst: lir::Fdiv<Type::F64>) {
+    libcall(inst, "runtime_f64_div");
+}
+```
+
+The symbol is a nonempty string literal. The root must have a fixed value
+signature, at least one result, concrete input/result types, and no attributes,
+memory or control effects requiring an adapter. All inputs become arguments in
+their original order, and all results retain their SSA identities. The root's
+types define the runtime signature; the named function must implement that
+signature and the operation's semantics. A case cannot combine `libcall` with
+`let ... = build(...)`; value conversions must be expressed in separate rewrites.
+
+The action compiles to an `Action::Libcall` table entry selected by the same
+read-only decision bytecode. The codegen service interns the function symbol and
+uses the target's System V ABI plan to construct a fully lowered call under edit
+tracking. Argument transfers, result copies and call-frame instructions return
+to the legalization worklist. Ordinary calls must already be ABI-lowered on
+entry to legalization; an unresolved call is an error, not a request to run this
+service. No target libcall fallback is enabled by declaring this action alone;
+target rules explicitly choose each symbol, and the runtime/linker must provide it.
+
 The compiler shares its priority-preserving decision graph with instruction
 selection, including common-prefix sharing. Both backends share the assembler,
 fixed-width branch relocation and constant-pool interning. Execution remains
 separate: legalization recipes construct generic values; selection recipes
 construct machine instructions and transfer edge information.
 
-The legalization bytecode contains `CheckSignature`, `CheckSameType`, `CheckType`,
+The legalization bytecode contains `CheckSignature`, `CheckType`,
 `CheckSignedRange` and `CheckFeatures` for queries, with
 `Jump / Accept / Reject` for control flow
 and `Emit / Return / Update` for recipes. `choose`, `case`, and `let` are
@@ -391,6 +419,23 @@ both explicit enum discriminants and the recipe's numeric codes; the generated
 `from_code` decoder rejects invalid values without unsafe casts. There is no
 program-local opcode remapping table. These numbers are build-local, not a
 stable serialized ABI across compiler versions.
+
+`CheckSignature` contains inline result and input patterns. Each pattern uses
+a tagged ULEB operand that checks a type set, binds a local type variable, or requires
+the same type as a previous binding. Results are visited before inputs; bindings
+are local to one signature match. For example, `Add<T: Word>` binds `T` at its
+result and checks both inputs against it. Arity, type domains and generic type
+equality are checked together. Concrete singleton domains need no variable
+binding. There is no separate signature table; type sets remain shared.
+Extra type predicates still use `CheckType`.
+
+Operand positions use the shared `OperandRef::Input` / `OperandRef::Result`
+representation, including recipe type sources. Only the wire codec packs the
+input/result tag into an integer. The matcher borrows a checked instruction type
+view: all generic value operands read `VRegData.ty`, including ABI arguments
+and results. ABI register locations are operand constraints rather than untyped
+value operands. Physical operands in generic value instructions are rejected.
+Recipes snapshot this same view before mutating the function.
 
 Native query methods explicitly bind to VM operations, for example:
 

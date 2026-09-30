@@ -3,9 +3,13 @@
 use super::info::{LegalizePolicy, RewriteContext};
 use crate::error::{Error, Result};
 use smallvec::SmallVec;
-use veloc_bytecode::{Reader, rewrite::Instruction as Op};
+pub use veloc_bytecode::rewrite::OperandRef;
+use veloc_bytecode::{
+    Lebs, Reader,
+    rewrite::{Instruction as Op, TypePattern},
+};
 use veloc_lir::{FieldValue, GenericOpcode, Reg};
-use veloc_lir::{InstId, InstRead, MachineFunction};
+use veloc_lir::{InstId, MachineFunction};
 use veloc_mir::Type;
 
 pub struct Program {
@@ -33,7 +37,7 @@ impl FieldSource {
 
 pub enum TypeSource {
     Exact(Type),
-    Value { result: bool, index: usize },
+    Value(OperandRef),
 }
 
 #[derive(Clone, Copy)]
@@ -44,6 +48,12 @@ pub enum Action {
         entry: usize,
         slots: usize,
     },
+    /// Replace the matched value operation with a runtime call. Its fixed
+    /// signature is the root's input/result types, checked by the spec compiler.
+    Libcall {
+        name: &'static str,
+        symbol: &'static str,
+    },
 }
 
 /// Read-only matching shared by verification and the execution engine.
@@ -53,8 +63,8 @@ pub(super) fn select(
     function: &MachineFunction,
     id: InstId,
 ) -> Result<Option<(&'static Program, &'static Action)>> {
-    check_input(function, id)?;
-    let inst = function.inst(id);
+    let types = InstTypes::new(function, id)?;
+    let inst = types.inst;
     let program = policy.program;
     let Some(entry) = program
         .entries
@@ -68,8 +78,6 @@ pub(super) fn select(
         bytes: program.code,
         pc: entry,
     };
-    // Low bit selects results; remaining bits are the operand index.
-    let ty = |value: usize| value_type(function, id, value & 1 != 0, value >> 1);
     let action = loop {
         match Op::read(&mut reader) {
             Op::Reject {} => return Ok(None),
@@ -79,26 +87,8 @@ pub(super) fn select(
                 inputs,
                 failure,
             } => {
-                let matches = |result, sets: veloc_bytecode::Lebs<'_>| {
-                    (if result {
-                        inst.results().len()
-                    } else {
-                        inst.inputs().len()
-                    }) == sets.len()
-                        && sets.iter().enumerate().all(|(i, set)| {
-                            program.sets[set].contains(&value_type(function, id, result, i))
-                        })
-                };
-                if !matches(true, results) || !matches(false, inputs) {
+                if !types.matches_signature(results, inputs, program.sets) {
                     reader.pc = failure;
-                }
-            }
-            Op::CheckSameType { values, failure } => {
-                let mut values = values.iter().map(ty);
-                if let Some(first) = values.next() {
-                    if values.any(|v| v != first) {
-                        reader.pc = failure;
-                    }
                 }
             }
             Op::CheckType {
@@ -106,7 +96,10 @@ pub(super) fn select(
                 set,
                 failure,
             } => {
-                if !program.sets[set].contains(&ty(value)) {
+                if !types
+                    .get(OperandRef::decode(value))
+                    .is_some_and(|ty| program.sets[set].contains(&ty))
+                {
                     reader.pc = failure;
                 }
             }
@@ -147,18 +140,16 @@ pub(super) fn apply(
     let root = ctx.inst(ctx.root());
     let destination = root.results().first().copied();
     let results = root.results().len();
-    let types: SmallVec<[Type; 4]> = root
-        .results()
-        .iter()
-        .chain(root.inputs())
-        .map(|reg| ctx.vreg_data(*reg).ty)
-        .collect();
+    // Snapshot through the same type view before edits can invalidate borrows.
+    let types = InstTypes::new(ctx, ctx.root())?.snapshot()?;
     // Checked recipes assign fresh slots in order; no dummy register values.
     let mut values = SmallVec::<[Reg; 16]>::with_capacity(slots);
     values.extend_from_slice(root.inputs());
     let ty = |id: usize| match program.types[id] {
         TypeSource::Exact(ty) => ty,
-        TypeSource::Value { result, index } => types[if result { index } else { results + index }],
+        TypeSource::Value(operand) => *operand
+            .get(&types[results..], &types[..results])
+            .expect("checked recipe type source"),
     };
     let mut reader = Reader {
         bytes: program.code,
@@ -218,75 +209,88 @@ pub(super) fn apply(
     }
 }
 
-/// Validate the instruction-local ABI boundary before reading operand types.
-fn check_input(function: &MachineFunction, id: InstId) -> Result<()> {
-    let inst = function.inst(id);
-    let vregs = function.vregs();
-    if inst.generic_opcode().is_none() {
-        return Err(Error::codegen("expected generic instruction"));
+/// A checked view of semantic SSA types. ABI placement is independent of types.
+struct InstTypes<'a> {
+    function: &'a MachineFunction,
+    inst: veloc_lir::InstRef<'a>,
+}
+
+impl<'a> InstTypes<'a> {
+    fn matches_signature(&self, results: Lebs<'_>, inputs: Lebs<'_>, sets: &[&[Type]]) -> bool {
+        if results.len() != self.inst.results().len() || inputs.len() != self.inst.inputs().len() {
+            return false;
+        }
+        // Bindings belong to this signature match; failed candidates cannot
+        // leak type variables into later branches of the decision bytecode.
+        let mut bindings = SmallVec::<[Type; 4]>::new();
+        results
+            .iter()
+            .enumerate()
+            .map(|(i, pattern)| (OperandRef::Result(i), pattern))
+            .chain(
+                inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, pattern)| (OperandRef::Input(i), pattern)),
+            )
+            .all(|(operand, pattern)| {
+                let Some(ty) = self.get(operand) else {
+                    return false;
+                };
+                match TypePattern::decode(pattern) {
+                    TypePattern::Set(set) => sets[set].contains(&ty),
+                    TypePattern::Bind(set) => {
+                        if !sets[set].contains(&ty) {
+                            return false;
+                        }
+                        bindings.push(ty);
+                        true
+                    }
+                    TypePattern::Same(slot) => ty == bindings[slot],
+                }
+            })
     }
-    let regs = || inst.results().iter().chain(inst.inputs());
-    if regs().any(|reg| reg.as_vreg().is_some_and(|reg| vregs.get(reg).is_none())) {
-        return Err(Error::codegen("unknown virtual operand in legalization"));
-    }
-    if regs().any(|reg| reg.is_preg()) {
-        // Physical locations are permitted only at explicit ABI boundaries.
-        // In particular, a register name never supplies a semantic type.
-        let valid = match inst.view() {
-            veloc_lir::InstView::UnaryReg(copy)
-                if copy.opcode == veloc_lir::UnaryRegOpcode::Copy =>
-            {
-                copy.dst.is_vreg() != copy.src.is_vreg()
-            }
-            veloc_lir::InstView::Call(call) => call
-                .args
-                .iter()
-                .chain(call.results)
-                .all(|reg| reg.is_preg()),
-            veloc_lir::InstView::CallIndirect(call) => {
-                call.callee.is_vreg()
-                    && call
-                        .args
-                        .iter()
-                        .chain(call.results)
-                        .all(|reg| reg.is_preg())
-            }
-            veloc_lir::InstView::Return(ret) => ret.values.iter().all(|reg| reg.is_preg()),
-            _ => false,
-        };
-        if !valid {
+
+    fn new(function: &'a MachineFunction, id: InstId) -> Result<Self> {
+        let inst = function.inst(id);
+        if inst.generic_opcode().is_none() {
+            return Err(Error::codegen("expected generic instruction"));
+        }
+        let regs = || inst.results().iter().chain(inst.inputs());
+        if regs().any(|reg| {
+            reg.as_vreg()
+                .is_some_and(|reg| function.vregs().get(reg).is_none())
+        }) {
+            return Err(Error::codegen("unknown virtual operand in legalization"));
+        }
+        if regs().any(|reg| reg.is_preg()) {
             return Err(Error::codegen(
-                "physical operands require a typed copy or ABI call/return boundary",
+                "generic value operands must be virtual before allocation",
             ));
+        }
+        Ok(Self { function, inst })
+    }
+
+    fn get(&self, operand: OperandRef) -> Option<Type> {
+        let reg = operand.get(self.inst.inputs(), self.inst.results())?;
+        match reg.as_vreg() {
+            Some(reg) => Some(self.function.vregs()[reg].ty),
+            None => None,
         }
     }
 
-    Ok(())
-}
-
-/// Physical Copy endpoints inherit the transfer type from the SSA endpoint.
-fn value_type(function: &MachineFunction, id: InstId, result: bool, index: usize) -> Type {
-    let inst = function.inst(id);
-    let reg = if result {
-        inst.results()[index]
-    } else {
-        inst.inputs()[index]
-    };
-    if let Some(reg) = reg.as_vreg() {
-        return function.vregs()[reg].ty;
+    /// Recipes need an owned snapshot while they mutate the function. Preserve
+    /// the results/inputs split so all type sources still use OperandRef.
+    fn snapshot(&self) -> Result<SmallVec<[Type; 4]>> {
+        (0..self.inst.results().len())
+            .map(OperandRef::Result)
+            .chain((0..self.inst.inputs().len()).map(OperandRef::Input))
+            .map(|operand| {
+                self.get(operand)
+                    .ok_or_else(|| Error::codegen("value recipe requires semantic operand types"))
+            })
+            .collect()
     }
-    assert_eq!(
-        inst.generic_opcode(),
-        Some(GenericOpcode::Copy),
-        "ABI locations have no standalone value type"
-    );
-    let value = inst
-        .results()
-        .iter()
-        .chain(inst.inputs())
-        .find_map(|reg| reg.as_vreg())
-        .expect("typed boundary copy");
-    function.vregs()[value].ty
 }
 
 fn immediate(inst: veloc_lir::InstRef<'_>, index: usize) -> i64 {

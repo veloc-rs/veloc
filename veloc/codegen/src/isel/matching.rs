@@ -146,23 +146,7 @@ pub(super) fn execute(
             } => {
                 assert!(!accepted);
                 if !(values[value]
-                    .and_then(|reg| {
-                        if reg.is_vreg() {
-                            return Some(store.vreg_data(reg).ty);
-                        }
-                        // ABI copies inherit their transfer type from the SSA endpoint.
-                        // A physical register by itself has no semantic value type.
-                        let root = store.inst(source);
-                        (root.generic_opcode() == Some(GenericOpcode::Copy))
-                            .then(|| {
-                                root.results()
-                                    .iter()
-                                    .chain(root.inputs())
-                                    .find(|reg| reg.is_vreg())
-                                    .map(|reg| store.vreg_data(*reg).ty)
-                            })
-                            .flatten()
-                    })
+                    .and_then(|reg| reg.as_vreg().map(|v| store.vregs()[v].ty))
                     .is_some_and(|ty| program.types[set].contains(&ty)))
                 {
                     reader.pc = failure;

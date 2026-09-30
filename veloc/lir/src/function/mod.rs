@@ -25,6 +25,7 @@ pub struct FuncBody {
     vregs: PrimaryMap<VReg, VRegData>,
     /// SSA definitions supplied by the caller, independent of CFG block parameters.
     params: Vec<Reg>,
+    param_locations: Vec<crate::PReg>,
 }
 
 impl FuncBody {
@@ -40,6 +41,7 @@ impl FuncBody {
             store: crate::store::InstStore::with_capacity(insts),
             vregs: PrimaryMap::with_capacity(vregs),
             params: Vec::new(),
+            param_locations: Vec::new(),
         }
     }
 
@@ -96,6 +98,9 @@ impl MachineFunction {
 
     pub fn body(&self) -> &FuncBody {
         &self.body
+    }
+    pub fn param_locations(&self) -> &[crate::PReg] {
+        &self.body.param_locations
     }
     pub fn params(&self) -> &[Reg] {
         &self.body.params
@@ -187,6 +192,9 @@ impl MachineFunction {
                 .collect::<Vec<_>>()
                 .join(", ");
             let _ = writeln!(out, "  params: {}", params);
+            if !self.param_locations().is_empty() {
+                let _ = writeln!(out, "  incoming: {:?}", self.param_locations());
+            }
         }
 
         for block in self.blocks() {
@@ -206,6 +214,9 @@ impl MachineFunction {
                 let _ = write!(out, "    {:?}: {:?}", inst_id, inst);
                 if let Some(info) = self.try_call_info(inst_id) {
                     let _ = write!(out, " call={:?}", info);
+                }
+                if !inst.constraints().is_empty() {
+                    let _ = write!(out, " constraints={:?}", inst.constraints());
                 }
                 let _ = writeln!(out);
             }

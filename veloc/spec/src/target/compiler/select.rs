@@ -5,7 +5,7 @@ use std::fmt::Write;
 
 use super::FinalInstDef;
 mod matcher;
-use super::generate::{collect_reg_ids, format_slice, reg_const_name, sanitize_ident};
+use super::generate::{collect_reg_ids, sanitize_ident};
 
 fn positional_arg_at(args: &[PatternArg], index: usize) -> Option<&Pattern> {
     args.iter()
@@ -207,90 +207,6 @@ pub(crate) fn infer_schema_source_def_field(args: &[PatternArg]) -> Option<&str>
     }
 }
 
-pub(crate) fn generate_generic_inst_metadata(
-    output: &mut String,
-    module: &crate::target::ast::Module,
-    final_inst_defs: &HashMap<String, FinalInstDef>,
-) {
-    let metadata_map = derive_generic_inst_metadata(module, final_inst_defs);
-
-    if metadata_map.is_empty() {
-        writeln!(
-            output,
-            "\npub fn generic_inst_metadata(_opcode: veloc_lir::GenericOpcode) -> &'static GenericInstMetadata {{\n    &GenericInstMetadata::EMPTY\n}}"
-        )
-        .unwrap();
-        return;
-    }
-
-    writeln!(
-        output,
-        "\n/// Generic instruction metadata inferred from select rules."
-    )
-    .unwrap();
-    for (opcode, metadata) in &metadata_map {
-        let const_name = format!(
-            "GENERIC_INST_{}_METADATA",
-            sanitize_ident(opcode).to_ascii_uppercase()
-        );
-        let fixed_entries = metadata
-            .fixed_uses
-            .iter()
-            .map(|(use_operand, reg)| {
-                format!(
-                    "FixedUseConstraint {{ use_operand: {}, reg: {} }}",
-                    use_operand,
-                    reg_const_name(reg)
-                )
-            })
-            .collect();
-
-        writeln!(
-            output,
-            "pub const {const_name}: GenericInstMetadata = GenericInstMetadata {{"
-        )
-        .unwrap();
-        writeln!(output, "    fixed_uses: {},", format_slice(fixed_entries)).unwrap();
-        writeln!(output, "}};").unwrap();
-    }
-
-    writeln!(
-        output,
-        "\npub fn generic_inst_metadata(opcode: veloc_lir::GenericOpcode) -> &'static GenericInstMetadata {{"
-    )
-    .unwrap();
-    writeln!(output, "    match opcode {{").unwrap();
-    for opcode in metadata_map.keys() {
-        let const_name = format!(
-            "GENERIC_INST_{}_METADATA",
-            sanitize_ident(opcode).to_ascii_uppercase()
-        );
-        writeln!(
-            output,
-            "        veloc_lir::GenericOpcode::{opcode} => &{const_name},",
-            opcode = opcode,
-            const_name = const_name
-        )
-        .unwrap();
-    }
-    writeln!(output, "        _ => &GenericInstMetadata::EMPTY,").unwrap();
-    writeln!(output, "    }}").unwrap();
-    writeln!(output, "}}").unwrap();
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct DerivedGenericInstMetadata {
-    fixed_uses: Vec<(usize, String)>,
-}
-
-fn schema_field_operand_index(schema: &str, field: &str) -> Option<usize> {
-    match (schema, field) {
-        ("BinaryReg", "lhs") => Some(0),
-        ("BinaryReg", "rhs") => Some(1),
-        _ => None,
-    }
-}
-
 fn collect_field_variable_bindings(args: &[PatternArg]) -> HashMap<String, String> {
     let mut bindings = HashMap::new();
     for (field, pattern) in named_args(args) {
@@ -327,75 +243,6 @@ fn constructor_arg_bindings_by_target_operand<'a>(
     }
 
     bindings
-}
-
-fn derive_generic_inst_metadata(
-    module: &crate::target::ast::Module,
-    final_inst_defs: &HashMap<String, FinalInstDef>,
-) -> BTreeMap<String, DerivedGenericInstMetadata> {
-    let mut result = BTreeMap::<String, DerivedGenericInstMetadata>::new();
-
-    for def in &module.defs {
-        let Def::SelectRule(rule) = def else {
-            continue;
-        };
-        if rule.schema != "BinaryReg" {
-            continue;
-        }
-        let opcode = &rule.opcode;
-        let pattern_args = &rule.fields;
-        let [
-            Constructor::Inst {
-                opcode: target_opcode,
-                args: constructor_args,
-            },
-        ] = rule.builds.as_slice()
-        else {
-            continue;
-        };
-        let Some(target_inst_def) = final_inst_defs.get(target_opcode) else {
-            continue;
-        };
-
-        let field_bindings = collect_field_variable_bindings(pattern_args);
-        let schema_source_def_field = infer_schema_source_def_field(pattern_args);
-        let target_arg_bindings = constructor_arg_bindings_by_target_operand(
-            &target_inst_def.operands,
-            constructor_args,
-            schema_source_def_field,
-        );
-        let metadata = result.entry(opcode.to_string()).or_default();
-
-        for (target_operand_index, operand) in target_inst_def.operands.iter().enumerate() {
-            let OperandConstraint::FixedUse { reg, .. } = operand else {
-                continue;
-            };
-            let Some(Some(Constructor::Variable(var_name))) =
-                target_arg_bindings.get(target_operand_index)
-            else {
-                continue;
-            };
-            let Some(field) = field_bindings.get(var_name) else {
-                continue;
-            };
-            let Some(source_operand_index) = schema_field_operand_index(&rule.schema, field) else {
-                continue;
-            };
-            let fixed = (source_operand_index, reg.clone());
-            if !metadata.fixed_uses.contains(&fixed) {
-                metadata.fixed_uses.push(fixed);
-            }
-        }
-    }
-
-    for metadata in result.values_mut() {
-        metadata.fixed_uses.sort_unstable();
-        metadata.fixed_uses.dedup();
-    }
-
-    result.retain(|_, metadata| !metadata.fixed_uses.is_empty());
-
-    result
 }
 
 pub(super) fn check_construction(

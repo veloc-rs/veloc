@@ -194,7 +194,6 @@ impl Plan {
         generate::generate_enum_conversions(&mut output, &final_inst_defs);
         generate::generate_target_inst_metadata(&mut output, &module, &final_inst_defs);
         generate::generate_validation(&mut output, &final_inst_defs);
-        select::generate_generic_inst_metadata(&mut output, &module, &final_inst_defs);
         output.push_str("\n// Machine-code emission.\n");
         encoding::generate(&mut output, arch, &final_inst_defs);
         output.push_str("\n// Assembly rendering.\n");

@@ -10,7 +10,7 @@ use predicate::Test;
 use program::{Output, Program};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
-use veloc_bytecode::rewrite::Instruction as Op;
+use veloc_bytecode::rewrite::{Instruction as Op, OperandRef, TypePattern};
 
 #[derive(Clone, Copy)]
 pub struct DecisionRust<'a> {
@@ -164,37 +164,7 @@ fn compile(
             let mut guards = Vec::new();
             let structural = sig.dynamic;
             if !structural {
-                let mut sets = |types: Vec<&super::typed::Ty>| -> Result<Vec<usize>, Error> {
-                    types
-                        .into_iter()
-                        .map(|ty| {
-                            let values = ty
-                                .domain
-                                .iter()
-                                .map(|n| expressions.constant(n, d.offset))
-                                .collect::<Result<Vec<_>, _>>()?;
-                            Ok(intern(&mut program.sets, values))
-                        })
-                        .collect()
-                };
-                guards.push(Test::Signature {
-                    results: sets(sig.results.iter().collect())?,
-                    inputs: sets(sig.inputs.iter().map(|(_, ty)| ty).collect())?,
-                });
-                for name in sig.generics.keys() {
-                    let values: Vec<_> = sig
-                        .results
-                        .iter()
-                        .enumerate()
-                        .map(|(i, t)| (i * 2 + 1, t))
-                        .chain(sig.inputs.iter().enumerate().map(|(i, (_, t))| (i * 2, t)))
-                        .filter(|(_, ty)| &ty.name == name)
-                        .map(|(i, _)| i)
-                        .collect();
-                    if values.len() > 1 {
-                        guards.push(Test::Same(values));
-                    }
-                }
+                guards.push(program.signature(&sig, &expressions, d.offset)?);
             }
             for condition in &case.guards {
                 expressions.guard(condition, &mut program, &mut guards)?;
@@ -286,6 +256,8 @@ fn compile(
                         &label,
                         emit.offset,
                     )?
+                } else if matches!(&emit.kind, Kind::Call(name, _) if name == "libcall") {
+                    libcall(source, emit, &sig, op, config, &label)?
                 } else {
                     expressions.action(emit)?
                 };
@@ -344,6 +316,61 @@ fn compile(
     program.render(&mut out, &encoded, config);
     out.push_str(&bodies);
     Ok(out)
+}
+
+/// Libcalls preserve the complete value signature of a concrete root. Keep
+/// symbol selection in the rule and ABI construction in the runtime service.
+fn libcall(
+    source: &str,
+    node: &Node,
+    sig: &Signature,
+    op: &crate::schema::Operation,
+    config: DecisionRust<'_>,
+    name: &str,
+) -> Result<String, Error> {
+    let Kind::Call(_, args) = &node.kind else {
+        unreachable!()
+    };
+    let Kind::Text(symbol) = &args[1].kind else {
+        return Err(Error::at(
+            source,
+            args[1].offset,
+            "libcall requires a literal symbol name",
+        ));
+    };
+    if symbol.is_empty() || symbol.contains('\0') {
+        return Err(Error::at(
+            source,
+            args[1].offset,
+            "invalid libcall symbol name",
+        ));
+    }
+    if let Err(message) = &op.signature {
+        return Err(Error::at(
+            source,
+            node.offset,
+            format!("libcall requires a value operation without effects or attributes: {message}"),
+        ));
+    }
+    if sig.dynamic
+        || sig.results.is_empty()
+        || sig
+            .inputs
+            .iter()
+            .map(|(_, ty)| ty)
+            .chain(&sig.results)
+            .any(|ty| ty.domain.len() != 1)
+    {
+        return Err(Error::at(
+            source,
+            node.offset,
+            "libcall requires a fixed signature with concrete input and result types",
+        ));
+    }
+    Ok(format!(
+        "{}::Action::Libcall {{ name: {name:?}, symbol: {symbol:?} }}",
+        config.runtime
+    ))
 }
 
 /// A candidate has a read-only guard followed by one deferred action. Builds
@@ -422,10 +449,13 @@ fn cases(source: &str, d: &Decl) -> Result<Vec<Case>, Error> {
             ("legal", [node]) if is_root(node) && builds.is_empty() => {
                 (Node { offset: last.offset, kind: Kind::Name("legal".into()) }, false)
             }
-            (name, [node]) if !matches!(name, "legal" | "replace" | "require" | "build")
+            ("libcall", [node, _]) if is_root(node) && builds.is_empty() => {
+                (last.clone(), false)
+            }
+            (name, [node]) if !matches!(name, "legal" | "replace" | "require" | "build" | "libcall")
                 && is_root(node) && builds.is_empty() => (last.clone(), false),
             _ => return Err(Error::at(source, last.offset,
-                "case must end with legal(root), replace(root, value), or rewrite(root); builds require replace")),
+                "case must end with legal(root), replace(root, value), libcall(root, symbol), or rewrite(root); builds require replace")),
         };
         Ok(Case { offset: candidate.offset, guards, body, replacement })
     }).collect()

@@ -75,9 +75,19 @@ impl FuncEditor<'_> {
         self.function.body.params.push(param);
     }
 
-    /// Transfer formal definitions to the ABI entry instructions.
+    /// Transfer formal definitions when lowering stack arguments or materializing allocation.
     pub fn take_params(&mut self) -> Vec<Reg> {
+        self.function.body.param_locations.clear();
         core::mem::take(&mut self.function.body.params)
+    }
+
+    pub fn set_param_locations(&mut self, locations: Vec<crate::PReg>) {
+        assert_eq!(locations.len(), self.params().len());
+        self.function.body.param_locations = locations;
+    }
+    pub fn set_inst_constraints(&mut self, id: InstId, constraints: Vec<crate::OperandConstraint>) {
+        self.function.body.store.set_constraints(id, constraints);
+        self.changed_inst(id);
     }
 
     /// Reborrow the editor, retaining the current session's notifications.
@@ -226,13 +236,13 @@ impl FuncEditor<'_> {
         self.function.body.store.set_effects(id, effects);
         self.changed_inst(id);
     }
-    /// Replace logical call operands with ABI locations without rebuilding its
-    /// callee, signature, memory facts or implicit register effects.
+    /// Set complete call inputs, including the indirect callee, and record stack
+    /// arguments and frame effects. Results, signature and memory facts remain intact.
+    /// Register placement requirements are attached separately.
     pub fn set_call_abi(
         &mut self,
         id: InstId,
-        results: &[Reg],
-        args: &[Reg],
+        inputs: &[Reg],
         frame: crate::CallFrameId,
         clobbers: crate::RegMask,
         stack_args: smallvec::SmallVec<[StackSlot; 2]>,
@@ -240,7 +250,7 @@ impl FuncEditor<'_> {
         self.function
             .body
             .store
-            .set_call_abi(id, results, args, frame, clobbers, stack_args);
+            .set_call_abi(id, inputs, frame, clobbers, stack_args);
         self.changed_inst(id);
     }
     pub fn set_inst_inputs(&mut self, id: InstId, inputs: &[Reg]) {

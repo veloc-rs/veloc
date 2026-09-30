@@ -23,9 +23,7 @@ impl<'a> Legalizer<'a> {
     /// Explicit read-only checkpoint. Uses the same matcher as execution.
     pub fn verify(&self, function: &MachineFunction) -> Result<()> {
         for id in function.blocks().flat_map(|b| function.block_insts(b)) {
-            if needs_abi(function, id) {
-                return Err(Error::codegen(format!("unlowered ABI call {id:?}")));
-            }
+            check_call_abi(function, id)?;
             let inst = function.inst(id);
             if inst.is_generic() && !inst.is_call_frame() {
                 if !matches!(
@@ -42,11 +40,12 @@ impl<'a> Legalizer<'a> {
     }
 
     /// The worklist schedules changed instructions until all are legal.
-    /// ABI lowering remains a separate service.
+    /// Explicit libcall actions use a service that creates a fully ABI-lowered
+    /// call. Ordinary calls must already have passed through ABI lowering.
     pub fn legalize(
         &self,
         function: &mut MachineFunction,
-        mut lower_call: impl FnMut(&mut FuncEditor<'_>, InstId) -> Result<()>,
+        mut emit_libcall: impl FnMut(&mut FuncEditor<'_>, InstId, &str) -> Result<()>,
     ) -> Result<bool> {
         let mut modified = false;
         let mut pending: VecDeque<_> = function
@@ -56,7 +55,7 @@ impl<'a> Legalizer<'a> {
         let mut queued: hashbrown::HashSet<_> = pending.iter().copied().collect();
         while let Some(id) = pending.pop_front() {
             queued.remove(&id);
-            let Some(changes) = self.step(function, id, &mut lower_call)? else {
+            let Some(changes) = self.step(function, id, &mut emit_libcall)? else {
                 continue;
             };
             modified = true;
@@ -72,10 +71,14 @@ impl<'a> Legalizer<'a> {
     }
 }
 
-fn needs_abi(function: &MachineFunction, id: InstId) -> bool {
-    function
+fn check_call_abi(function: &MachineFunction, id: InstId) -> Result<()> {
+    if function
         .try_call_info(id)
         .is_some_and(|info| info.frame.is_none())
+    {
+        return Err(Error::codegen(format!("unlowered ABI call {id:?}")));
+    }
+    Ok(())
 }
 
 impl Legalizer<'_> {
@@ -83,60 +86,37 @@ impl Legalizer<'_> {
         &self,
         function: &mut MachineFunction,
         id: InstId,
-        lower_call: &mut impl FnMut(&mut FuncEditor<'_>, InstId) -> Result<()>,
+        emit_libcall: &mut impl FnMut(&mut FuncEditor<'_>, InstId, &str) -> Result<()>,
     ) -> Result<Option<EditChanges>> {
         if function.inst_block(id).is_none() {
             return Ok(None);
         }
+        check_call_abi(function, id)?;
         let inst = function.inst(id);
         if !inst.is_generic() || inst.is_invalid() || inst.is_call_frame() {
             return Ok(None);
         }
         let opcode = inst.opcode();
-        // None denotes an unresolved call handed off to ABI lowering, not a
-        // missing rule. All other instructions must match a legalization entry.
-        let selected = if needs_abi(function, id) {
-            None
-        } else {
-            let selected = vm::select(self.target, function, id)?.ok_or_else(|| {
-                Error::codegen(format!("missing legalization rule for {opcode:?}"))
-            })?;
-            if matches!(selected.1, vm::Action::Legal) {
-                return Ok(None);
-            }
-            if inst
-                .results()
-                .iter()
-                .chain(inst.inputs())
-                .any(|reg| reg.is_preg())
-            {
-                return Err(Error::codegen(
-                    "ABI boundary requires unsupported legalization; lower its value conversion before the boundary",
-                ));
-            }
-            Some(selected)
+        let (program, action) = vm::select(self.target, function, id)?
+            .ok_or_else(|| Error::codegen(format!("missing legalization rule for {opcode:?}")))?;
+        let rule = match action {
+            vm::Action::Legal => return Ok(None),
+            vm::Action::Recipe { name, .. } | vm::Action::Libcall { name, .. } => name,
         };
-        let rule = match selected {
-            None => "ABI lowering",
-            Some((_, vm::Action::Recipe { name, .. })) => name,
-            Some((_, vm::Action::Legal)) => unreachable!("legal instructions do not rewrite"),
-        };
-        let (result, changes) = function.editor().track(|edit| {
-            let Some((program, action)) = selected else {
-                return lower_call(edit, id);
-            };
-            let mut ctx = RewriteContext::new(id, edit.editor());
-            match *action {
-                vm::Action::Recipe { entry, slots, .. } => {
-                    vm::apply(program, entry, slots, &mut ctx)
-                }
-                vm::Action::Legal => unreachable!("legal instructions do not rewrite"),
+        if !inst.constraints().is_empty() {
+            return Err(Error::codegen(
+                "constrained ABI boundary requires value conversion before ABI lowering",
+            ));
+        }
+        let (result, changes) = function.editor().track(|edit| match *action {
+            vm::Action::Recipe { entry, slots, .. } => {
+                let mut ctx = RewriteContext::new(id, edit.editor());
+                vm::apply(program, entry, slots, &mut ctx)
             }
+            vm::Action::Libcall { symbol, .. } => emit_libcall(edit, id, symbol),
+            vm::Action::Legal => unreachable!("legal instructions do not rewrite"),
         });
         result?;
-        if selected.is_none() && needs_abi(function, id) {
-            return Err(Error::codegen("ABI lowering left an unresolved call"));
-        }
         if changes.insts.is_empty() {
             return Err(Error::codegen(format!(
                 "legalization rule {rule:?} made no instruction edits for {id:?} {opcode:?}"

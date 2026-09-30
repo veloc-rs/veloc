@@ -5,6 +5,10 @@
 #![feature(const_trait_impl)]
 extern crate alloc;
 
+mod constraints;
+pub use constraints::*;
+pub use veloc_bytecode::OperandRef;
+
 pub mod control;
 mod regmask;
 pub use regmask::RegMask;

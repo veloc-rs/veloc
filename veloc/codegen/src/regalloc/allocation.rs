@@ -70,6 +70,7 @@ impl InstAllocation {
 /// behind the plan's back. Materialization consumes both without cloning the IR.
 pub struct Allocation {
     pub(crate) source: MachineFunction,
+    pub(crate) entry: Vec<Transfer>,
     pub(crate) instructions: SecondaryMap<InstId, InstAllocation>,
     pub(crate) frame: StackBatch,
     pub(crate) edges: Vec<super::edges::EdgeAllocation>,
@@ -78,6 +79,10 @@ pub struct Allocation {
 impl Allocation {
     pub fn source(&self) -> &MachineFunction {
         &self.source
+    }
+
+    pub fn entry(&self) -> &[Transfer] {
+        &self.entry
     }
 
     pub fn inst(&self, id: InstId) -> &InstAllocation {
@@ -97,6 +102,7 @@ impl Allocation {
     pub fn materialize(self, target: &dyn TargetRegalloc) -> crate::Result<MachineFunction> {
         let Self {
             mut source,
+            entry,
             mut instructions,
             frame,
             edges,
@@ -129,6 +135,15 @@ impl Allocation {
             }
             block = next_block;
         }
+        let block = source.entry_block();
+        {
+            let mut edit = source.editor();
+            let mut insert = edit.at_start(block);
+            for transfer in entry {
+                transfer.emit(target, insert.writer())?;
+            }
+        }
+        source.editor().take_params();
         // Layout changes happen only now: each nonempty edge plan gets a block,
         // so conditional branches and critical edges execute only their own moves.
         for edge in edges {
@@ -159,7 +174,7 @@ impl Allocation {
         source.editor().clear_block_params();
         assert!(
             source.params().is_empty(),
-            "ABI lowering must consume function parameters"
+            "allocation must consume function parameters"
         );
         Ok(source)
     }

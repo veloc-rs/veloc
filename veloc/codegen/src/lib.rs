@@ -26,7 +26,7 @@ pub use backend::Backend;
 pub use driver::{CodegenOptions, CodegenPipeline};
 pub use target::{
     CallConv, RewriteResult, TargetArch, TargetConfig, TargetEmitter, TargetFrameLowering,
-    TargetMachine, TargetOperandLowering, TargetPassConfig, TargetPostIsel,
+    TargetMachine, TargetPassConfig, TargetPostIsel,
 };
 
 /// 根据目标配置创建对应的目标机器

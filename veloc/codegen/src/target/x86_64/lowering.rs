@@ -1,7 +1,7 @@
 //! Shared x86 copy construction and selection predicates.
 use super::inst::{self as generated, TargetInst};
-use veloc_lir::{InstId, MachineFunction, Reg};
-use veloc_mir::{Type, TypeInfo};
+use veloc_lir::Reg;
+use veloc_mir::Type;
 
 /// x86_64 专属的 Context 扩展 (架构私有)
 pub trait X86LoweringContext {
@@ -10,54 +10,30 @@ pub trait X86LoweringContext {
     fn has_avx2(&self) -> bool;
 }
 
-pub(super) fn x86_mov_opcode_for_type(ty: Type) -> Result<TargetInst, crate::error::Error> {
-    if ty == Type::F32 {
-        Ok(TargetInst::X86Movss)
-    } else if ty == Type::F64 {
-        Ok(TargetInst::X86Movsd)
-    } else if ty
-        .bit_size()
-        .and_then(|size| size.fixed_bits())
-        .is_some_and(|bits| bits <= 32)
-    {
-        Ok(TargetInst::X86Mov32)
-    } else if ty
-        .bit_size()
-        .and_then(|size| size.fixed_bits())
-        .is_some_and(|bits| bits <= 64)
-        || ty.is_ptr()
-    {
-        Ok(TargetInst::X86Mov64)
-    } else {
-        panic!("unsupported type for x86_64 move: {:?}", ty);
-    }
-}
-
-fn x86_copy_type_for_regs(
-    mfunc: &MachineFunction,
+pub(super) fn copy_opcode(
+    desc: &crate::target::TargetDescription,
     dst: Reg,
     src: Reg,
-) -> Result<Type, crate::error::Error> {
-    if dst.is_vreg() {
-        return Ok(mfunc.vreg_data(dst).ty);
-    }
-    if src.is_vreg() {
-        return Ok(mfunc.vreg_data(src).ty);
-    }
-    panic!(
-        "cannot infer x86 copy type from physical registers {:?} <- {:?}",
-        dst, src
-    )
-}
-
-pub(super) fn build_x86_copy_inst(
-    mut insert: veloc_lir::InstInserter<'_>,
-    dst: Reg,
-    src: Reg,
-) -> Result<InstId, crate::error::Error> {
-    let ty = x86_copy_type_for_regs(&insert, dst, src)?;
-    let opcode = x86_mov_opcode_for_type(ty)?;
-    Ok(opcode.write(insert.writer(), &[dst], &[src], []))
+    ty: Type,
+) -> crate::Result<TargetInst> {
+    use TargetInst::*;
+    let dst = desc.scalar_storage_type(dst, ty)?;
+    let src = desc.scalar_storage_type(src, ty)?;
+    Ok(match (dst, src) {
+        (Type::F32, Type::F32) => X86Movss,
+        (Type::F64, Type::F64) => X86Movsd,
+        (Type::F32, Type::I32) => X86MovdToXmm,
+        (Type::F64, Type::I64) => X86MovqToXmm,
+        (Type::I32, Type::F32) => X86MovdFromXmm,
+        (Type::I64, Type::F64) => X86MovqFromXmm,
+        (Type::I64, Type::I64) => X86Mov64,
+        (Type::I8 | Type::I16 | Type::I32, Type::I8 | Type::I16 | Type::I32) => X86Mov32,
+        _ => {
+            return Err(crate::Error::codegen(
+                "unsupported scalar register transfer",
+            ));
+        }
+    })
 }
 
 impl X86LoweringContext for generated::FeatureSet {

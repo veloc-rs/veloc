@@ -11,14 +11,18 @@ The native pipeline keeps three responsibilities separate:
 - Instruction selection chooses target instructions using the existing ISLE rules;
   ABI and register constraints remain separate concerns.
 
-ABI lowering precedes legalization. It materializes entry/call/return locations
-with explicit copies and stack accesses, and records call register effects and
-outgoing stack slots. Selection preserves that contract without replanning it.
-Legalization accepts physical registers only in typed boundary copies and ABI
-calls/returns. A copy derives its transfer type from its virtual endpoint;
-physical registers have no semantic type of their own. Generic computation still
-requires typed virtual operands. General SSA rewrites cannot rewrite a physical
-boundary: unsupported transfer types require an explicit ABI conversion.
+ABI lowering precedes legalization. Register parameters, call arguments, call
+results and return operands remain typed SSA values. ABI lowering records their
+physical placement requirements and materializes stack accesses. Function
+parameters have parallel incoming-location metadata; call/return constraints
+refer to input/result occurrences. Selection preserves this contract without
+replanning it. A libcall uses the same ABI planning path.
+
+Generic computations never borrow a type from a physical endpoint. Legalization
+reads `VRegData.ty` for every value, including ABI boundaries. A constrained
+boundary can be accepted as legal, but a value rewrite must perform any required
+ABI conversion before establishing its placement contract. Scalar `Copy` is an
+identity rewrite in the spec and is eliminated by replacing SSA uses.
 
 MIR-to-LIR lowering is handwritten Rust in `src/translate.rs`. Arithmetic maps
 directly to OpSpec-generated LIR builders; comparisons, memory and control flow
@@ -42,7 +46,8 @@ sign-extended in MIR; the immediate offset is signed.
 Virtual values have one definition through legalization, selection and scheduling.
 Non-entry block parameters remain SSA definitions; branches carry their edge
 arguments even when a generic conditional or jump table expands to several
-target branches. Function entry arguments use Arg/ABI definitions, or a fresh
+target branches. Register entry arguments remain function parameters until
+allocation; stack arguments are defined by loads. Translation provides a fresh
 ABI predecessor when the original entry has backedges.
 
 Multi-instruction selection rules declare intermediates explicitly:
@@ -62,9 +67,37 @@ and finally produces physical non-SSA instructions. Parallel-copy cycles use
 recyclable stack temporaries; stack-to-stack moves use reserved scratch registers.
 There is no pre-selection phi destruction or virtual-register parallel-copy pass.
 
-The optional machine SSA verifier runs at pipeline boundaries, not in builders.
-It checks virtual definitions/dominance and edge contracts; physical ABI
-registers and clobbers deliberately remain outside the SSA invariant.
+## Operand placement
+
+Machine spec metadata and per-instruction ABI constraints use one representation:
+`OperandConstraint { operand: OperandRef, placement: Placement }`. Placements
+restrict an occurrence to a register set, a fixed physical register, or reuse of
+an input's location by a result. The current machine schemas read inputs before
+writing results; destructive instructions state their reuse relation explicitly.
+There are no pre/post-selection passes that replace constrained values with
+physical registers, and no inference of generic constraints from select rules.
+
+Global linear scan chooses a preferred home for each value. Fixed operand
+occurrences reserve short read/write points, with the occupying SSA value
+recorded so it can use that register itself. Call clobbers reserve the write
+point; a fixed result supplies the definition for its return register. Different
+uses do not intersect their requirements into one global register restriction.
+Compatible homes are preferences; per-occurrence constraints are mandatory.
+
+The operand planner selects local locations, preserves borrowed live registers,
+and produces simultaneous input/output transfers. Multiple uses of one value
+may occupy different ABI registers; reuse groups keep distinct SSA input and
+result identities. Entry, instruction and CFG-edge transfers share the same
+parallel-move resolver, with distinct before/after/edge execution boundaries.
+Cycles save the widest required representation. Scratch borrowing preserves the
+actual live type, and target transfer hooks select moves/spills using both the
+width and physical register bank.
+
+The optional machine SSA verifier checks definitions, dominance, edge contracts
+and constraint references. Allocation additionally checks location requirements;
+materialization removes function/block parameters and produces physical code.
+The allocator still uses whole-range homes and spills. Live-range splitting,
+block-frequency weighting and rematerialization are separate future work.
 
 ## Memory representation
 
@@ -95,8 +128,8 @@ the original access with offset zero. The access keeps its ID and full memory
 descriptor; address calculation has no memory effects. Thus unsigned MIR offsets
 above `i32::MAX` never silently turn into negative displacements. In-range
 offsets retain the compact addressing form. Generic i8/i16 and pointer accesses
-use their existing target load/store rules; narrow copies remain available for
-ABI materialization. Narrow arithmetic legalization is still separate work.
+use their existing target load/store rules. Physical transfers preserve their
+required widths. Narrow arithmetic legalization is still separate work.
 
 `ptr-offset` emits a pointer-valued `PtrAdd` directly, without constructing
 an integer-typed address and copying it back to a pointer.

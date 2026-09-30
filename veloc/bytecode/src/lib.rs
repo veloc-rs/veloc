@@ -1,6 +1,9 @@
 //! Shared rule bytecode formats and encoding primitives. No IR dependencies.
 #![no_std]
 
+mod operand;
+pub use operand::OperandRef;
+
 pub mod equivalence;
 pub mod rewrite;
 pub mod selection;

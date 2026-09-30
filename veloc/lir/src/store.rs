@@ -144,6 +144,7 @@ pub struct InstStore {
     fields: crate::FieldPools,
     // Access facts are directly indexed; call contracts live in common fields.
     memory: SecondaryMap<InstId, Option<MemoryAccess>>,
+    constraints: hashbrown::HashMap<InstId, Vec<crate::OperandConstraint>>,
     edges: PrimaryMap<crate::EdgeId, Option<StoredEdge>>,
     pub(crate) references: References,
 }
@@ -155,6 +156,7 @@ impl InstStore {
             registers: Operands::default(),
             fields: crate::FieldPools::default(),
             memory: SecondaryMap::with_capacity(insts),
+            constraints: hashbrown::HashMap::new(),
             edges: PrimaryMap::new(),
             references: References::default(),
         }
@@ -283,6 +285,9 @@ impl InstStore {
             self.memory[source] = None;
             self.memory[id] = Some(access);
         }
+        if let Some(constraints) = self.constraints.remove(&source) {
+            self.constraints.insert(id, constraints);
+        }
         let edge_ids: Vec<_> = self.edge_ids(id).collect();
         for edge in edge_ids {
             self.edges[edge].as_mut().unwrap().owner = Some(id);
@@ -339,6 +344,17 @@ impl InstStore {
         self.instructions[id].fields = fields;
         self.set_memory(id, memory);
         self.instructions[id].opcode = opcode;
+        self.constraints.remove(&id);
+    }
+    pub fn constraints(&self, id: InstId) -> &[crate::OperandConstraint] {
+        self.constraints.get(&id).map(Vec::as_slice).unwrap_or(&[])
+    }
+    pub fn set_constraints(&mut self, id: InstId, constraints: Vec<crate::OperandConstraint>) {
+        if constraints.is_empty() {
+            self.constraints.remove(&id);
+        } else {
+            self.constraints.insert(id, constraints);
+        }
     }
     pub fn set_memory(&mut self, id: InstId, access: Option<MemoryAccess>) {
         if access.is_some() || self.memory[id].is_some() {
@@ -371,28 +387,17 @@ impl InstStore {
     pub(crate) fn set_call_abi(
         &mut self,
         id: InstId,
-        results: &[Reg],
-        args: &[Reg],
+        inputs: &[Reg],
         frame: crate::CallFrameId,
         clobbers: crate::RegMask,
         stack_args: smallvec::SmallVec<[crate::StackSlot; 2]>,
     ) {
-        let mut inputs = smallvec::SmallVec::<[Reg; 8]>::new();
-        match self.opcode(id) {
-            MachineOpcode::Generic(crate::GenericOpcode::Call) => {}
-            MachineOpcode::Generic(crate::GenericOpcode::Callind) => {
-                inputs.push(self.inputs(id)[0])
-            }
-            _ => panic!("ABI lowering requires a generic call"),
-        }
         assert!(
             self.call_info(id).expect("call fields").frame.is_none(),
             "call already lowered"
         );
-        inputs.extend_from_slice(args);
         // These updates preserve implicit register occurrences and memory facts.
-        self.set_inputs(id, &inputs);
-        self.set_results(id, results);
+        self.set_inputs(id, inputs);
         let info = self.fields.call_info_mut(&self.instructions[id].fields);
         info.frame = Some(frame);
         info.clobbers = clobbers;
