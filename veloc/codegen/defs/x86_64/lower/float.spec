@@ -1,6 +1,6 @@
 import "../common.spec";
 
-template FloatBinary(Opcode: ident, Prefix: expr, Byte: expr, Ty: expr) {
+template FloatBinary(Opcode: ident, Prefix: expr, Byte: expr, Ty: expr, Mnemonic: expr) {
     op Opcode(rhs: Value<Ty>, lhs: Value<Ty>) -> (dst: Value<Ty>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: Byte, wide: false },
@@ -12,42 +12,29 @@ template FloatBinary(Opcode: ident, Prefix: expr, Byte: expr, Ty: expr) {
             rhs: FPR128,
             lhs: FPR128,
         };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 128), reg(rhs, 128)] }]
+        };
     }
 }
 
-expand FloatBinary(X86FAdd32, Prefix::F3, 0x58, Type::F32);
+expand FloatBinary(X86FAdd32, Prefix::F3, 0x58, Type::F32, "addss");
 
-expand Asm(X86FAdd32, "addss", [reg(dst, 128), reg(rhs, 128)]);
+expand FloatBinary(X86FAdd64, Prefix::F2, 0x58, Type::F64, "addsd");
 
-expand FloatBinary(X86FAdd64, Prefix::F2, 0x58, Type::F64);
+expand FloatBinary(X86FSub32, Prefix::F3, 0x5C, Type::F32, "subss");
 
-expand Asm(X86FAdd64, "addsd", [reg(dst, 128), reg(rhs, 128)]);
+expand FloatBinary(X86FSub64, Prefix::F2, 0x5C, Type::F64, "subsd");
 
-expand FloatBinary(X86FSub32, Prefix::F3, 0x5C, Type::F32);
+expand FloatBinary(X86FMul32, Prefix::F3, 0x59, Type::F32, "mulss");
 
-expand Asm(X86FSub32, "subss", [reg(dst, 128), reg(rhs, 128)]);
+expand FloatBinary(X86FMul64, Prefix::F2, 0x59, Type::F64, "mulsd");
 
-expand FloatBinary(X86FSub64, Prefix::F2, 0x5C, Type::F64);
+expand FloatBinary(X86FDiv32, Prefix::F3, 0x5E, Type::F32, "divss");
 
-expand Asm(X86FSub64, "subsd", [reg(dst, 128), reg(rhs, 128)]);
+expand FloatBinary(X86FDiv64, Prefix::F2, 0x5E, Type::F64, "divsd");
 
-expand FloatBinary(X86FMul32, Prefix::F3, 0x59, Type::F32);
-
-expand Asm(X86FMul32, "mulss", [reg(dst, 128), reg(rhs, 128)]);
-
-expand FloatBinary(X86FMul64, Prefix::F2, 0x59, Type::F64);
-
-expand Asm(X86FMul64, "mulsd", [reg(dst, 128), reg(rhs, 128)]);
-
-expand FloatBinary(X86FDiv32, Prefix::F3, 0x5E, Type::F32);
-
-expand Asm(X86FDiv32, "divss", [reg(dst, 128), reg(rhs, 128)]);
-
-expand FloatBinary(X86FDiv64, Prefix::F2, 0x5E, Type::F64);
-
-expand Asm(X86FDiv64, "divsd", [reg(dst, 128), reg(rhs, 128)]);
-
-template IntToFloat(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: expr) {
+template IntToFloat(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: expr, Mnemonic: expr, Bits: expr) {
     op Opcode(src: Value<Src>) -> (dst: Value<Dst>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x2A, wide: Wide },
@@ -59,26 +46,21 @@ template IntToFloat(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: exp
             src: GPR64,
         };
         schedule = { latency: 4 };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 128), reg(src, Bits)] }]
+        };
     }
 }
 
-expand IntToFloat(X86I32ToF32, Prefix::F3, false, Type::I32, Type::F32);
+expand IntToFloat(X86I32ToF32, Prefix::F3, false, Type::I32, Type::F32, "cvtsi2ss", 32);
 
-expand Asm(X86I32ToF32, "cvtsi2ss", [reg(dst, 128), reg(src, 32)]);
+expand IntToFloat(X86I64ToF32, Prefix::F3, true, Type::I64, Type::F32, "cvtsi2ss", 64);
 
-expand IntToFloat(X86I64ToF32, Prefix::F3, true, Type::I64, Type::F32);
+expand IntToFloat(X86I32ToF64, Prefix::F2, false, Type::I32, Type::F64, "cvtsi2sd", 32);
 
-expand Asm(X86I64ToF32, "cvtsi2ss", [reg(dst, 128), reg(src, 64)]);
+expand IntToFloat(X86I64ToF64, Prefix::F2, true, Type::I64, Type::F64, "cvtsi2sd", 64);
 
-expand IntToFloat(X86I32ToF64, Prefix::F2, false, Type::I32, Type::F64);
-
-expand Asm(X86I32ToF64, "cvtsi2sd", [reg(dst, 128), reg(src, 32)]);
-
-expand IntToFloat(X86I64ToF64, Prefix::F2, true, Type::I64, Type::F64);
-
-expand Asm(X86I64ToF64, "cvtsi2sd", [reg(dst, 128), reg(src, 64)]);
-
-template FloatToInt(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: expr) {
+template FloatToInt(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: expr, Mnemonic: expr, Bits: expr) {
     op Opcode(src: Value<Src>) -> (dst: Value<Dst>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x2C, wide: Wide },
@@ -90,26 +72,21 @@ template FloatToInt(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: exp
             src: FPR128,
         };
         schedule = { latency: 4 };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src, 128)] }]
+        };
     }
 }
 
-expand FloatToInt(X86F32ToI32, Prefix::F3, false, Type::F32, Type::I32);
+expand FloatToInt(X86F32ToI32, Prefix::F3, false, Type::F32, Type::I32, "cvttss2si", 32);
 
-expand Asm(X86F32ToI32, "cvttss2si", [reg(dst, 32), reg(src, 128)]);
+expand FloatToInt(X86F32ToI64, Prefix::F3, true, Type::F32, Type::I64, "cvttss2si", 64);
 
-expand FloatToInt(X86F32ToI64, Prefix::F3, true, Type::F32, Type::I64);
+expand FloatToInt(X86F64ToI32, Prefix::F2, false, Type::F64, Type::I32, "cvttsd2si", 32);
 
-expand Asm(X86F32ToI64, "cvttss2si", [reg(dst, 64), reg(src, 128)]);
+expand FloatToInt(X86F64ToI64, Prefix::F2, true, Type::F64, Type::I64, "cvttsd2si", 64);
 
-expand FloatToInt(X86F64ToI32, Prefix::F2, false, Type::F64, Type::I32);
-
-expand Asm(X86F64ToI32, "cvttsd2si", [reg(dst, 32), reg(src, 128)]);
-
-expand FloatToInt(X86F64ToI64, Prefix::F2, true, Type::F64, Type::I64);
-
-expand Asm(X86F64ToI64, "cvttsd2si", [reg(dst, 64), reg(src, 128)]);
-
-template FloatUnary(Opcode: ident, Prefix: expr, Byte: expr, Src: expr, Dst: expr) {
+template FloatUnary(Opcode: ident, Prefix: expr, Byte: expr, Src: expr, Dst: expr, Mnemonic: expr) {
     op Opcode(src: Value<Src>) -> (dst: Value<Dst>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: Byte, wide: false },
@@ -121,24 +98,19 @@ template FloatUnary(Opcode: ident, Prefix: expr, Byte: expr, Src: expr, Dst: exp
             src: FPR128,
         };
         schedule = { latency: 4 };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 128), reg(src, 128)] }]
+        };
     }
 }
 
-expand FloatUnary(X86F32ToF64, Prefix::F3, 0x5A, Type::F32, Type::F64);
+expand FloatUnary(X86F32ToF64, Prefix::F3, 0x5A, Type::F32, Type::F64, "cvtss2sd");
 
-expand Asm(X86F32ToF64, "cvtss2sd", [reg(dst, 128), reg(src, 128)]);
+expand FloatUnary(X86F64ToF32, Prefix::F2, 0x5A, Type::F64, Type::F32, "cvtsd2ss");
 
-expand FloatUnary(X86F64ToF32, Prefix::F2, 0x5A, Type::F64, Type::F32);
+expand FloatUnary(X86SqrtF32, Prefix::F3, 0x51, Type::F32, Type::F32, "sqrtss");
 
-expand Asm(X86F64ToF32, "cvtsd2ss", [reg(dst, 128), reg(src, 128)]);
-
-expand FloatUnary(X86SqrtF32, Prefix::F3, 0x51, Type::F32, Type::F32);
-
-expand Asm(X86SqrtF32, "sqrtss", [reg(dst, 128), reg(src, 128)]);
-
-expand FloatUnary(X86SqrtF64, Prefix::F2, 0x51, Type::F64, Type::F64);
-
-expand Asm(X86SqrtF64, "sqrtsd", [reg(dst, 128), reg(src, 128)]);
+expand FloatUnary(X86SqrtF64, Prefix::F2, 0x51, Type::F64, Type::F64, "sqrtsd");
 
 select(n: lir::Fadd) {
     choose {

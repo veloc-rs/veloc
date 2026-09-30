@@ -1,5 +1,6 @@
 //! Selection bytecode. Matching is read-only; Accept enters construction.
 //! Accepted recipes insert before the source; the driver finishes replacement and edge transfers.
+use crate::target::FeatureSetRef;
 use smallvec::SmallVec;
 use std::vec::Vec;
 use veloc_lir::{FieldValue, GenericOpcode, InstId, InstInserter, InstRef, Reg};
@@ -18,8 +19,19 @@ pub struct Program {
     pub opcodes: &'static [GenericOpcode],
     pub targets: &'static [Target],
     pub accesses: &'static [Option<Field>],
-    pub features: &'static [&'static [u64]],
+    pub required_features: &'static [FeatureSetRef<'static>],
     pub registers: &'static [Reg],
+}
+
+/// Static target programs indexed by the input opcode's definition order.
+pub struct SelectionPrograms {
+    pub entries: [Option<&'static Program>; GenericOpcode::COUNT],
+}
+
+impl SelectionPrograms {
+    pub fn get(&self, opcode: GenericOpcode) -> Option<&'static Program> {
+        self.entries[opcode as usize]
+    }
 }
 
 // Source instructions stay alive until selection commits. Cache locations,
@@ -81,7 +93,7 @@ pub fn disassemble(program: &Program, out: &mut dyn core::fmt::Write) -> core::f
 #[inline(never)]
 pub(super) fn execute(
     program: &Program,
-    features: &[u64],
+    features: FeatureSetRef<'_>,
     predicate: &dyn Fn(u32, Reg) -> bool,
     store: &mut InstInserter<'_>,
     source: InstId,
@@ -187,13 +199,8 @@ pub(super) fn execute(
             }
             Op::CheckFeatures { set, failure } => {
                 assert!(!accepted);
-                if !(program.features[set]
-                    .iter()
-                    .enumerate()
-                    .all(|(i, required)| {
-                        features.get(i).copied().unwrap_or(0) & required == *required
-                    }))
-                {
+                let required = program.required_features[set];
+                if !features.contains_all(required) {
                     reader.pc = failure;
                 }
             }

@@ -26,6 +26,8 @@ template Binary(Name: ident, Domain: expr, Class: ident, Major: expr, F3: expr, 
         encoding = Emission::instructions([Instruction::R(Major,dst,F3,lhs,rhs,F7)]);
         registers = { dst: Class, lhs: Class, rhs: Class };
         requires = [Extension];
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst,64),reg(lhs,64),reg(rhs,64)] }]
+        };
     }
-    assembly Name { lines = [{ mnemonic: Mnemonic, operands: [reg(dst,64),reg(lhs,64),reg(rhs,64)] }]; }
 }

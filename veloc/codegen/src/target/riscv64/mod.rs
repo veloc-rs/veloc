@@ -228,13 +228,13 @@ impl TargetMachine for Riscv64TargetMachine {
     fn legalizer(&self) -> crate::passes::lowering::legalize::LegalizePolicy<'_> {
         crate::passes::lowering::legalize::LegalizePolicy {
             program: &legalize::PROGRAM,
-            features: self.features.as_words(),
+            features: crate::target::FeatureSetRef::new(self.features.as_words()),
         }
     }
     fn selector(&self) -> crate::isel::SelectPolicy<'_> {
         crate::isel::SelectPolicy {
-            program: inst::selection_program,
-            features: self.features.as_words(),
+            programs: &inst::SELECTION_PROGRAMS,
+            features: crate::target::FeatureSetRef::new(self.features.as_words()),
             metadata,
             predicate: &self.features,
         }

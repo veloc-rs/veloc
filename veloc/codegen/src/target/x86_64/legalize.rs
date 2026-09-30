@@ -21,6 +21,6 @@ impl host::Target for generated::FeatureSet {
 pub(super) fn policy(features: &generated::FeatureSet) -> LegalizePolicy<'_> {
     LegalizePolicy {
         program: &host::PROGRAM,
-        features: host::Target::words(features),
+        features: crate::target::FeatureSetRef::new(host::Target::words(features)),
     }
 }

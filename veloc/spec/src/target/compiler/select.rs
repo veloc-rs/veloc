@@ -426,18 +426,22 @@ pub(crate) fn generate_select_instruction(
     writeln!(output, "}}").unwrap();
     writeln!(
         output,
-        "// Selection entry point; programs and host adapters are defined separately."
+        "// Static opcode dispatch; programs and host adapters are defined separately."
     )
     .unwrap();
-    writeln!(output, "pub fn selection_program(opcode: veloc_lir::GenericOpcode) -> Option<&'static crate::isel::matching::Program> {{ match opcode {{").unwrap();
+    writeln!(output, "pub static SELECTION_PROGRAMS: crate::isel::matching::SelectionPrograms = {{\nlet mut entries = [None; veloc_lir::GenericOpcode::COUNT];").unwrap();
     for opcode in opcodes {
         let name = sanitize_ident(opcode).to_ascii_uppercase();
         writeln!(
             output,
-            "veloc_lir::GenericOpcode::{opcode} => Some(selection_programs::{name}),"
+            "entries[veloc_lir::GenericOpcode::{opcode} as usize] = Some(selection_programs::{name});"
         )
         .unwrap();
     }
-    writeln!(output, "_ => None, }} }}").unwrap();
+    writeln!(
+        output,
+        "crate::isel::matching::SelectionPrograms {{ entries }}\n}};"
+    )
+    .unwrap();
     adapters.emit(output, context, extractors, &decls);
 }

@@ -1,14 +1,10 @@
-//! Shared x86 copy construction and selection predicates.
+//! Shared x86 copy construction and selection context.
 use super::inst::{self as generated, TargetInst};
 use veloc_lir::Reg;
 use veloc_mir::Type;
 
 /// x86_64 专属的 Context 扩展 (架构私有)
-pub trait X86LoweringContext {
-    fn has_bmi2(&self) -> bool;
-
-    fn has_avx2(&self) -> bool;
-}
+pub trait X86LoweringContext {}
 
 pub(super) fn copy_opcode(
     desc: &crate::target::TargetDescription,
@@ -36,14 +32,7 @@ pub(super) fn copy_opcode(
     })
 }
 
-impl X86LoweringContext for generated::FeatureSet {
-    fn has_bmi2(&self) -> bool {
-        self.contains(generated::Feature::BMI2)
-    }
-    fn has_avx2(&self) -> bool {
-        self.contains(generated::Feature::AVX2)
-    }
-}
+impl X86LoweringContext for generated::FeatureSet {}
 
 impl crate::isel::SelectHooks for generated::FeatureSet {
     fn predicate(&self, id: u32, reg: Reg) -> bool {

@@ -115,7 +115,6 @@ impl Plan {
             }
         }
         encoding::compile(source, arch, &mut final_inst_defs).map_err(&error)?;
-        assembly::compile(source.declarations(), &mut final_inst_defs).map_err(&error)?;
         for (name, inst) in &final_inst_defs {
             if inst.schedule_latency.is_some()
                 && (inst.memory.is_some()

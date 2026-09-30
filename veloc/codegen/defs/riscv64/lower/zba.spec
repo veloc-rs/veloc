@@ -10,9 +10,10 @@ op RvZext32Zba(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(59,dst,0,src,Reg::X0,4)]);
     registers = { dst: GPR, src: GPR };
     requires = ["Zba"];
+    assembly = {
+        lines: [{ mnemonic: "zext.w", operands: [reg(dst,64),reg(src,64)] }]
+    };
 }
-
-assembly RvZext32Zba { lines = [{ mnemonic: "zext.w", operands: [reg(dst,64),reg(src,64)] }]; }
 
 select(n: lir::Zext) {
     require(type_is<Type::I32>(n.src));

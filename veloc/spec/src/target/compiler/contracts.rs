@@ -1,5 +1,5 @@
 //! Resolve OpSpec contracts against a target's registers and encoding bodies.
-use super::FinalInstDef;
+use super::{FinalInstDef, assembly};
 use crate::target::{Def, Module, OperandConstraint};
 use crate::{
     schema::{Contract, Operand, ValueTypes},
@@ -468,8 +468,9 @@ pub(super) fn compile(
             };
             // Checked by the shared expression compiler after operand resolution.
             fields.remove("encoding");
+            let assembly = fields.remove("assembly");
             finish(&fields)?;
-            Ok(FinalInstDef {
+            let mut inst = FinalInstDef {
                 operands,
                 reg_classes,
                 value_types,
@@ -484,7 +485,15 @@ pub(super) fn compile(
                 is_pseudo,
                 assembly: None,
                 requires,
-            })
+            };
+            inst.assembly = assembly
+                .as_ref()
+                .map(|node| assembly::compile(node, &inst))
+                .transpose()?;
+            if !inst.is_pseudo && inst.assembly.is_none() {
+                return Err("instruction requires an assembly field".into());
+            }
+            Ok(inst)
         };
         let inst = build().map_err(|e| format!("{op}: {e}"))?;
         if result.insert(op.clone(), inst).is_some() {

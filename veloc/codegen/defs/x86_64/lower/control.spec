@@ -4,9 +4,10 @@ op X86Call(target: Global, info: CallInfo) -> () {
     encoding = Emission::relative(target, Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xE8, wide: false }, Form::None, 0);
     implicit = { reads: [RSP] };
     flow = Call;
+    assembly = {
+        lines: [{ mnemonic: "call", operands: [target(target)] }]
+    };
 }
-
-expand Asm(X86Call, "call", [target(target)]);
 
 op X86CallReg(target: Value<AddressValue>, info: CallInfo) -> () {
     encoding = Emission::legacy(
@@ -19,9 +20,10 @@ op X86CallReg(target: Value<AddressValue>, info: CallInfo) -> () {
     };
     implicit = { reads: [RSP] };
     flow = Call;
+    assembly = {
+        lines: [{ mnemonic: "call", operands: [reg(target, 64)] }]
+    };
 }
-
-expand Asm(X86CallReg, "call", [reg(target, 64)]);
 
 op X86Ret() -> () {
     encoding = Emission::legacy(
@@ -30,9 +32,10 @@ op X86Ret() -> () {
         Immediate::None,
     );
     flow = Return;
+    assembly = {
+        lines: [{ mnemonic: "ret", operands: [] }]
+    };
 }
-
-expand Asm(X86Ret, "ret", []);
 
 op X86Ud2() -> () {
     encoding = Emission::legacy(
@@ -41,9 +44,10 @@ op X86Ud2() -> () {
         Immediate::None,
     );
     flow = Trap;
+    assembly = {
+        lines: [{ mnemonic: "ud2", operands: [] }]
+    };
 }
-
-expand Asm(X86Ud2, "ud2", []);
 
 op X86Jmp(target: Successor) -> () {
     encoding = Emission::branch(
@@ -51,11 +55,12 @@ op X86Jmp(target: Successor) -> () {
         Branch { map: OpcodeMap::Primary, near: 0xE9, short: 0xEB },
     );
     flow = Jump;
+    assembly = {
+        lines: [{ mnemonic: "jmp", operands: [target(target)] }]
+    };
 }
 
-expand Asm(X86Jmp, "jmp", [target(target)]);
-
-template ConditionalBranch(Opcode: ident, Near: expr, Short: expr) {
+template ConditionalBranch(Opcode: ident, Near: expr, Short: expr, Mnemonic: expr) {
     op Opcode(target: Successor) -> () {
         encoding = Emission::branch(
             target,
@@ -65,48 +70,31 @@ template ConditionalBranch(Opcode: ident, Near: expr, Short: expr) {
             reads: [EFLAGS],
         };
         flow = Branch;
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [target(target)] }]
+        };
     }
 }
 
-expand ConditionalBranch(X86Je, 0x84, 0x74);
+expand ConditionalBranch(X86Je, 0x84, 0x74, "je");
 
-expand Asm(X86Je, "je", [target(target)]);
+expand ConditionalBranch(X86Jne, 0x85, 0x75, "jne");
 
-expand ConditionalBranch(X86Jne, 0x85, 0x75);
+expand ConditionalBranch(X86Jb, 0x82, 0x72, "jb");
 
-expand Asm(X86Jne, "jne", [target(target)]);
+expand ConditionalBranch(X86Jae, 0x83, 0x73, "jae");
 
-expand ConditionalBranch(X86Jb, 0x82, 0x72);
+expand ConditionalBranch(X86Jbe, 0x86, 0x76, "jbe");
 
-expand Asm(X86Jb, "jb", [target(target)]);
+expand ConditionalBranch(X86Ja, 0x87, 0x77, "ja");
 
-expand ConditionalBranch(X86Jae, 0x83, 0x73);
+expand ConditionalBranch(X86Jl, 0x8C, 0x7C, "jl");
 
-expand Asm(X86Jae, "jae", [target(target)]);
+expand ConditionalBranch(X86Jge, 0x8D, 0x7D, "jge");
 
-expand ConditionalBranch(X86Jbe, 0x86, 0x76);
+expand ConditionalBranch(X86Jle, 0x8E, 0x7E, "jle");
 
-expand Asm(X86Jbe, "jbe", [target(target)]);
-
-expand ConditionalBranch(X86Ja, 0x87, 0x77);
-
-expand Asm(X86Ja, "ja", [target(target)]);
-
-expand ConditionalBranch(X86Jl, 0x8C, 0x7C);
-
-expand Asm(X86Jl, "jl", [target(target)]);
-
-expand ConditionalBranch(X86Jge, 0x8D, 0x7D);
-
-expand Asm(X86Jge, "jge", [target(target)]);
-
-expand ConditionalBranch(X86Jle, 0x8E, 0x7E);
-
-expand Asm(X86Jle, "jle", [target(target)]);
-
-expand ConditionalBranch(X86Jg, 0x8F, 0x7F);
-
-expand Asm(X86Jg, "jg", [target(target)]);
+expand ConditionalBranch(X86Jg, 0x8F, 0x7F, "jg");
 
 op X86PushRbp(rbp: Value<GprValue>) -> () {
     encoding = Emission::legacy(
@@ -117,9 +105,10 @@ op X86PushRbp(rbp: Value<GprValue>) -> () {
     registers = {
         rbp: fixed(RBP, GPR64),
     };
+    assembly = {
+        lines: [{ mnemonic: "push", operands: [reg(rbp, 64)] }]
+    };
 }
-
-expand Asm(X86PushRbp, "push", [reg(rbp, 64)]);
 
 op X86PopRbp() -> (rbp: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -130,9 +119,10 @@ op X86PopRbp() -> (rbp: Value<GprValue>) {
     registers = {
         rbp: fixed(RBP, GPR64),
     };
+    assembly = {
+        lines: [{ mnemonic: "pop", operands: [reg(rbp, 64)] }]
+    };
 }
-
-expand Asm(X86PopRbp, "pop", [reg(rbp, 64)]);
 
 op X86MovRbpRsp(rsp: Value<GprValue>) -> (rbp: Value<GprValue>) {
     encoding = legacy_rr(0x89, true, rsp, rbp);
@@ -140,9 +130,10 @@ op X86MovRbpRsp(rsp: Value<GprValue>) -> (rbp: Value<GprValue>) {
         rbp: fixed(RBP, GPR64),
         rsp: fixed(RSP, GPR64),
     };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [reg(rbp, 64), reg(rsp, 64)] }]
+    };
 }
-
-expand Asm(X86MovRbpRsp, "mov", [reg(rbp, 64), reg(rsp, 64)]);
 
 select(n: lir::Ret) {
     replace(n, build(X86Ret()));

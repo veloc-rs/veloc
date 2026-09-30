@@ -1,3 +1,4 @@
+use crate::target::FeatureSetRef;
 use smallvec::SmallVec;
 use veloc_lir::{FieldValue, GenericOpcode, InstId, MachineFunction, Reg};
 use veloc_mir::Type;
@@ -6,7 +7,7 @@ use veloc_mir::Type;
 #[derive(Clone, Copy)]
 pub struct LegalizePolicy<'a> {
     pub program: &'static super::vm::Program,
-    pub features: &'a [u64],
+    pub features: FeatureSetRef<'a>,
 }
 
 /// A rewrite can read the function and edit through its invariant-preserving

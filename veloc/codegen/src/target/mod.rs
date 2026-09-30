@@ -7,6 +7,7 @@ pub mod x86_64;
 
 mod abi;
 mod callconv;
+mod features;
 mod types;
 
 use crate::Emitter;
@@ -19,6 +20,7 @@ use veloc_mir::Type;
 
 pub use abi::{AbiAssignment, AbiDescriptor, AbiLocation, AbiPlan, AbiState, StackArea};
 pub use callconv::CallConv;
+pub use features::FeatureSetRef;
 pub use types::{
     RegClass, RegClassInfo, RegInfo, RegisterFile, RegisterView, RegisterWrite, SpecialRegs,
     TargetArch, TargetConfig, TargetDescription,

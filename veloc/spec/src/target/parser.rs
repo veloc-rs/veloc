@@ -334,7 +334,7 @@ impl Reader<'_> {
                 })
             }
             // These declarations are checked by the other Spec consumers.
-            "struct" | "enum" | "encoding" | "assembly" => return Ok(None),
+            "struct" | "enum" | "encoding" => return Ok(None),
             _ => {
                 return Err(Error::at(
                     self.source,

@@ -12,161 +12,165 @@ op RvLoadF32(base: Value<Type::PTR>, offset: i64) -> (dst: Value<Type::F32>) {
     encoding = Emission::instructions([Instruction::Load(7,dst,Address { base: base, offset: offset },2)]);
     registers = { dst: FPR, base: GPR };
     memory = { kind: Read, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "loadf32", operands: [] }]
+    };
 }
-
-assembly RvLoadF32 { lines = [{ mnemonic: "loadf32", operands: [] }]; }
 
 op RvLoadF32Stack(slot: StackSlot) -> (dst: Value<Type::F32>) {
     encoding = Emission::instructions([Instruction::Load(7,dst,slot,2)]);
     registers = { dst: FPR };
     memory = { kind: Read, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "loadf32stack", operands: [] }]
+    };
 }
-
-assembly RvLoadF32Stack { lines = [{ mnemonic: "loadf32stack", operands: [] }]; }
 
 op RvStoreF32(src: Value<Type::F32>, base: Value<Type::PTR>, offset: i64) -> () {
     encoding = Emission::instructions([Instruction::Store(39,src,Address { base: base, offset: offset },2)]);
     registers = { src: FPR, base: GPR };
     memory = { kind: Write, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "storef32", operands: [] }]
+    };
 }
-
-assembly RvStoreF32 { lines = [{ mnemonic: "storef32", operands: [] }]; }
 
 op RvStoreF32Stack(src: Value<Type::F32>, slot: StackSlot) -> () {
     encoding = Emission::instructions([Instruction::Store(39,src,slot,2)]);
     registers = { src: FPR };
     memory = { kind: Write, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "storef32stack", operands: [] }]
+    };
 }
-
-assembly RvStoreF32Stack { lines = [{ mnemonic: "storef32stack", operands: [] }]; }
 
 op RvSelectF32(cond: Value<Type::BOOL>, v1: Value<Type::F32>, v2: Value<Type::F32>) -> (dst: Value<Type::F32>) {
     encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Move(dst,v1,32), Instruction::J(Reg::X0,8), Instruction::Move(dst,v2,32)]);
     registers = { dst: FPR, cond: GPR, v1: FPR, v2: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "selectf32", operands: [] }]
+    };
 }
-
-assembly RvSelectF32 { lines = [{ mnemonic: "selectf32", operands: [] }]; }
 
 op RvFcmpEq32(lhs: Value<Type::F32>, rhs: Value<Type::F32>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(83,dst,2,lhs,rhs,80)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "fcmpeq32", operands: [] }]
+    };
 }
-
-assembly RvFcmpEq32 { lines = [{ mnemonic: "fcmpeq32", operands: [] }]; }
 
 op RvFcmpNe32(lhs: Value<Type::F32>, rhs: Value<Type::F32>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(83,dst,2,lhs,rhs,80), Instruction::I(19,dst,4,dst,1)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "fcmpne32", operands: [] }]
+    };
 }
-
-assembly RvFcmpNe32 { lines = [{ mnemonic: "fcmpne32", operands: [] }]; }
 
 op RvFcmpLt32(lhs: Value<Type::F32>, rhs: Value<Type::F32>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(83,dst,1,lhs,rhs,80)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "fcmplt32", operands: [] }]
+    };
 }
-
-assembly RvFcmpLt32 { lines = [{ mnemonic: "fcmplt32", operands: [] }]; }
 
 op RvFcmpLe32(lhs: Value<Type::F32>, rhs: Value<Type::F32>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(83,dst,0,lhs,rhs,80)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "fcmple32", operands: [] }]
+    };
 }
-
-assembly RvFcmpLe32 { lines = [{ mnemonic: "fcmple32", operands: [] }]; }
 
 op RvFcmpGt32(lhs: Value<Type::F32>, rhs: Value<Type::F32>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(83,dst,1,rhs,lhs,80)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "fcmpgt32", operands: [] }]
+    };
 }
-
-assembly RvFcmpGt32 { lines = [{ mnemonic: "fcmpgt32", operands: [] }]; }
 
 op RvFcmpGe32(lhs: Value<Type::F32>, rhs: Value<Type::F32>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(83,dst,0,rhs,lhs,80)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "fcmpge32", operands: [] }]
+    };
 }
-
-assembly RvFcmpGe32 { lines = [{ mnemonic: "fcmpge32", operands: [] }]; }
 
 op RvFsqrt32(src: Value<Type::F32>) -> (dst: Value<Type::F32>) {
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X0,44)]);
     registers = { dst: FPR, src: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "fsqrt32", operands: [] }]
+    };
 }
-
-assembly RvFsqrt32 { lines = [{ mnemonic: "fsqrt32", operands: [] }]; }
 
 op RvSitofp32F32(src: Value<Type::I32>) -> (dst: Value<Type::F32>) {
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X0,104)]);
     registers = { dst: FPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "sitofp32f32", operands: [] }]
+    };
 }
-
-assembly RvSitofp32F32 { lines = [{ mnemonic: "sitofp32f32", operands: [] }]; }
 
 op RvSitofp64F32(src: Value<Type::I64>) -> (dst: Value<Type::F32>) {
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X2,104)]);
     registers = { dst: FPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "sitofp64f32", operands: [] }]
+    };
 }
-
-assembly RvSitofp64F32 { lines = [{ mnemonic: "sitofp64f32", operands: [] }]; }
 
 op RvUitofp32F32(src: Value<Type::I32>) -> (dst: Value<Type::F32>) {
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X1,104)]);
     registers = { dst: FPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "uitofp32f32", operands: [] }]
+    };
 }
-
-assembly RvUitofp32F32 { lines = [{ mnemonic: "uitofp32f32", operands: [] }]; }
 
 op RvUitofp64F32(src: Value<Type::I64>) -> (dst: Value<Type::F32>) {
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X3,104)]);
     registers = { dst: FPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "uitofp64f32", operands: [] }]
+    };
 }
-
-assembly RvUitofp64F32 { lines = [{ mnemonic: "uitofp64f32", operands: [] }]; }
 
 op RvFptosi32F32(src: Value<Type::F32>) -> (dst: Value<Type::I32>) {
     encoding = Emission::instructions([Instruction::R(83,dst,1,src,Reg::X0,96)]);
     registers = { dst: GPR, src: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "fptosi32f32", operands: [] }]
+    };
 }
-
-assembly RvFptosi32F32 { lines = [{ mnemonic: "fptosi32f32", operands: [] }]; }
 
 op RvFptosi64F32(src: Value<Type::F32>) -> (dst: Value<Type::I64>) {
     encoding = Emission::instructions([Instruction::R(83,dst,1,src,Reg::X2,96)]);
     registers = { dst: GPR, src: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "fptosi64f32", operands: [] }]
+    };
 }
-
-assembly RvFptosi64F32 { lines = [{ mnemonic: "fptosi64f32", operands: [] }]; }
 
 op RvFptoui32F32(src: Value<Type::F32>) -> (dst: Value<Type::I32>) {
     encoding = Emission::instructions([Instruction::R(83,dst,1,src,Reg::X1,96)]);
     registers = { dst: GPR, src: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "fptoui32f32", operands: [] }]
+    };
 }
-
-assembly RvFptoui32F32 { lines = [{ mnemonic: "fptoui32f32", operands: [] }]; }
 
 op RvFptoui64F32(src: Value<Type::F32>) -> (dst: Value<Type::I64>) {
     encoding = Emission::instructions([Instruction::R(83,dst,1,src,Reg::X3,96)]);
     registers = { dst: GPR, src: FPR };
-
+    assembly = {
+        lines: [{ mnemonic: "fptoui64f32", operands: [] }]
+    };
 }
-
-assembly RvFptoui64F32 { lines = [{ mnemonic: "fptoui64f32", operands: [] }]; }
 
 select(n: lir::Fadd) {
     require(type_is<Type::F32>(n.dst));

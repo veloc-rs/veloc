@@ -1569,6 +1569,26 @@ families by ISA extension, while x86_64 groups them by operation family and
 optional extensions. `lower.spec` controls family import order; rule order within
 each input opcode determines matching priority.
 
+Assembly is an `op` property alongside `encoding` and `registers`:
+
+```text
+op RvFptosi64F64(src: Value<Type::F64>) -> (dst: Value<Type::I64>) {
+    encoding = Emission::instructions([
+        Instruction::R(83,dst,1,src,Reg::X2,97)
+    ]);
+    registers = { dst: GPR, src: FPR };
+    assembly = {
+        lines: [{ mnemonic: "fptosi64f64", operands: [] }]
+    };
+}
+```
+
+Every non-pseudo machine instruction requires an `assembly` property. Its
+non-empty `lines` list supports multi-line output; operand projections such as
+`reg(dst, 64)` and `imm(imm)` are checked against the containing instruction.
+Templates keep those operand references inside the `op` and parameterize
+mnemonics and widths. Separate `assembly Name` declarations are not supported.
+
 ```sh
 cargo run -p veloc-spec --features cli -- veloc/codegen/defs/x86_64/legalize.spec \
   --emit decisions --definitions veloc/lir/defs/module.spec \

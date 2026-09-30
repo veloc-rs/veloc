@@ -641,7 +641,7 @@ impl Code {
         .unwrap();
         writeln!(
             out,
-            "features: &[{}],",
+            "required_features: &[{}],",
             self.features
                 .iter()
                 .map(|features| {
@@ -650,7 +650,7 @@ impl Code {
                         .fold("FeatureSet::empty()".to_owned(), |s, f| {
                             format!("{s}.with(Feature::{f})")
                         });
-                    format!("{set}.as_words()")
+                    format!("crate::target::FeatureSetRef::new({set}.as_words())")
                 })
                 .collect::<Vec<_>>()
                 .join(",")

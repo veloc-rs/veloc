@@ -35,426 +35,452 @@ expand Binary(RvXor64, GprValue, GPR, 51, 4, 0, "xor", "I");
 op RvMove32(src: Value<ScalarValue>) -> (dst: Value<ScalarValue>) {
     encoding = Emission::instructions([Instruction::Move(dst,src,32)]);
     registers = { dst: SCALAR, src: SCALAR };
-
+    assembly = {
+        lines: [{ mnemonic: "move32", operands: [reg(dst,32), reg(src,32)] }]
+    };
 }
-
-assembly RvMove32 { lines = [{ mnemonic: "move32", operands: [reg(dst,32), reg(src,32)] }]; }
 
 op RvLi32(imm: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::Constant(dst,imm), Instruction::I(27,dst,0,dst,0)]);
     registers = { dst: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "li32", operands: [reg(dst,32), imm(imm)] }]
+    };
 }
-
-assembly RvLi32 { lines = [{ mnemonic: "li32", operands: [reg(dst,32), imm(imm)] }]; }
 
 op RvRotl32(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(59,Reg::X29,1,lhs,rhs,0), Instruction::R(59,Reg::X30,5,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     implicit = { writes: [X28,X29,X30] };
+    assembly = {
+        lines: [{ mnemonic: "rotl32", operands: [] }]
+    };
 }
-
-assembly RvRotl32 { lines = [{ mnemonic: "rotl32", operands: [] }]; }
 
 op RvRotr32(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(59,Reg::X29,5,lhs,rhs,0), Instruction::R(59,Reg::X30,1,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     implicit = { writes: [X28,X29,X30] };
+    assembly = {
+        lines: [{ mnemonic: "rotr32", operands: [] }]
+    };
 }
-
-assembly RvRotr32 { lines = [{ mnemonic: "rotr32", operands: [] }]; }
 
 op RvMove64(src: Value<ScalarValue>) -> (dst: Value<ScalarValue>) {
     encoding = Emission::instructions([Instruction::Move(dst,src,64)]);
     registers = { dst: SCALAR, src: SCALAR };
-
+    assembly = {
+        lines: [{ mnemonic: "move64", operands: [reg(dst,64), reg(src,64)] }]
+    };
 }
-
-assembly RvMove64 { lines = [{ mnemonic: "move64", operands: [reg(dst,64), reg(src,64)] }]; }
 
 op RvLi64(imm: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::Constant(dst,imm)]);
     registers = { dst: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "li64", operands: [reg(dst,64), imm(imm)] }]
+    };
 }
-
-assembly RvLi64 { lines = [{ mnemonic: "li64", operands: [reg(dst,64), imm(imm)] }]; }
 
 op RvRotl64(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(51,Reg::X29,1,lhs,rhs,0), Instruction::R(51,Reg::X30,5,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     implicit = { writes: [X28,X29,X30] };
+    assembly = {
+        lines: [{ mnemonic: "rotl64", operands: [] }]
+    };
 }
-
-assembly RvRotl64 { lines = [{ mnemonic: "rotl64", operands: [] }]; }
 
 op RvRotr64(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(51,Reg::X29,5,lhs,rhs,0), Instruction::R(51,Reg::X30,1,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     implicit = { writes: [X28,X29,X30] };
+    assembly = {
+        lines: [{ mnemonic: "rotr64", operands: [] }]
+    };
 }
-
-assembly RvRotr64 { lines = [{ mnemonic: "rotr64", operands: [] }]; }
 
 op RvZext1(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,7,src,1)]);
     registers = { dst: GPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "zext1", operands: [] }]
+    };
 }
-
-assembly RvZext1 { lines = [{ mnemonic: "zext1", operands: [] }]; }
 
 op RvSext1(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,63), Instruction::I(19,dst,5,dst,1087)]);
     registers = { dst: GPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "sext1", operands: [] }]
+    };
 }
-
-assembly RvSext1 { lines = [{ mnemonic: "sext1", operands: [] }]; }
 
 op RvZext8(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,7,src,255)]);
     registers = { dst: GPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "zext8", operands: [] }]
+    };
 }
-
-assembly RvZext8 { lines = [{ mnemonic: "zext8", operands: [] }]; }
 
 op RvSext8(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,56), Instruction::I(19,dst,5,dst,1080)]);
     registers = { dst: GPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "sext8", operands: [] }]
+    };
 }
-
-assembly RvSext8 { lines = [{ mnemonic: "sext8", operands: [] }]; }
 
 op RvZext16(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,48), Instruction::I(19,dst,5,dst,48)]);
     registers = { dst: GPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "zext16", operands: [] }]
+    };
 }
-
-assembly RvZext16 { lines = [{ mnemonic: "zext16", operands: [] }]; }
 
 op RvSext16(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,48), Instruction::I(19,dst,5,dst,1072)]);
     registers = { dst: GPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "sext16", operands: [] }]
+    };
 }
-
-assembly RvSext16 { lines = [{ mnemonic: "sext16", operands: [] }]; }
 
 op RvZext32(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,32), Instruction::I(19,dst,5,dst,32)]);
     registers = { dst: GPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "zext32", operands: [] }]
+    };
 }
-
-assembly RvZext32 { lines = [{ mnemonic: "zext32", operands: [] }]; }
 
 op RvSext32(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(27,dst,0,src,0)]);
     registers = { dst: GPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "sext32", operands: [] }]
+    };
 }
-
-assembly RvSext32 { lines = [{ mnemonic: "sext32", operands: [] }]; }
 
 op RvCmpEq(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(51,dst,4,lhs,rhs,0), Instruction::I(19,dst,3,dst,1)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "cmpeq", operands: [] }]
+    };
 }
-
-assembly RvCmpEq { lines = [{ mnemonic: "cmpeq", operands: [] }]; }
 
 op RvCmpNe(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(51,dst,4,lhs,rhs,0), Instruction::I(19,dst,3,dst,1), Instruction::I(19,dst,4,dst,1)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "cmpne", operands: [] }]
+    };
 }
-
-assembly RvCmpNe { lines = [{ mnemonic: "cmpne", operands: [] }]; }
 
 op RvCmpLtS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(51,dst,2,lhs,rhs,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "cmplts", operands: [] }]
+    };
 }
-
-assembly RvCmpLtS { lines = [{ mnemonic: "cmplts", operands: [] }]; }
 
 op RvCmpGtS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(51,dst,2,rhs,lhs,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "cmpgts", operands: [] }]
+    };
 }
-
-assembly RvCmpGtS { lines = [{ mnemonic: "cmpgts", operands: [] }]; }
 
 op RvCmpLeS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(51,dst,2,rhs,lhs,0), Instruction::I(19,dst,4,dst,1)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "cmples", operands: [] }]
+    };
 }
-
-assembly RvCmpLeS { lines = [{ mnemonic: "cmples", operands: [] }]; }
 
 op RvCmpGeS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(51,dst,2,lhs,rhs,0), Instruction::I(19,dst,4,dst,1)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "cmpges", operands: [] }]
+    };
 }
-
-assembly RvCmpGeS { lines = [{ mnemonic: "cmpges", operands: [] }]; }
 
 op RvCmpLtU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(51,dst,3,lhs,rhs,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "cmpltu", operands: [] }]
+    };
 }
-
-assembly RvCmpLtU { lines = [{ mnemonic: "cmpltu", operands: [] }]; }
 
 op RvCmpGtU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(51,dst,3,rhs,lhs,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "cmpgtu", operands: [] }]
+    };
 }
-
-assembly RvCmpGtU { lines = [{ mnemonic: "cmpgtu", operands: [] }]; }
 
 op RvCmpLeU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(51,dst,3,rhs,lhs,0), Instruction::I(19,dst,4,dst,1)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "cmpleu", operands: [] }]
+    };
 }
-
-assembly RvCmpLeU { lines = [{ mnemonic: "cmpleu", operands: [] }]; }
 
 op RvCmpGeU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::R(51,dst,3,lhs,rhs,0), Instruction::I(19,dst,4,dst,1)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "cmpgeu", operands: [] }]
+    };
 }
-
-assembly RvCmpGeU { lines = [{ mnemonic: "cmpgeu", operands: [] }]; }
 
 op RvEqz(src: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     encoding = Emission::instructions([Instruction::I(19,dst,3,src,1)]);
     registers = { dst: GPR, src: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "eqz", operands: [] }]
+    };
 }
-
-assembly RvEqz { lines = [{ mnemonic: "eqz", operands: [] }]; }
 
 op RvLoad8(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },4)]);
     registers = { dst: GPR, base: GPR };
     memory = { kind: Read, bytes: 1 };
+    assembly = {
+        lines: [{ mnemonic: "load8", operands: [] }]
+    };
 }
-
-assembly RvLoad8 { lines = [{ mnemonic: "load8", operands: [] }]; }
 
 op RvLoad8Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::Load(3,dst,slot,4)]);
     registers = { dst: GPR };
     memory = { kind: Read, bytes: 1 };
+    assembly = {
+        lines: [{ mnemonic: "load8stack", operands: [] }]
+    };
 }
-
-assembly RvLoad8Stack { lines = [{ mnemonic: "load8stack", operands: [] }]; }
 
 op RvStore8(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },0)]);
     registers = { src: GPR, base: GPR };
     memory = { kind: Write, bytes: 1 };
+    assembly = {
+        lines: [{ mnemonic: "store8", operands: [] }]
+    };
 }
-
-assembly RvStore8 { lines = [{ mnemonic: "store8", operands: [] }]; }
 
 op RvStore8Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::instructions([Instruction::Store(35,src,slot,0)]);
     registers = { src: GPR };
     memory = { kind: Write, bytes: 1 };
+    assembly = {
+        lines: [{ mnemonic: "store8stack", operands: [] }]
+    };
 }
-
-assembly RvStore8Stack { lines = [{ mnemonic: "store8stack", operands: [] }]; }
 
 op RvLoad16(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },5)]);
     registers = { dst: GPR, base: GPR };
     memory = { kind: Read, bytes: 2 };
+    assembly = {
+        lines: [{ mnemonic: "load16", operands: [] }]
+    };
 }
-
-assembly RvLoad16 { lines = [{ mnemonic: "load16", operands: [] }]; }
 
 op RvLoad16Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::Load(3,dst,slot,5)]);
     registers = { dst: GPR };
     memory = { kind: Read, bytes: 2 };
+    assembly = {
+        lines: [{ mnemonic: "load16stack", operands: [] }]
+    };
 }
-
-assembly RvLoad16Stack { lines = [{ mnemonic: "load16stack", operands: [] }]; }
 
 op RvStore16(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },1)]);
     registers = { src: GPR, base: GPR };
     memory = { kind: Write, bytes: 2 };
+    assembly = {
+        lines: [{ mnemonic: "store16", operands: [] }]
+    };
 }
-
-assembly RvStore16 { lines = [{ mnemonic: "store16", operands: [] }]; }
 
 op RvStore16Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::instructions([Instruction::Store(35,src,slot,1)]);
     registers = { src: GPR };
     memory = { kind: Write, bytes: 2 };
+    assembly = {
+        lines: [{ mnemonic: "store16stack", operands: [] }]
+    };
 }
-
-assembly RvStore16Stack { lines = [{ mnemonic: "store16stack", operands: [] }]; }
 
 op RvLoad32(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },2)]);
     registers = { dst: GPR, base: GPR };
     memory = { kind: Read, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "load32", operands: [] }]
+    };
 }
-
-assembly RvLoad32 { lines = [{ mnemonic: "load32", operands: [] }]; }
 
 op RvLoad32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::Load(3,dst,slot,2)]);
     registers = { dst: GPR };
     memory = { kind: Read, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "load32stack", operands: [] }]
+    };
 }
-
-assembly RvLoad32Stack { lines = [{ mnemonic: "load32stack", operands: [] }]; }
 
 op RvStore32(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },2)]);
     registers = { src: GPR, base: GPR };
     memory = { kind: Write, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "store32", operands: [] }]
+    };
 }
-
-assembly RvStore32 { lines = [{ mnemonic: "store32", operands: [] }]; }
 
 op RvStore32Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::instructions([Instruction::Store(35,src,slot,2)]);
     registers = { src: GPR };
     memory = { kind: Write, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "store32stack", operands: [] }]
+    };
 }
-
-assembly RvStore32Stack { lines = [{ mnemonic: "store32stack", operands: [] }]; }
 
 op RvLoad64(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },3)]);
     registers = { dst: GPR, base: GPR };
     memory = { kind: Read, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "load64", operands: [] }]
+    };
 }
-
-assembly RvLoad64 { lines = [{ mnemonic: "load64", operands: [] }]; }
 
 op RvLoad64Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::Load(3,dst,slot,3)]);
     registers = { dst: GPR };
     memory = { kind: Read, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "load64stack", operands: [] }]
+    };
 }
-
-assembly RvLoad64Stack { lines = [{ mnemonic: "load64stack", operands: [] }]; }
 
 op RvStore64(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },3)]);
     registers = { src: GPR, base: GPR };
     memory = { kind: Write, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "store64", operands: [] }]
+    };
 }
-
-assembly RvStore64 { lines = [{ mnemonic: "store64", operands: [] }]; }
 
 op RvStore64Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::instructions([Instruction::Store(35,src,slot,3)]);
     registers = { src: GPR };
     memory = { kind: Write, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "store64stack", operands: [] }]
+    };
 }
-
-assembly RvStore64Stack { lines = [{ mnemonic: "store64stack", operands: [] }]; }
 
 op RvStackAddr(slot: StackSlot) -> (dst: Value<Type::PTR>) {
     encoding = Emission::instructions([Instruction::Address(dst,slot)]);
     registers = { dst: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "stackaddr", operands: [] }]
+    };
 }
-
-assembly RvStackAddr { lines = [{ mnemonic: "stackaddr", operands: [] }]; }
 
 op RvAddOffset(base: Value<GprValue>, offset: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::Address(dst,Address {base:base,offset:offset})]);
     registers = { dst: GPR, base: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "addoffset", operands: [] }]
+    };
 }
-
-assembly RvAddOffset { lines = [{ mnemonic: "addoffset", operands: [] }]; }
 
 op RvSelect32(cond: Value<Type::BOOL>, v1: Value<Type::I32 | Type::BOOL>, v2: Value<Type::I32 | Type::BOOL>) -> (dst: Value<Type::I32 | Type::BOOL>) {
     encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Move(dst,v1,32), Instruction::J(Reg::X0,8), Instruction::Move(dst,v2,32)]);
     registers = { dst: GPR, cond: GPR, v1: GPR, v2: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "select32", operands: [] }]
+    };
 }
-
-assembly RvSelect32 { lines = [{ mnemonic: "select32", operands: [] }]; }
 
 op RvSelect64(cond: Value<Type::BOOL>, v1: Value<Type::I64 | Type::PTR>, v2: Value<Type::I64 | Type::PTR>) -> (dst: Value<Type::I64 | Type::PTR>) {
     encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Move(dst,v1,64), Instruction::J(Reg::X0,8), Instruction::Move(dst,v2,64)]);
     registers = { dst: GPR, cond: GPR, v1: GPR, v2: GPR };
-
+    assembly = {
+        lines: [{ mnemonic: "select64", operands: [] }]
+    };
 }
-
-assembly RvSelect64 { lines = [{ mnemonic: "select64", operands: [] }]; }
 
 op RvJump(target: Successor) -> () {
     encoding = Emission::jump(target);
     registers = {  };
     flow = Jump;
+    assembly = {
+        lines: [{ mnemonic: "jump", operands: [] }]
+    };
 }
-
-assembly RvJump { lines = [{ mnemonic: "jump", operands: [] }]; }
 
 op RvBranch(cond: Value<Type::BOOL>, target: Successor) -> () {
     encoding = Emission::branch(1,cond,Reg::X0,target);
     registers = { cond: GPR };
     flow = Branch;
+    assembly = {
+        lines: [{ mnemonic: "branch", operands: [] }]
+    };
 }
-
-assembly RvBranch { lines = [{ mnemonic: "branch", operands: [] }]; }
 
 op RvCall(target: Global, info: CallInfo) -> () {
     encoding = Emission::call(target);
     registers = {  };
     flow = Call; implicit = {reads:[X2]};
+    assembly = {
+        lines: [{ mnemonic: "call", operands: [] }]
+    };
 }
-
-assembly RvCall { lines = [{ mnemonic: "call", operands: [] }]; }
 
 op RvCallReg(target: Value<GprValue>, info: CallInfo) -> () {
     encoding = Emission::instructions([Instruction::I(103,Reg::X1,0,target,0)]);
     registers = { target: GPR };
     flow = Call; implicit = {reads:[X2]};
+    assembly = {
+        lines: [{ mnemonic: "callreg", operands: [] }]
+    };
 }
-
-assembly RvCallReg { lines = [{ mnemonic: "callreg", operands: [] }]; }
 
 op RvRet() -> () {
     encoding = Emission::instructions([Instruction::I(103,Reg::X0,0,Reg::X1,0)]);
     registers = {  };
     flow = Return;
+    assembly = {
+        lines: [{ mnemonic: "ret", operands: [] }]
+    };
 }
-
-assembly RvRet { lines = [{ mnemonic: "ret", operands: [] }]; }
 
 op RvTrap() -> () {
     encoding = Emission::instructions([Instruction::I(115,Reg::X0,0,Reg::X0,1)]);
     registers = {  };
     flow = Trap;
+    assembly = {
+        lines: [{ mnemonic: "trap", operands: [] }]
+    };
 }
-
-assembly RvTrap { lines = [{ mnemonic: "trap", operands: [] }]; }
 
 // Immediate encodings share the same field layout across integer operations.
 template Immediate(Name: ident, Major: expr, F3: expr, Bias: expr, Mnemonic: expr) {
@@ -462,8 +488,10 @@ template Immediate(Name: ident, Major: expr, F3: expr, Bias: expr, Mnemonic: exp
         encoding = Emission::instructions([Instruction::I(Major,dst,F3,src,imm | Bias)]);
         registers = { dst: GPR, src: GPR };
         requires = ["I"];
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst,64),reg(src,64),imm(imm)] }]
+        };
     }
-    assembly Name { lines = [{ mnemonic: Mnemonic, operands: [reg(dst,64),reg(src,64),imm(imm)] }]; }
 }
 
 expand Immediate(RvAdd32Imm, 27, 0, 0, "addiw");
@@ -494,8 +522,10 @@ template CompareBranch(Name: ident, F3: expr, Mnemonic: expr) {
         registers = { lhs: GPR, rhs: GPR };
         flow = Branch;
         requires = ["I"];
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(lhs,64),reg(rhs,64)] }]
+        };
     }
-    assembly Name { lines = [{ mnemonic: Mnemonic, operands: [reg(lhs,64),reg(rhs,64)] }]; }
 }
 
 expand CompareBranch(RvBranchEq, 0, "beq");

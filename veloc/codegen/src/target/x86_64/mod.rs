@@ -245,8 +245,8 @@ impl TargetMachine for X86_64TargetMachine {
 
     fn selector(&self) -> crate::isel::SelectPolicy<'_> {
         crate::isel::SelectPolicy {
-            program: inst::selection_program,
-            features: self.features.as_words(),
+            programs: &inst::SELECTION_PROGRAMS,
+            features: crate::target::FeatureSetRef::new(self.features.as_words()),
             metadata: |op| inst::target_inst_metadata(inst::TargetInst::from_u32(op)),
             predicate: &self.features,
         }

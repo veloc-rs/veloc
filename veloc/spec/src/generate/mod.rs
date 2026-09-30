@@ -245,6 +245,12 @@ pub(crate) fn opcode_enum(defs: &Definitions, name: &str) -> String {
     out.push_str("}\n");
     writeln!(
         out,
+        "impl {name} {{ pub const COUNT: usize = {}; }}",
+        defs.ops.len()
+    )
+    .unwrap();
+    writeln!(
+        out,
         "impl {name} {{ pub const fn from_code(code: usize) -> Option<Self> {{ match code {{"
     )
     .unwrap();

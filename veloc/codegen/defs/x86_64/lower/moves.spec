@@ -1,6 +1,6 @@
 import "../common.spec";
 
-template GprExtend(Opcode: ident, Map: expr, Byte: expr, Wide: expr, RmKind: ident) {
+template GprExtend(Opcode: ident, Map: expr, Byte: expr, Wide: expr, RmKind: ident, Mnemonic: expr, DstBits: expr, SrcBits: expr) {
     op Opcode(src: Value<GprValue>) -> (dst: Value<GprValue>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: Map, opcode: Byte, wide: Wide },
@@ -12,10 +12,13 @@ template GprExtend(Opcode: ident, Map: expr, Byte: expr, Wide: expr, RmKind: ide
             src: GPR64,
         };
         schedule = { latency: 1 };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst, DstBits), reg(src, SrcBits)] }]
+        };
     }
 }
 
-template GprMove(Opcode: ident, Bits: expr, Wide: expr) {
+template GprMove(Opcode: ident, Bits: expr, Wide: expr, Mnemonic: expr) {
     op Opcode(src: Value<GprValue>) -> (dst: Value<GprValue>) {
         encoding = legacy_rr(0x89, Wide, src, dst);
         registers = {
@@ -23,18 +26,17 @@ template GprMove(Opcode: ident, Bits: expr, Wide: expr) {
             src: GPR64,
         };
         schedule = { latency: 1 };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src, Bits)] }]
+        };
     }
 }
 
-expand GprMove(X86Mov32, 32, false);
+expand GprMove(X86Mov32, 32, false, "mov");
 
-expand Asm(X86Mov32, "mov", [reg(dst, 32), reg(src, 32)]);
+expand GprMove(X86Mov64, 64, true, "mov");
 
-expand GprMove(X86Mov64, 64, true);
-
-expand Asm(X86Mov64, "mov", [reg(dst, 64), reg(src, 64)]);
-
-template FloatMove(Opcode: ident, Bits: expr, Prefix: expr, Ty: expr) {
+template FloatMove(Opcode: ident, Bits: expr, Prefix: expr, Ty: expr, Mnemonic: expr) {
     op Opcode(src2: Value<Ty>) -> (dst: Value<Ty>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x10, wide: false },
@@ -46,18 +48,17 @@ template FloatMove(Opcode: ident, Bits: expr, Prefix: expr, Ty: expr) {
             src2: FPR128,
         };
         schedule = { latency: 1 };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 128), reg(src2, 128)] }]
+        };
     }
 }
 
-expand FloatMove(X86Movss, 32, Prefix::F3, Type::F32);
+expand FloatMove(X86Movss, 32, Prefix::F3, Type::F32, "movss");
 
-expand Asm(X86Movss, "movss", [reg(dst, 128), reg(src2, 128)]);
+expand FloatMove(X86Movsd, 64, Prefix::F2, Type::F64, "movsd");
 
-expand FloatMove(X86Movsd, 64, Prefix::F2, Type::F64);
-
-expand Asm(X86Movsd, "movsd", [reg(dst, 128), reg(src2, 128)]);
-
-template GprToXmmMove(Opcode: ident, Bits: expr, Wide: expr, FloatType: expr) {
+template GprToXmmMove(Opcode: ident, Bits: expr, Wide: expr, FloatType: expr, Mnemonic: expr) {
     op Opcode(src: Value<GprValue>) -> (dst: Value<FloatType>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::P66, map: OpcodeMap::Map0F, opcode: 0x6E, wide: Wide },
@@ -69,14 +70,15 @@ template GprToXmmMove(Opcode: ident, Bits: expr, Wide: expr, FloatType: expr) {
             src: GPR64,
         };
         schedule = { latency: 1 };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 128), reg(src, Bits)] }]
+        };
     }
 }
 
-expand GprToXmmMove(X86MovdToXmm, 32, false, Type::F32);
+expand GprToXmmMove(X86MovdToXmm, 32, false, Type::F32, "movd");
 
-expand Asm(X86MovdToXmm, "movd", [reg(dst, 128), reg(src, 32)]);
-
-template XmmToGprMove(Opcode: ident, Bits: expr, Wide: expr, FloatType: expr) {
+template XmmToGprMove(Opcode: ident, Bits: expr, Wide: expr, FloatType: expr, Mnemonic: expr) {
     op Opcode(src: Value<FloatType>) -> (dst: Value<GprValue>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::P66, map: OpcodeMap::Map0F, opcode: 0x7E, wide: Wide },
@@ -88,48 +90,31 @@ template XmmToGprMove(Opcode: ident, Bits: expr, Wide: expr, FloatType: expr) {
             src: FPR128,
         };
         schedule = { latency: 1 };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src, 128)] }]
+        };
     }
 }
 
-expand XmmToGprMove(X86MovdFromXmm, 32, false, Type::F32);
+expand XmmToGprMove(X86MovdFromXmm, 32, false, Type::F32, "movd");
 
-expand Asm(X86MovdFromXmm, "movd", [reg(dst, 32), reg(src, 128)]);
+expand GprToXmmMove(X86MovqToXmm, 64, true, Type::F64, "movq");
 
-expand GprToXmmMove(X86MovqToXmm, 64, true, Type::F64);
+expand XmmToGprMove(X86MovqFromXmm, 64, true, Type::F64, "movq");
 
-expand Asm(X86MovqToXmm, "movq", [reg(dst, 128), reg(src, 64)]);
+expand GprExtend(X86Movzx8to32, OpcodeMap::Map0F, 0xB6, false, Rm::ByteRegister, "movzx", 32, 8);
 
-expand XmmToGprMove(X86MovqFromXmm, 64, true, Type::F64);
+expand GprExtend(X86Movzx16to32, OpcodeMap::Map0F, 0xB7, false, Rm::Register, "movzx", 32, 16);
 
-expand Asm(X86MovqFromXmm, "movq", [reg(dst, 64), reg(src, 128)]);
+expand GprExtend(X86Movsx8to32, OpcodeMap::Map0F, 0xBE, false, Rm::ByteRegister, "movsx", 32, 8);
 
-expand GprExtend(X86Movzx8to32, OpcodeMap::Map0F, 0xB6, false, Rm::ByteRegister);
+expand GprExtend(X86Movsx16to32, OpcodeMap::Map0F, 0xBF, false, Rm::Register, "movsx", 32, 16);
 
-expand Asm(X86Movzx8to32, "movzx", [reg(dst, 32), reg(src, 8)]);
+expand GprExtend(X86Movsx8to64, OpcodeMap::Map0F, 0xBE, true, Rm::ByteRegister, "movsx", 64, 8);
 
-expand GprExtend(X86Movzx16to32, OpcodeMap::Map0F, 0xB7, false, Rm::Register);
+expand GprExtend(X86Movsx16to64, OpcodeMap::Map0F, 0xBF, true, Rm::Register, "movsx", 64, 16);
 
-expand Asm(X86Movzx16to32, "movzx", [reg(dst, 32), reg(src, 16)]);
-
-expand GprExtend(X86Movsx8to32, OpcodeMap::Map0F, 0xBE, false, Rm::ByteRegister);
-
-expand Asm(X86Movsx8to32, "movsx", [reg(dst, 32), reg(src, 8)]);
-
-expand GprExtend(X86Movsx16to32, OpcodeMap::Map0F, 0xBF, false, Rm::Register);
-
-expand Asm(X86Movsx16to32, "movsx", [reg(dst, 32), reg(src, 16)]);
-
-expand GprExtend(X86Movsx8to64, OpcodeMap::Map0F, 0xBE, true, Rm::ByteRegister);
-
-expand Asm(X86Movsx8to64, "movsx", [reg(dst, 64), reg(src, 8)]);
-
-expand GprExtend(X86Movsx16to64, OpcodeMap::Map0F, 0xBF, true, Rm::Register);
-
-expand Asm(X86Movsx16to64, "movsx", [reg(dst, 64), reg(src, 16)]);
-
-expand GprExtend(X86Movsxd32to64, OpcodeMap::Primary, 0x63, true, Rm::Register);
-
-expand Asm(X86Movsxd32to64, "movsxd", [reg(dst, 64), reg(src, 32)]);
+expand GprExtend(X86Movsxd32to64, OpcodeMap::Primary, 0x63, true, Rm::Register, "movsxd", 64, 32);
 
 op X86Mov32Imm(imm: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -141,9 +126,10 @@ op X86Mov32Imm(imm: i64) -> (dst: Value<GprValue>) {
         dst: GPR64,
     };
     schedule = { latency: 1 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [reg(dst, 32), imm(imm)] }]
+    };
 }
-
-expand Asm(X86Mov32Imm, "mov", [reg(dst, 32), imm(imm)]);
 
 op X86Mov64Imm32(imm: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -155,9 +141,10 @@ op X86Mov64Imm32(imm: i64) -> (dst: Value<GprValue>) {
         dst: GPR64,
     };
     schedule = { latency: 1 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [reg(dst, 64), imm(imm)] }]
+    };
 }
-
-expand Asm(X86Mov64Imm32, "mov", [reg(dst, 64), imm(imm)]);
 
 op X86Mov64Imm64(imm: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -169,9 +156,10 @@ op X86Mov64Imm64(imm: i64) -> (dst: Value<GprValue>) {
         dst: GPR64,
     };
     schedule = { latency: 1 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [reg(dst, 64), imm(imm)] }]
+    };
 }
-
-expand Asm(X86Mov64Imm64, "mov", [reg(dst, 64), imm(imm)]);
 
 select(n: lir::Constant) {
     choose {

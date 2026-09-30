@@ -12,25 +12,28 @@ op RvSext8Zbb(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,1540)]);
     registers = { dst: GPR, src: GPR };
     requires = ["Zbb"];
+    assembly = {
+        lines: [{ mnemonic: "sext.b", operands: [reg(dst,64),reg(src,64)] }]
+    };
 }
-
-assembly RvSext8Zbb { lines = [{ mnemonic: "sext.b", operands: [reg(dst,64),reg(src,64)] }]; }
 
 op RvSext16Zbb(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,1541)]);
     registers = { dst: GPR, src: GPR };
     requires = ["Zbb"];
+    assembly = {
+        lines: [{ mnemonic: "sext.h", operands: [reg(dst,64),reg(src,64)] }]
+    };
 }
-
-assembly RvSext16Zbb { lines = [{ mnemonic: "sext.h", operands: [reg(dst,64),reg(src,64)] }]; }
 
 op RvZext16Zbb(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(59,dst,4,src,Reg::X0,4)]);
     registers = { dst: GPR, src: GPR };
     requires = ["Zbb"];
+    assembly = {
+        lines: [{ mnemonic: "zext.h", operands: [reg(dst,64),reg(src,64)] }]
+    };
 }
-
-assembly RvZext16Zbb { lines = [{ mnemonic: "zext.h", operands: [reg(dst,64),reg(src,64)] }]; }
 
 select(n: lir::Rotl<Type::I32>) {
     replace(n, build(RvRol32(n.lhs, n.rhs)));

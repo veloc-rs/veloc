@@ -543,7 +543,16 @@ impl Program {
         ] {
             writeln!(out, "{name}: &[{}],", table.join(",\n")).unwrap();
         }
-        writeln!(out, "features: &[{}],", self.features.join(",")).unwrap();
+        writeln!(
+            out,
+            "required_features: &[{}],",
+            self.features
+                .iter()
+                .map(|set| { format!("{}::FeatureSetRef::new({set})", config.runtime) })
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+        .unwrap();
         out.push_str("};\n");
     }
 }

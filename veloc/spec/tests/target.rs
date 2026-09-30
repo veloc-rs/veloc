@@ -38,7 +38,7 @@ fn production_target_contracts_generate_all_consumers() {
         "pub const fn required_features",
         "Self::X86Popcnt32 => FeatureSet::empty().with(Feature::POPCNT)",
         "CheckFeatures {",
-        "features: &[FeatureSet::empty().with(Feature::POPCNT).as_words()]",
+        "required_features: &[crate::target::FeatureSetRef::new(FeatureSet::empty().with(Feature::POPCNT).as_words())]",
         "pub fn write_assembly",
         "pub fn emit",
         "GenericOpcode::",

@@ -134,10 +134,16 @@ mod vm {
             slots: usize,
         },
     }
+    pub struct FeatureSetRef<'a>(&'a [u64]);
+    impl<'a> FeatureSetRef<'a> {
+        pub const fn new(words: &'a [u64]) -> Self {
+            Self(words)
+        }
+    }
     pub struct Program {
         pub entries: &'static [Option<usize>],
         pub code: &'static [u8],
-        pub features: &'static [&'static [u64]],
+        pub required_features: &'static [FeatureSetRef<'static>],
         pub actions: &'static [Action],
         pub types: &'static [TypeSource],
         pub fields: &'static [FieldSource],

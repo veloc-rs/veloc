@@ -1,6 +1,6 @@
 import "../common.spec";
 
-template GprCompare(Opcode: ident, Byte: expr, Wide: expr) {
+template GprCompare(Opcode: ident, Byte: expr, Wide: expr, Mnemonic: expr, Bits: expr) {
     op Opcode(lhs: Value<GprValue>, rhs: Value<GprValue>) -> () {
         encoding = legacy_rr(Byte, Wide, rhs, lhs);
         registers = {
@@ -11,12 +11,13 @@ template GprCompare(Opcode: ident, Byte: expr, Wide: expr) {
             clobbers: [EFLAGS],
         };
         schedule = { latency: 1 };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(lhs, Bits), reg(rhs, Bits)] }]
+        };
     }
 }
 
-expand GprCompare(X86Cmp32, 0x39, false);
-
-expand Asm(X86Cmp32, "cmp", [reg(lhs, 32), reg(rhs, 32)]);
+expand GprCompare(X86Cmp32, 0x39, false, "cmp", 32);
 
 op X86Cmp32ri(src: Value<GprValue>, imm: i64) -> () {
     encoding = Emission::legacy(
@@ -31,15 +32,14 @@ op X86Cmp32ri(src: Value<GprValue>, imm: i64) -> () {
         clobbers: [EFLAGS],
     };
     schedule = { latency: 1 };
+    assembly = {
+        lines: [{ mnemonic: "cmp", operands: [reg(src, 32), imm(imm)] }]
+    };
 }
 
-expand Asm(X86Cmp32ri, "cmp", [reg(src, 32), imm(imm)]);
+expand GprCompare(X86Test32, 0x85, false, "test", 32);
 
-expand GprCompare(X86Test32, 0x85, false);
-
-expand Asm(X86Test32, "test", [reg(lhs, 32), reg(rhs, 32)]);
-
-template FloatCompare(Opcode: ident, Prefix: expr, Ty: expr) {
+template FloatCompare(Opcode: ident, Prefix: expr, Ty: expr, Mnemonic: expr) {
     op Opcode(lhs: Value<Ty>, rhs: Value<Ty>) -> () {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x2E, wide: false },
@@ -53,26 +53,21 @@ template FloatCompare(Opcode: ident, Prefix: expr, Ty: expr) {
         implicit = {
             clobbers: [EFLAGS],
         };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(lhs, 128), reg(rhs, 128)] }]
+        };
     }
 }
 
-expand FloatCompare(X86Ucomiss, Prefix::None, Type::F32);
+expand FloatCompare(X86Ucomiss, Prefix::None, Type::F32, "ucomiss");
 
-expand Asm(X86Ucomiss, "ucomiss", [reg(lhs, 128), reg(rhs, 128)]);
+expand GprCompare(X86Cmp64, 0x39, true, "cmp", 64);
 
-expand GprCompare(X86Cmp64, 0x39, true);
+expand GprCompare(X86Test64, 0x85, true, "test", 64);
 
-expand Asm(X86Cmp64, "cmp", [reg(lhs, 64), reg(rhs, 64)]);
+expand FloatCompare(X86Ucomisd, Prefix::P66, Type::F64, "ucomisd");
 
-expand GprCompare(X86Test64, 0x85, true);
-
-expand Asm(X86Test64, "test", [reg(lhs, 64), reg(rhs, 64)]);
-
-expand FloatCompare(X86Ucomisd, Prefix::P66, Type::F64);
-
-expand Asm(X86Ucomisd, "ucomisd", [reg(lhs, 128), reg(rhs, 128)]);
-
-template SetCondition(Opcode: ident, Byte: expr) {
+template SetCondition(Opcode: ident, Byte: expr, Mnemonic: expr) {
     op Opcode() -> (dst: Value<GprValue>) {
         implicit = { reads: [EFLAGS] };
         encoding = Emission::legacy(
@@ -83,56 +78,35 @@ template SetCondition(Opcode: ident, Byte: expr) {
         registers = {
             dst: GPR64,
         };
+        assembly = {
+            lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 8)] }]
+        };
     }
 }
 
-expand SetCondition(X86Sete, 0x94);
+expand SetCondition(X86Sete, 0x94, "sete");
 
-expand Asm(X86Sete, "sete", [reg(dst, 8)]);
+expand SetCondition(X86Setne, 0x95, "setne");
 
-expand SetCondition(X86Setne, 0x95);
+expand SetCondition(X86Setb, 0x92, "setb");
 
-expand Asm(X86Setne, "setne", [reg(dst, 8)]);
+expand SetCondition(X86Seta, 0x97, "seta");
 
-expand SetCondition(X86Setb, 0x92);
+expand SetCondition(X86Setbe, 0x96, "setbe");
 
-expand Asm(X86Setb, "setb", [reg(dst, 8)]);
+expand SetCondition(X86Setae, 0x93, "setae");
 
-expand SetCondition(X86Seta, 0x97);
+expand SetCondition(X86Setl, 0x9C, "setl");
 
-expand Asm(X86Seta, "seta", [reg(dst, 8)]);
+expand SetCondition(X86Setg, 0x9F, "setg");
 
-expand SetCondition(X86Setbe, 0x96);
+expand SetCondition(X86Setle, 0x9E, "setle");
 
-expand Asm(X86Setbe, "setbe", [reg(dst, 8)]);
+expand SetCondition(X86Setge, 0x9D, "setge");
 
-expand SetCondition(X86Setae, 0x93);
+expand SetCondition(X86Setp, 0x9A, "setp");
 
-expand Asm(X86Setae, "setae", [reg(dst, 8)]);
-
-expand SetCondition(X86Setl, 0x9C);
-
-expand Asm(X86Setl, "setl", [reg(dst, 8)]);
-
-expand SetCondition(X86Setg, 0x9F);
-
-expand Asm(X86Setg, "setg", [reg(dst, 8)]);
-
-expand SetCondition(X86Setle, 0x9E);
-
-expand Asm(X86Setle, "setle", [reg(dst, 8)]);
-
-expand SetCondition(X86Setge, 0x9D);
-
-expand Asm(X86Setge, "setge", [reg(dst, 8)]);
-
-expand SetCondition(X86Setp, 0x9A);
-
-expand Asm(X86Setp, "setp", [reg(dst, 8)]);
-
-expand SetCondition(X86Setnp, 0x9B);
-
-expand Asm(X86Setnp, "setnp", [reg(dst, 8)]);
+expand SetCondition(X86Setnp, 0x9B, "setnp");
 
 select(n: lir::Icmp) {
     choose {

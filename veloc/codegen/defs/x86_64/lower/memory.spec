@@ -17,9 +17,10 @@ op X86Load8U32(base: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
         base: GPR64,
     };
     memory = { kind: Read, bytes: 1 };
+    assembly = {
+        lines: [{ mnemonic: "movzx", operands: [reg(dst, 32), mem(base, off, 8)] }]
+    };
 }
-
-expand Asm(X86Load8U32, "movzx", [reg(dst, 32), mem(base, off, 8)]);
 
 op X86Load16U32(base: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -32,9 +33,10 @@ op X86Load16U32(base: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
         base: GPR64,
     };
     memory = { kind: Read, bytes: 2 };
+    assembly = {
+        lines: [{ mnemonic: "movzx", operands: [reg(dst, 32), mem(base, off, 16)] }]
+    };
 }
-
-expand Asm(X86Load16U32, "movzx", [reg(dst, 32), mem(base, off, 16)]);
 
 op X86Load32(base: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -47,9 +49,10 @@ op X86Load32(base: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
         base: GPR64,
     };
     memory = { kind: Read, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [reg(dst, 32), mem(base, off, 32)] }]
+    };
 }
-
-expand Asm(X86Load32, "mov", [reg(dst, 32), mem(base, off, 32)]);
 
 op X86Load64(base: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -62,9 +65,10 @@ op X86Load64(base: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
         base: GPR64,
     };
     memory = { kind: Read, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [reg(dst, 64), mem(base, off, 64)] }]
+    };
 }
-
-expand Asm(X86Load64, "mov", [reg(dst, 64), mem(base, off, 64)]);
 
 op X86LoadF32(base: Value<AddressValue>, off: i64) -> (dst: Value<Type::F32>) {
     encoding = Emission::legacy(
@@ -77,9 +81,10 @@ op X86LoadF32(base: Value<AddressValue>, off: i64) -> (dst: Value<Type::F32>) {
         base: GPR64,
     };
     memory = { kind: Read, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "movss", operands: [reg(dst, 128), mem(base, off, 32)] }]
+    };
 }
-
-expand Asm(X86LoadF32, "movss", [reg(dst, 128), mem(base, off, 32)]);
 
 op X86LoadF64(base: Value<AddressValue>, off: i64) -> (dst: Value<Type::F64>) {
     encoding = Emission::legacy(
@@ -92,9 +97,10 @@ op X86LoadF64(base: Value<AddressValue>, off: i64) -> (dst: Value<Type::F64>) {
         base: GPR64,
     };
     memory = { kind: Read, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "movsd", operands: [reg(dst, 128), mem(base, off, 64)] }]
+    };
 }
-
-expand Asm(X86LoadF64, "movsd", [reg(dst, 128), mem(base, off, 64)]);
 
 op X86Store8(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
@@ -107,9 +113,10 @@ op X86Store8(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
         base: GPR64,
     };
     memory = { kind: Write, bytes: 1 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [mem(base, off, 8), reg(src, 8)] }]
+    };
 }
-
-expand Asm(X86Store8, "mov", [mem(base, off, 8), reg(src, 8)]);
 
 op X86Store16(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
@@ -122,9 +129,10 @@ op X86Store16(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
         base: GPR64,
     };
     memory = { kind: Write, bytes: 2 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [mem(base, off, 16), reg(src, 16)] }]
+    };
 }
-
-expand Asm(X86Store16, "mov", [mem(base, off, 16), reg(src, 16)]);
 
 op X86Store32(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
@@ -137,9 +145,10 @@ op X86Store32(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
         base: GPR64,
     };
     memory = { kind: Write, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [mem(base, off, 32), reg(src, 32)] }]
+    };
 }
-
-expand Asm(X86Store32, "mov", [mem(base, off, 32), reg(src, 32)]);
 
 op X86Store64(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
@@ -152,9 +161,10 @@ op X86Store64(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
         base: GPR64,
     };
     memory = { kind: Write, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [mem(base, off, 64), reg(src, 64)] }]
+    };
 }
-
-expand Asm(X86Store64, "mov", [mem(base, off, 64), reg(src, 64)]);
 
 op X86StoreF32(src: Value<Type::F32>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
@@ -167,9 +177,10 @@ op X86StoreF32(src: Value<Type::F32>, base: Value<AddressValue>, off: i64) -> ()
         base: GPR64,
     };
     memory = { kind: Write, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "movss", operands: [mem(base, off, 32), reg(src, 128)] }]
+    };
 }
-
-expand Asm(X86StoreF32, "movss", [mem(base, off, 32), reg(src, 128)]);
 
 op X86StoreF64(src: Value<Type::F64>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
@@ -182,9 +193,10 @@ op X86StoreF64(src: Value<Type::F64>, base: Value<AddressValue>, off: i64) -> ()
         base: GPR64,
     };
     memory = { kind: Write, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "movsd", operands: [mem(base, off, 64), reg(src, 128)] }]
+    };
 }
-
-expand Asm(X86StoreF64, "movsd", [mem(base, off, 64), reg(src, 128)]);
 
 op X86Load8U32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -196,9 +208,10 @@ op X86Load8U32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
         dst: GPR64,
     };
     memory = { kind: Read, bytes: 1 };
+    assembly = {
+        lines: [{ mnemonic: "movzx", operands: [reg(dst, 32), stack(slot, 8)] }]
+    };
 }
-
-expand Asm(X86Load8U32Stack, "movzx", [reg(dst, 32), stack(slot, 8)]);
 
 op X86Load16U32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -210,9 +223,10 @@ op X86Load16U32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
         dst: GPR64,
     };
     memory = { kind: Read, bytes: 2 };
+    assembly = {
+        lines: [{ mnemonic: "movzx", operands: [reg(dst, 32), stack(slot, 16)] }]
+    };
 }
-
-expand Asm(X86Load16U32Stack, "movzx", [reg(dst, 32), stack(slot, 16)]);
 
 op X86Load32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -224,9 +238,10 @@ op X86Load32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
         dst: GPR64,
     };
     memory = { kind: Read, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [reg(dst, 32), stack(slot, 32)] }]
+    };
 }
-
-expand Asm(X86Load32Stack, "mov", [reg(dst, 32), stack(slot, 32)]);
 
 op X86Load64Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -238,9 +253,10 @@ op X86Load64Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
         dst: GPR64,
     };
     memory = { kind: Read, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [reg(dst, 64), stack(slot, 64)] }]
+    };
 }
-
-expand Asm(X86Load64Stack, "mov", [reg(dst, 64), stack(slot, 64)]);
 
 op X86LoadF32Stack(slot: StackSlot) -> (dst: Value<Type::F32>) {
     encoding = Emission::legacy(
@@ -252,9 +268,10 @@ op X86LoadF32Stack(slot: StackSlot) -> (dst: Value<Type::F32>) {
         dst: FPR128,
     };
     memory = { kind: Read, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "movss", operands: [reg(dst, 128), stack(slot, 32)] }]
+    };
 }
-
-expand Asm(X86LoadF32Stack, "movss", [reg(dst, 128), stack(slot, 32)]);
 
 op X86LoadF64Stack(slot: StackSlot) -> (dst: Value<Type::F64>) {
     encoding = Emission::legacy(
@@ -266,9 +283,10 @@ op X86LoadF64Stack(slot: StackSlot) -> (dst: Value<Type::F64>) {
         dst: FPR128,
     };
     memory = { kind: Read, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "movsd", operands: [reg(dst, 128), stack(slot, 64)] }]
+    };
 }
-
-expand Asm(X86LoadF64Stack, "movsd", [reg(dst, 128), stack(slot, 64)]);
 
 op X86Store8Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
@@ -280,9 +298,10 @@ op X86Store8Stack(src: Value<GprValue>, slot: StackSlot) -> () {
         src: GPR64,
     };
     memory = { kind: Write, bytes: 1 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [stack(slot, 8), reg(src, 8)] }]
+    };
 }
-
-expand Asm(X86Store8Stack, "mov", [stack(slot, 8), reg(src, 8)]);
 
 op X86Store16Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
@@ -294,9 +313,10 @@ op X86Store16Stack(src: Value<GprValue>, slot: StackSlot) -> () {
         src: GPR64,
     };
     memory = { kind: Write, bytes: 2 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [stack(slot, 16), reg(src, 16)] }]
+    };
 }
-
-expand Asm(X86Store16Stack, "mov", [stack(slot, 16), reg(src, 16)]);
 
 op X86Store32Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
@@ -308,9 +328,10 @@ op X86Store32Stack(src: Value<GprValue>, slot: StackSlot) -> () {
         src: GPR64,
     };
     memory = { kind: Write, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [stack(slot, 32), reg(src, 32)] }]
+    };
 }
-
-expand Asm(X86Store32Stack, "mov", [stack(slot, 32), reg(src, 32)]);
 
 op X86Store64Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
@@ -322,9 +343,10 @@ op X86Store64Stack(src: Value<GprValue>, slot: StackSlot) -> () {
         src: GPR64,
     };
     memory = { kind: Write, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [stack(slot, 64), reg(src, 64)] }]
+    };
 }
-
-expand Asm(X86Store64Stack, "mov", [stack(slot, 64), reg(src, 64)]);
 
 op X86StoreF32Stack(src: Value<Type::F32>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
@@ -336,9 +358,10 @@ op X86StoreF32Stack(src: Value<Type::F32>, slot: StackSlot) -> () {
         src: FPR128,
     };
     memory = { kind: Write, bytes: 4 };
+    assembly = {
+        lines: [{ mnemonic: "movss", operands: [stack(slot, 32), reg(src, 128)] }]
+    };
 }
-
-expand Asm(X86StoreF32Stack, "movss", [stack(slot, 32), reg(src, 128)]);
 
 op X86StoreF64Stack(src: Value<Type::F64>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
@@ -350,9 +373,10 @@ op X86StoreF64Stack(src: Value<Type::F64>, slot: StackSlot) -> () {
         src: FPR128,
     };
     memory = { kind: Write, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "movsd", operands: [stack(slot, 64), reg(src, 128)] }]
+    };
 }
-
-expand Asm(X86StoreF64Stack, "movsd", [stack(slot, 64), reg(src, 128)]);
 
 op X86LeaStack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
@@ -363,9 +387,10 @@ op X86LeaStack(slot: StackSlot) -> (dst: Value<GprValue>) {
     registers = {
         dst: GPR64,
     };
+    assembly = {
+        lines: [{ mnemonic: "lea", operands: [reg(dst, 64), stack(slot, 64)] }]
+    };
 }
-
-expand Asm(X86LeaStack, "lea", [reg(dst, 64), stack(slot, 64)]);
 
 fn indexed_memory(base: Reg, index: Reg, offset: i64) -> Rm {
     value = Rm::Memory(Address::BaseIndex(Memory {
@@ -381,9 +406,10 @@ op X86Load64Index(base: Value<AddressValue>, index: Value<AddressValue>, off: i6
     );
     registers = { dst: GPR64, base: GPR64, index: GPR64 };
     memory = { kind: Read, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [reg(dst, 64), mem(base, index, off, 64)] }]
+    };
 }
-
-expand Asm(X86Load64Index, "mov", [reg(dst, 64), mem(base, index, off, 64)]);
 
 op X86Store64Index(src: Value<GprValue>, base: Value<AddressValue>, index: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
@@ -393,9 +419,10 @@ op X86Store64Index(src: Value<GprValue>, base: Value<AddressValue>, index: Value
     );
     registers = { src: GPR64, base: GPR64, index: GPR64 };
     memory = { kind: Write, bytes: 8 };
+    assembly = {
+        lines: [{ mnemonic: "mov", operands: [mem(base, index, off, 64), reg(src, 64)] }]
+    };
 }
-
-expand Asm(X86Store64Index, "mov", [mem(base, index, off, 64), reg(src, 64)]);
 
 select(n: lir::Load) {
     choose {

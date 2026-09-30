@@ -1,6 +1,6 @@
 //! Assembly is a typed projection of an instruction, not its debug spelling.
 use super::{FinalInstDef, generate::find_operand_info};
-use crate::syntax::{Decl, DeclKind, Kind, Node};
+use crate::syntax::{Kind, Node};
 use crate::target::OperandConstraint;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
@@ -122,81 +122,59 @@ fn operand(node: &Node, inst: &FinalInstDef) -> Result<Operand, String> {
     }
 }
 
-pub(super) fn compile(
-    declarations: &[Decl],
-    instructions: &mut HashMap<String, FinalInstDef>,
-) -> Result<(), String> {
-    for declaration in declarations {
-        if !matches!(&declaration.kind, DeclKind::Fields(kind) if kind == "assembly") {
-            continue;
-        }
-        let inst = instructions
-            .get_mut(&declaration.name)
-            .ok_or_else(|| format!("assembly `{}` has no instruction", declaration.name))?;
-        if inst.assembly.is_some() {
-            return Err(format!("duplicate assembly `{}`", declaration.name));
-        }
-        let parse = || -> Result<Assembly, String> {
-            if declaration.fields.len() != 1 {
-                return Err("assembly requires only a lines property".into());
+pub(super) fn compile(node: &Node, inst: &FinalInstDef) -> Result<Assembly, String> {
+    let description = fields(node)?;
+    if description.len() != 1 {
+        return Err("assembly requires only a lines property".into());
+    }
+    let Some(Node {
+        kind: Kind::List(lines),
+        ..
+    }) = description.get("lines")
+    else {
+        return Err("assembly requires a lines list".into());
+    };
+    if lines.is_empty() {
+        return Err("assembly must contain at least one line".into());
+    }
+    let lines = lines
+        .iter()
+        .map(|line| {
+            let fields = fields(line)?;
+            if fields.len() != 2 {
+                return Err("assembly line requires mnemonic and operands".into());
             }
             let Some(Node {
-                kind: Kind::List(lines),
+                kind: Kind::Text(mnemonic),
                 ..
-            }) = declaration.fields.get("lines")
+            }) = fields.get("mnemonic")
             else {
-                return Err("assembly requires a lines list".into());
+                return Err("assembly mnemonic requires a string".into());
             };
-            if lines.is_empty() {
-                return Err("assembly must contain at least one line".into());
+            if mnemonic.is_empty()
+                || !mnemonic
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
+            {
+                return Err("invalid assembly mnemonic".into());
             }
-            let lines = lines
-                .iter()
-                .map(|line| {
-                    let fields = fields(line)?;
-                    if fields.len() != 2 {
-                        return Err("assembly line requires mnemonic and operands".into());
-                    }
-                    let Some(Node {
-                        kind: Kind::Text(mnemonic),
-                        ..
-                    }) = fields.get("mnemonic")
-                    else {
-                        return Err("assembly mnemonic requires a string".into());
-                    };
-                    if mnemonic.is_empty()
-                        || !mnemonic
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
-                    {
-                        return Err("invalid assembly mnemonic".into());
-                    }
-                    let Some(Node {
-                        kind: Kind::List(operands),
-                        ..
-                    }) = fields.get("operands")
-                    else {
-                        return Err("assembly operands require a list".into());
-                    };
-                    Ok(Line {
-                        mnemonic: mnemonic.clone(),
-                        operands: operands
-                            .iter()
-                            .map(|node| operand(node, inst))
-                            .collect::<Result<_, _>>()?,
-                    })
-                })
-                .collect::<Result<_, String>>()?;
-            Ok(Assembly(lines))
-        };
-        inst.assembly = Some(parse().map_err(|error| format!("{}: {error}", declaration.name))?);
-    }
-    for (name, inst) in instructions {
-        if !inst.is_pseudo && inst.assembly.is_none() {
-            return Err(format!("instruction `{name}` has no assembly declaration"));
-        }
-    }
-    Ok(())
+            let Some(Node {
+                kind: Kind::List(operands),
+                ..
+            }) = fields.get("operands")
+            else {
+                return Err("assembly operands require a list".into());
+            };
+            Ok(Line {
+                mnemonic: mnemonic.clone(),
+                operands: operands
+                    .iter()
+                    .map(|node| operand(node, inst))
+                    .collect::<Result<_, _>>()?,
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(Assembly(lines))
 }
 
 fn register(result: bool, index: usize) -> String {

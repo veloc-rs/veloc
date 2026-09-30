@@ -4,6 +4,7 @@ pub use super::bytecode::TypeCodec;
 use super::bytecode::{Instruction as Op, TypePatterns};
 use super::info::{LegalizePolicy, RewriteContext};
 use crate::error::{Error, Result};
+pub use crate::target::FeatureSetRef;
 use smallvec::SmallVec;
 pub use veloc_bytecode::rewrite::OperandRef;
 use veloc_bytecode::{Reader, signature::TypePattern};
@@ -14,7 +15,7 @@ use veloc_mir::Type;
 pub struct Program {
     pub entries: &'static [Option<usize>],
     pub code: &'static [u8],
-    pub features: &'static [&'static [u64]],
+    pub required_features: &'static [FeatureSetRef<'static>],
     pub actions: &'static [Action],
     pub types: &'static [TypeSource],
     pub fields: &'static [FieldSource],
@@ -107,11 +108,8 @@ pub(super) fn select(
                 }
             }
             Op::CheckFeatures { set, failure } => {
-                if !program.features[set]
-                    .iter()
-                    .enumerate()
-                    .all(|(i, mask)| policy.features.get(i).copied().unwrap_or(0) & mask == *mask)
-                {
+                let required = program.required_features[set];
+                if !policy.features.contains_all(required) {
                     reader.pc = failure;
                 }
             }

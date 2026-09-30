@@ -30,11 +30,3 @@ typeset GprValue = ScalarInteger | Type::BOOL | Type::PTR;
 typeset AddressValue = Type::I64 | Type::PTR;
 typeset SmallInt = Type::I8 | Type::I16 | Type::I32;
 typeset WordOrPtr = Type::I64 | Type::PTR;
-
-// Intel operand order. These are projections of the same instruction fields
-// used by encoding; tied SSA inputs remain visible in LIR, not in assembly.
-template Asm(Opcode: ident, Mnemonic: expr, Operands: expr) {
-    assembly Opcode {
-        lines = [{ mnemonic: Mnemonic, operands: Operands }];
-    }
-}
