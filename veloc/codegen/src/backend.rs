@@ -1,13 +1,8 @@
-//! Backend facade for embedding codegen in upper layers.
-//!
-//! `veloc-wasm` 仍然倾向于依赖一个稳定的 `Backend` 门面，而不是直接操作
-//! `TargetMachine + CodegenPipeline`。这里提供一个轻量适配层，默认使用 x86_64 ELF。
+//! Owns the configured target machine for upper layers.
 
-use crate::driver::CodegenPipeline;
 use crate::error::Result;
 use crate::target::{TargetConfig, TargetMachine};
 use std::boxed::Box;
-use veloc_mir::Module;
 
 pub struct Backend {
     target: Box<dyn TargetMachine>,
@@ -31,11 +26,6 @@ impl Backend {
     /// 返回底层目标机。
     pub fn target(&self) -> &dyn TargetMachine {
         &*self.target
-    }
-
-    /// 将整个 IR 模块编译为一个 relocatable object。
-    pub fn compile_object(&self, module: &Module) -> Result<std::vec::Vec<u8>> {
-        CodegenPipeline::new(self.target()).compile_object(module)
     }
 }
 

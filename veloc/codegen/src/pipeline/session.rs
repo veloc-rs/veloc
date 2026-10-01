@@ -11,7 +11,6 @@ pub struct FunctionSession<'a> {
     symbols: &'a mut SymbolTable,
     pub target: &'a dyn TargetMachine,
     pub signature: &'a veloc_mir::Signature,
-    pub options: &'a crate::CodegenOptions,
     pub profile: &'a veloc_profile::Profile,
 }
 impl<'a> FunctionSession<'a> {
@@ -25,7 +24,6 @@ impl<'a> FunctionSession<'a> {
             symbols: ctx.symbols,
             target: ctx.target,
             signature: ctx.func_sig,
-            options: ctx.options,
             profile: ctx.profile,
         }
     }

@@ -23,7 +23,7 @@ pub mod analysis;
 pub mod verify;
 
 pub use backend::Backend;
-pub use driver::{CodegenOptions, CodegenPipeline};
+pub use driver::{CodegenOptions, CodegenPipeline, OptLevel};
 pub use target::{
     CallConv, RewriteResult, TargetArch, TargetConfig, TargetEmitter, TargetFrameLowering,
     TargetMachine, TargetPassConfig, TargetPostIsel,

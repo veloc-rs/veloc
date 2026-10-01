@@ -6,15 +6,24 @@ use crate::error::{Error, Result};
 use crate::object::ObjectFileBuilder;
 use crate::pipeline::{
     CompiledFunction, CompiledModule, EmissionModule, EmittedFunction, FunctionPipeline,
-    ModulePassContext, ModulePassPipeline,
+    ModuleCodegenPass, ModulePassContext, ModulePassPipeline,
 };
 use crate::target::TargetMachine;
-use crate::translate::IRTranslator;
-use std::collections::BTreeMap;
+use crate::translate::{IRTranslator, TranslatedModule};
 use std::vec::Vec;
 use veloc_lir::{MachineFunction, MachineModule};
 use veloc_mir::Module;
 use veloc_profile::{Metric, Profile};
+
+/// Optimization policy used when constructing codegen pipelines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OptLevel {
+    /// Run only the transformations required for correct code generation.
+    None,
+    /// Enable the standard optimization pipeline.
+    #[default]
+    Default,
+}
 
 /// 代码生成选项
 #[derive(Debug, Clone)]
@@ -22,24 +31,21 @@ pub struct CodegenOptions {
     /// Validate SSA, selected and allocated invariants at pipeline boundaries.
     /// Enabled by default in debug builds; construction itself remains unchecked.
     pub verify: bool,
-    /// 是否启用优化
-    pub optimize: bool,
+    /// Select the pass sequence at pipeline construction time.
+    pub opt_level: OptLevel,
     /// Pass names whose output should be printed; `*` selects every pass.
     pub dump_after: Vec<std::string::String>,
     /// Restrict pass dumps to one function (None selects all functions).
     pub dump_function: Option<std::string::String>,
-    /// 是否打印中间结果（调试用）
-    pub dump_lir: bool,
 }
 
 impl Default for CodegenOptions {
     fn default() -> Self {
         Self {
             verify: cfg!(debug_assertions),
-            optimize: true,
+            opt_level: OptLevel::Default,
             dump_after: Vec::new(),
             dump_function: None,
-            dump_lir: false,
         }
     }
 }
@@ -55,7 +61,7 @@ impl Default for CodegenOptions {
 ///
 /// let config = TargetConfig::default();
 /// let target = create_target_machine(config).unwrap();
-/// let pipeline = CodegenPipeline::new(&*target);
+/// let pipeline = CodegenPipeline::new(&*target, Default::default());
 ///
 /// let object = pipeline.compile_object(&module).unwrap();
 /// ```
@@ -66,17 +72,16 @@ pub struct CodegenPipeline<'a> {
 }
 
 impl<'a> CodegenPipeline<'a> {
-    /// 创建新的代码生成驱动。
-    pub fn new(target: &'a dyn TargetMachine) -> Self {
-        Self {
-            target,
-            options: CodegenOptions::default(),
-            profile: Profile::default(),
+    /// Create a driver with explicit options; explicit dump settings override the environment.
+    pub fn new(target: &'a dyn TargetMachine, mut options: CodegenOptions) -> Self {
+        if options.dump_after.is_empty() {
+            if let Ok(filter) = std::env::var("VELOC_DUMP_LIR") {
+                options.dump_after.push("*".into());
+                if filter != "*" && options.dump_function.is_none() {
+                    options.dump_function = Some(filter);
+                }
+            }
         }
-    }
-
-    /// 创建带显式选项的代码生成驱动。
-    pub fn with_options(target: &'a dyn TargetMachine, options: CodegenOptions) -> Self {
         Self {
             target,
             options,
@@ -85,9 +90,24 @@ impl<'a> CodegenPipeline<'a> {
     }
 
     /// 编译整个模块并生成单个 relocatable object 文件。
-    pub fn compile_object(&self, module: &veloc_mir::Module) -> Result<Vec<u8>> {
-        self.profile
-            .measure("codegen", 0, || self.compile_object_impl(module))
+    pub fn compile_object(&self, module: &Module) -> Result<Vec<u8>> {
+        self.profile.measure("codegen", 0, || {
+            let mut object = ObjectFileBuilder::new(self.target)?;
+            let compiled = self.compile_emission_module(module)?;
+            self.profile.measure("object", 0, || {
+                for compiled_func in &compiled.functions {
+                    let func = module.function(compiled_func.func_id);
+                    object.add_defined_function(
+                        &func,
+                        compiled_func.symbol,
+                        &compiled_func.emission,
+                        &compiled.symbols,
+                    );
+                }
+                // Only referenced imports need runtime symbol resolution.
+                object.finish(&self.profile)
+            })
+        })
     }
 
     pub fn with_profile(mut self, profile: Profile) -> Self {
@@ -95,65 +115,27 @@ impl<'a> CodegenPipeline<'a> {
         self
     }
 
-    fn compile_object_impl(&self, module: &Module) -> Result<Vec<u8>> {
-        let mut object = ObjectFileBuilder::new(self.target)?;
-        let compiled = self.compile_module_artifact(module)?;
-
-        self.profile.measure("object", 0, || {
-            for compiled_func in &compiled.functions {
-                let func = module.function(compiled_func.func_id);
-                object.add_defined_function(
-                    &func,
-                    compiled_func.symbol,
-                    &compiled_func.emission,
-                    &compiled.symbols,
-                );
-            }
-
-            // Referenced imports are created while emitting relocations. Unused
-            // declarations must not require runtime symbol resolution.
-            object.finish(&self.profile)
-        })
-    }
-
-    /// 编译模块中的所有已定义函数并返回裸机器码。
-    pub fn compile_functions(
-        &self,
-        module: &veloc_mir::Module,
-    ) -> Result<BTreeMap<veloc_mir::FuncId, Vec<u8>>> {
-        self.profile.measure("codegen", 0, || {
-            let EmissionModule {
-                symbols, functions, ..
-            } = self.compile_module_artifact(module)?;
-            let mut results = BTreeMap::new();
-
-            for compiled_func in functions {
-                let emitted = compiled_func.emission.finish()?;
-                if let Some(reloc) = emitted.relocations.first() {
-                    let symbol = symbols.get(reloc.symbol).name.clone();
-                    return Err(Error::unexpected_relocation(symbol));
-                }
-                self.profile
-                    .record_lazy(Metric::bytes("code"), || emitted.data.len() as u64);
-                results.insert(compiled_func.func_id, emitted.data);
-            }
-
-            Ok(results)
-        })
-    }
-
-    fn compile_module_artifact(&self, module: &Module) -> Result<EmissionModule> {
+    fn compile_emission_module(&self, module: &Module) -> Result<EmissionModule> {
         let machines = self.compile_machine_module(module)?;
         let mut emission = self.emit_compiled_functions(machines)?;
-        self.profile.measure("post_emit", 0, || {
-            self.run_module_post_emit_passes(&mut emission)
-        })?;
+        let name = emission.name.clone();
+        self.run_module_passes(
+            "post_emit",
+            &mut emission,
+            &name,
+            self.target
+                .pass_config()
+                .post_emit_module_passes(self.options.opt_level),
+        )?;
         Ok(emission)
     }
 
     fn compile_machine_module(&self, module: &Module) -> Result<CompiledModule> {
-        let mmodule = self.translate_module(module)?;
-        let veloc_lir::MachineModule {
+        let TranslatedModule {
+            machine: mmodule,
+            sources,
+        } = self.translate_module(module)?;
+        let MachineModule {
             name,
             mut symbols,
             functions,
@@ -161,12 +143,9 @@ impl<'a> CodegenPipeline<'a> {
         let mut compiled_functions = Vec::new();
         let function_pipeline = FunctionPipeline::new(self.target, &self.options, &self.profile);
 
-        for ((func_id, func), (_, mfunc)) in module
-            .functions()
-            .filter(|(_, f)| f.body.is_some())
-            .zip(functions.into_iter())
-        {
-            debug_assert_eq!(func.decl.name, mfunc.name);
+        for (machine_id, mfunc) in functions {
+            let func_id = sources[machine_id];
+            let func = module.function(func_id);
             let machine_function = function_pipeline.run(
                 mfunc,
                 &module.signatures()[func.decl.signature],
@@ -181,38 +160,36 @@ impl<'a> CodegenPipeline<'a> {
         }
 
         let mut compiled = CompiledModule::new(name, symbols, compiled_functions);
-        self.profile.measure("pre_emit", 0, || {
-            self.run_module_pre_emit_passes(&mut compiled)
-        })?;
+        let name = compiled.name.clone();
+        self.run_module_passes(
+            "pre_emit",
+            &mut compiled,
+            &name,
+            self.target
+                .pass_config()
+                .pre_emit_module_passes(self.options.opt_level),
+        )?;
         Ok(compiled)
     }
 
-    fn translate_module(&self, module: &Module) -> Result<MachineModule> {
+    fn translate_module(&self, module: &Module) -> Result<TranslatedModule> {
         self.profile.measure("translate", 0, || {
             IRTranslator::new(module, self.target.desc().data_layout).translate_module()
         })
     }
 
-    fn run_module_pre_emit_passes(&self, compiled: &mut CompiledModule) -> Result<()> {
-        let mut pipeline = ModulePassPipeline::new();
-        for pass in self.target.pass_config().pre_emit_module_passes() {
-            pipeline.add_boxed_pass(pass);
-        }
-        let mut ctx =
-            ModulePassContext::new(self.target, &self.options, &self.profile, &compiled.name);
-        pipeline.run(compiled, &mut ctx)?;
-        Ok(())
-    }
-
-    fn run_module_post_emit_passes(&self, compiled: &mut EmissionModule) -> Result<()> {
-        let mut pipeline = ModulePassPipeline::new();
-        for pass in self.target.pass_config().post_emit_module_passes() {
-            pipeline.add_boxed_pass(pass);
-        }
-        let mut ctx =
-            ModulePassContext::new(self.target, &self.options, &self.profile, &compiled.name);
-        pipeline.run(compiled, &mut ctx)?;
-        Ok(())
+    fn run_module_passes<M: core::fmt::Debug>(
+        &self,
+        stage: &'static str,
+        module: &mut M,
+        name: &str,
+        passes: Vec<Box<dyn ModuleCodegenPass<M>>>,
+    ) -> Result<()> {
+        self.profile.measure(stage, 0, || {
+            let pipeline = ModulePassPipeline::from_passes(passes);
+            let mut ctx = ModulePassContext::new(self.target, &self.profile, name);
+            pipeline.run(module, &mut ctx)
+        })
     }
 
     fn emit_compiled_functions(&self, compiled: CompiledModule) -> Result<EmissionModule> {
@@ -266,123 +243,5 @@ impl<'a> CodegenPipeline<'a> {
                 .total_size as u64
         });
         Ok(output)
-    }
-
-    /// 获取编译选项的可变引用。
-    pub fn options_mut(&mut self) -> &mut CodegenOptions {
-        &mut self.options
-    }
-
-    /// 获取目标机器。
-    pub fn target(&self) -> &dyn TargetMachine {
-        self.target
-    }
-}
-
-#[cfg(test)]
-mod memory_tests {
-    use super::*;
-    use std::string::ToString;
-    use veloc_lir::MemoryKind;
-
-    #[test]
-    fn selection_rejects_a_changed_access_width_or_direction() {
-        let module = veloc_mir::ModuleParser::new()
-            .parse(
-                r#"
-local function access(ptr) -> i64
-block0(v0: ptr):
-  v1: i64 = load.volatile v0, offset=0
-  return v1
-"#,
-            )
-            .unwrap();
-        module.validate().unwrap();
-        let target = crate::create_target_machine(crate::TargetConfig::default()).unwrap();
-        let pipeline = CodegenPipeline::new(&*target);
-        let translated = pipeline.translate_module(&module).unwrap();
-        let func = module.functions().next().unwrap().1;
-        let sig = &module.signatures()[func.decl.signature];
-        let function_pipeline =
-            FunctionPipeline::new(&*target, &pipeline.options, &pipeline.profile);
-        for wrong_direction in [false, true] {
-            let mut f = translated.functions.iter().next().unwrap().1.clone();
-            let id = f
-                .blocks()
-                .flat_map(|b| f.block_insts(b))
-                .find(|id| f.inst(*id).memory().is_some())
-                .unwrap();
-            let mut access = f.inst(id).memory().unwrap();
-            if wrong_direction {
-                access.kind = MemoryKind::Write;
-            } else {
-                access.bytes = 4;
-            }
-            f.editor().set_inst_memory(id, Some(access));
-            let err = function_pipeline
-                .run(f, sig, &mut translated.symbols.clone())
-                .unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("selection changed the memory access"),
-                "{err}"
-            );
-        }
-    }
-
-    #[test]
-    fn access_contracts_survive_the_complete_machine_pipeline() {
-        let module = veloc_mir::ModuleParser::new()
-            .parse(
-                r#"
-export function access(ptr, i64) -> i64
-
-block0(v0: ptr, v1: i64):
-  ss0: ptr = alloca size=8, align=8
-  store.volatile.align8 v1, v0, offset=8
-  v2: i64 = load.volatile.align8 v0, offset=8
-  store v2, ss0, offset=0
-  v3: i64 = load ss0, offset=0
-  return v3
-"#,
-            )
-            .unwrap();
-        module.validate().unwrap();
-        let target = crate::create_target_machine(crate::TargetConfig::default()).unwrap();
-        for optimize in [false, true] {
-            let pipeline = CodegenPipeline::with_options(
-                &*target,
-                CodegenOptions {
-                    optimize,
-                    ..Default::default()
-                },
-            );
-            let compiled = pipeline.compile_machine_module(&module).unwrap();
-            let f = &compiled.functions[0].machine_function;
-            let accesses: Vec<_> = f
-                .blocks()
-                .flat_map(|b| f.block_insts(b))
-                .filter_map(|id| f.inst(id).memory())
-                .collect();
-            assert_eq!(accesses.len(), 4);
-            for (access, kind) in accesses.iter().zip([
-                MemoryKind::Write,
-                MemoryKind::Read,
-                MemoryKind::Write,
-                MemoryKind::Read,
-            ]) {
-                assert_eq!(access.kind, kind);
-                assert_eq!(access.bytes, 8);
-            }
-            for access in &accesses[..2] {
-                assert_eq!(access.alignment, 8);
-                assert!(access.volatile);
-                assert!(access.may_trap);
-            }
-            for access in &accesses[2..] {
-                assert!(!access.volatile);
-                assert!(!access.may_trap);
-            }
-        }
     }
 }

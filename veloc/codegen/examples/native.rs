@@ -1,6 +1,8 @@
 //! Small MIR-to-object driver; linking is intentionally left to the system linker.
 use std::{env, error::Error, fs};
-use veloc_codegen::{CodegenOptions, CodegenPipeline, TargetConfig, create_target_machine};
+use veloc_codegen::{
+    CodegenOptions, CodegenPipeline, OptLevel, TargetConfig, create_target_machine,
+};
 use veloc_mir::ModuleParser;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -14,10 +16,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|e| e.to_string())?;
     module.validate().map_err(|e| format!("{e:?}"))?;
     let target = create_target_machine(TargetConfig::default())?;
-    let pipeline = CodegenPipeline::with_options(
+    let pipeline = CodegenPipeline::new(
         &*target,
         CodegenOptions {
-            optimize: args.len() == 2,
+            opt_level: if args.len() == 2 {
+                OptLevel::Default
+            } else {
+                OptLevel::None
+            },
             ..Default::default()
         },
     );

@@ -209,7 +209,10 @@ fn copy(w: veloc_lir::InstWriter<'_>, dst: Reg, src: Reg, ty: Type) -> InstId {
 struct Passes;
 impl TargetPostIsel for Passes {}
 impl TargetPassConfig for Passes {
-    fn prepare_passes(&self) -> Vec<Box<dyn crate::pipeline::FunctionPass>> {
+    fn prepare_passes(
+        &self,
+        _level: crate::OptLevel,
+    ) -> Vec<Box<dyn crate::pipeline::FunctionPass>> {
         vec![Box::new(
             crate::passes::lowering::control::BranchTableLowering,
         )]
@@ -302,7 +305,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let bytes = crate::CodegenPipeline::new(&target)
+        let bytes = crate::CodegenPipeline::new(&target, Default::default())
             .compile_object(&mb.build())
             .unwrap();
         let obj = object::File::parse(&*bytes).unwrap();

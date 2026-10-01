@@ -109,6 +109,9 @@ impl<M> Default for ModulePassPipeline<M> {
     }
 }
 impl<M: core::fmt::Debug> ModulePassPipeline<M> {
+    pub fn from_passes(passes: Vec<Box<dyn ModuleCodegenPass<M>>>) -> Self {
+        Self { passes }
+    }
     pub fn new() -> Self {
         Self::default()
     }

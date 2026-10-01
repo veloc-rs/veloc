@@ -46,9 +46,6 @@ The object writer lays out all defined functions together with its section
 alignment. References to definitions in that section bind directly; unresolved
 symbols keep relocations. Object serialization must preserve those positions.
 Byte-changing module passes therefore run before layout, not after it.
-`compile_functions` instead finalizes each standalone function separately and
-continues to reject symbol relocations; its independent byte arrays do not imply
-any relative placement between functions.
 
 These are mandatory emission steps, not instruction-selection optimizations.
 Neither `pre_isel` nor `post_isel` has the final addresses needed to choose forms.
@@ -170,3 +167,25 @@ measurements show smaller output and additional compile time, **not a demonstrat
 runtime speedup**; the two-run runtime sample is too small for a stable estimate.
 The next optimization target is extraction cost (target instructions, sharing and
 register pressure), rather than adding unconstrained saturation rules.
+
+## Driver entry points
+
+Construct `CodegenPipeline::new(target, options)` and call `compile_object`.
+Use `with_profile` to attach shared compilation profiling. Benchmarks of this
+entry point include object serialization and report object bytes.
+
+`CodegenOptions::opt_level` selects the pipeline at construction time:
+`OptLevel::None` retains required lowering, selection, allocation, and frame
+handling; `OptLevel::Default` additionally installs post-selection combining and
+scheduling. Target pass factories receive the same level and must retain required
+transformations at every level. Passes execute unconditionally once registered;
+they do not receive the driver's options or decide whether they are enabled.
+Verification and dumps remain runner policy, independent of optimization level.
+
+`dump_after` selects pass names (`*` selects all), with an optional `dump_function`
+filter. When `dump_after` is empty, the driver translates `VELOC_DUMP_LIR` into
+these options once at construction. Function passes and the translated,
+regalloc, and final boundaries use the same dump formatter.
+
+Translation returns machine IR together with an explicit `MachineFuncId` to MIR
+`FuncId` mapping; compilation does not depend on the two modules' iteration order.

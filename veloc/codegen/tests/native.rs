@@ -6,7 +6,9 @@ use std::{
     process::Command,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use veloc_codegen::{CodegenOptions, CodegenPipeline, TargetConfig, create_target_machine};
+use veloc_codegen::{
+    CodegenOptions, CodegenPipeline, OptLevel, TargetConfig, create_target_machine,
+};
 use veloc_mir::ModuleParser;
 
 struct Workspace(PathBuf);
@@ -349,23 +351,23 @@ fn backend_benchmark() {
         .unwrap();
     module.validate().unwrap();
     let target = create_target_machine(TargetConfig::default()).unwrap();
-    for optimize in [false, true] {
-        let pipeline = CodegenPipeline::with_options(
+    for opt_level in [OptLevel::None, OptLevel::Default] {
+        let pipeline = CodegenPipeline::new(
             &*target,
             CodegenOptions {
-                optimize,
+                opt_level,
                 ..Default::default()
             },
         );
         let start = std::time::Instant::now();
         let mut bytes = 0;
         for _ in 0..200 {
-            let code = pipeline.compile_functions(&module).unwrap();
-            bytes = code.values().map(Vec::len).sum::<usize>();
+            let code = pipeline.compile_object(&module).unwrap();
+            bytes = code.len();
             std::hint::black_box(code);
         }
         eprintln!(
-            "sum: optimize={optimize}, 200 compilations={:?}, machine_code={bytes} bytes",
+            "sum: opt_level={opt_level:?}, 200 compilations={:?}, object={bytes} bytes",
             start.elapsed()
         );
     }
@@ -699,11 +701,11 @@ fn run_config(source: &str, harness: &str, config: TargetConfig) {
     let module = ModuleParser::new().parse(source).unwrap();
     module.validate().unwrap();
     let target = create_target_machine(config).unwrap();
-    for optimize in [false, true] {
-        let pipeline = CodegenPipeline::with_options(
+    for opt_level in [OptLevel::None, OptLevel::Default] {
+        let pipeline = CodegenPipeline::new(
             &*target,
             CodegenOptions {
-                optimize,
+                opt_level,
                 ..Default::default()
             },
         );
@@ -731,14 +733,14 @@ fn run_config(source: &str, harness: &str, config: TargetConfig) {
             if std::time::Instant::now() > deadline {
                 child.kill().unwrap();
                 child.wait().unwrap();
-                panic!("native execution timed out (optimize={optimize})");
+                panic!("native execution timed out (opt_level={opt_level:?})");
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let result = child.wait_with_output().unwrap();
         assert!(
             result.status.success(),
-            "native execution (optimize={optimize}): {:?}\n{}",
+            "native execution (opt_level={opt_level:?}): {:?}\n{}",
             result.status,
             String::from_utf8_lossy(&result.stderr)
         );
@@ -1039,11 +1041,11 @@ int main(void) {
                 assert!(validation.unwrap_err().to_string().contains("POPCNT"));
             }
         }
-        for optimize in [false, true] {
-            let pipeline = CodegenPipeline::with_options(
+        for opt_level in [OptLevel::None, OptLevel::Default] {
+            let pipeline = CodegenPipeline::new(
                 &*target,
                 CodegenOptions {
-                    optimize,
+                    opt_level,
                     ..Default::default()
                 },
             );
@@ -1061,7 +1063,7 @@ int main(void) {
             assert_eq!(
                 disassembly.contains("popcnt"),
                 has_popcnt,
-                "{cpu}, optimize={optimize}: {disassembly}"
+                "{cpu}, opt_level={opt_level:?}: {disassembly}"
             );
         }
         // Cross-compilation must not use build-host CPUID; execution still must.

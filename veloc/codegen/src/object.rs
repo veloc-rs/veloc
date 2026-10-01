@@ -244,7 +244,7 @@ mod tests {
         let module = mb.build();
         let target = create_target_machine(TargetConfig::default()).unwrap();
 
-        let bytes = CodegenPipeline::new(&*target)
+        let bytes = CodegenPipeline::new(&*target, Default::default())
             .compile_object(&module)
             .unwrap();
         let object = object::File::parse(&*bytes).unwrap();
@@ -274,7 +274,7 @@ mod tests {
         let module = mb.build();
         let target = create_target_machine(TargetConfig::default()).unwrap();
 
-        let bytes = CodegenPipeline::new(&*target)
+        let bytes = CodegenPipeline::new(&*target, Default::default())
             .compile_object(&module)
             .unwrap();
         let object = object::File::parse(&*bytes).unwrap();
@@ -310,7 +310,7 @@ mod tests {
         let module = mb.build();
         let target = create_target_machine(TargetConfig::default()).unwrap();
 
-        let bytes = CodegenPipeline::new(&*target)
+        let bytes = CodegenPipeline::new(&*target, Default::default())
             .compile_object(&module)
             .unwrap();
         let object = object::File::parse(&*bytes).unwrap();

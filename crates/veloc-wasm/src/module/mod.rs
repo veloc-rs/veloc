@@ -371,7 +371,7 @@ impl Module {
                 veloc_fastjit::compile_object_with_profile(&ir, profile)
                     .map_err(|e| crate::error::Error::Compile(format!("Fast JIT: {e}")))?
             } else {
-                let pipeline = veloc::codegen::CodegenPipeline::with_options(
+                let pipeline = veloc::codegen::CodegenPipeline::new(
                     engine.backend().target(),
                     engine.config().codegen.clone(),
                 )

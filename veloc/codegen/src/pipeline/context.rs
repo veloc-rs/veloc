@@ -40,21 +40,14 @@ impl<'a> FunctionPassContext<'a> {
 /// Module passes have no unrestricted access to function-analysis caches.
 pub struct ModulePassContext<'a> {
     pub target: &'a dyn TargetMachine,
-    pub options: &'a CodegenOptions,
     pub profile: &'a Profile,
     pub(crate) name: String,
     pub(crate) next_run: u32,
 }
 impl<'a> ModulePassContext<'a> {
-    pub fn new(
-        target: &'a dyn TargetMachine,
-        options: &'a CodegenOptions,
-        profile: &'a Profile,
-        name: &str,
-    ) -> Self {
+    pub fn new(target: &'a dyn TargetMachine, profile: &'a Profile, name: &str) -> Self {
         Self {
             target,
-            options,
             profile,
             name: name.into(),
             next_run: 0,

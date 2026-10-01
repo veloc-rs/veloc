@@ -262,6 +262,7 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                     .translate_module()
                     .map_err(|error| error.to_string())?;
                     return Ok(lir
+                        .machine
                         .functions
                         .iter()
                         .map(|(_, function)| {

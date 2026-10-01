@@ -272,9 +272,11 @@ pub trait TargetFrameLowering: Send + Sync {
     fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction);
 }
 
+/// Build target extensions for the requested optimization policy.
+/// Required lowering must be included at every level, including `None`.
 pub trait TargetPassConfig: Send + Sync {
     /// Target preparation before legalization; may introduce generic operations.
-    fn prepare_passes(&self) -> Vec<Box<dyn FunctionPass>> {
+    fn prepare_passes(&self, _level: crate::OptLevel) -> Vec<Box<dyn FunctionPass>> {
         Vec::new()
     }
 
@@ -282,23 +284,24 @@ pub trait TargetPassConfig: Send + Sync {
     /// Targets needing bank assignment may install it here; it is not a
     /// prerequisite imposed by the common pipeline. Changes to virtual-register
     /// placement constraints invalidate INST_SEMANTICS analyses.
-    fn pre_isel_passes(&self) -> Vec<Box<dyn FunctionPass>> {
+    fn pre_isel_passes(&self, _level: crate::OptLevel) -> Vec<Box<dyn FunctionPass>> {
         Vec::new()
     }
 
     /// 在指令选择之后追加 target 自定义 function passes。
-    fn post_isel_passes(&self) -> Vec<Box<dyn FunctionPass>> {
+    fn post_isel_passes(&self, _level: crate::OptLevel) -> Vec<Box<dyn FunctionPass>> {
         Vec::new()
     }
 
     /// 在寄存器分配之后追加 target 自定义 function passes。
-    fn post_regalloc_passes(&self) -> Vec<Box<dyn FunctionPass>> {
+    fn post_regalloc_passes(&self, _level: crate::OptLevel) -> Vec<Box<dyn FunctionPass>> {
         Vec::new()
     }
 
     /// 在函数发射前追加 target 自定义模块级 late codegen passes。
     fn pre_emit_module_passes(
         &self,
+        _level: crate::OptLevel,
     ) -> Vec<Box<dyn ModuleCodegenPass<crate::pipeline::CompiledModule>>> {
         Vec::new()
     }
@@ -307,6 +310,7 @@ pub trait TargetPassConfig: Send + Sync {
     /// 此时仍可修改编码片段；最终布局之后不能再改变代码大小或顺序。
     fn post_emit_module_passes(
         &self,
+        _level: crate::OptLevel,
     ) -> Vec<Box<dyn ModuleCodegenPass<crate::pipeline::EmissionModule>>> {
         Vec::new()
     }

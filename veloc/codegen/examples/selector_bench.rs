@@ -8,7 +8,9 @@ use std::{
 };
 use veloc_codegen::analysis::FunctionAnalysisCtx;
 use veloc_codegen::passes::isel::InstructionSelector;
-use veloc_codegen::{CodegenOptions, CodegenPipeline, TargetConfig, create_target_machine};
+use veloc_codegen::{
+    CodegenOptions, CodegenPipeline, OptLevel, TargetConfig, create_target_machine,
+};
 use veloc_lir::{InstBuild, MachineFunction, MachineOpcode, Type};
 
 fn workload(ty: Type, comparisons: bool) -> MachineFunction {
@@ -145,28 +147,28 @@ fn main() {
         .parse(include_str!("sum.mir"))
         .unwrap();
     module.validate().unwrap();
-    for optimize in [false, true] {
-        let pipeline = CodegenPipeline::with_options(
+    for opt_level in [OptLevel::None, OptLevel::Default] {
+        let pipeline = CodegenPipeline::new(
             &*target,
             CodegenOptions {
-                optimize,
+                opt_level,
                 ..Default::default()
             },
         );
-        let reference = pipeline.compile_functions(&module).unwrap();
-        let fingerprint = reference.values().fold(0, |h, code| h ^ hash(code));
+        let reference = pipeline.compile_object(&module).unwrap();
+        let fingerprint = hash(&reference);
         let mut times = Vec::new();
         for round in 0..10 {
             let start = Instant::now();
             for _ in 0..128 {
-                black_box(pipeline.compile_functions(black_box(&module)).unwrap());
+                black_box(pipeline.compile_object(black_box(&module)).unwrap());
             }
             if round != 0 {
                 times.push(start.elapsed() / 128);
             }
         }
         println!(
-            "{mode} pipeline sum optimize={optimize} median_us={:.3} hash={fingerprint:016x}",
+            "{mode} compile_object sum opt_level={opt_level:?} median_us={:.3} hash={fingerprint:016x}",
             median(times)
         );
     }

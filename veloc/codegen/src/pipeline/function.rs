@@ -6,7 +6,7 @@ use crate::passes::{
     RemoveUnreachablePass,
 };
 use crate::target::TargetMachine;
-use crate::{CodegenOptions, Error, Result};
+use crate::{CodegenOptions, Error, OptLevel, Result};
 use veloc_lir::MachineFunction;
 use veloc_profile::{Metric, Profile};
 
@@ -27,14 +27,23 @@ impl<'a> FunctionPipeline<'a> {
         profile: &'a Profile,
     ) -> Self {
         let config = target.pass_config();
+        let level = options.opt_level;
+        let mut post_isel = config.post_isel_passes(level);
+        match level {
+            OptLevel::None => {}
+            OptLevel::Default => {
+                post_isel.push(Box::new(PostIselOptimizePass));
+                post_isel.push(Box::new(crate::passes::schedule::SchedulePass));
+            }
+        }
         Self {
             target,
             options,
             profile,
-            prepare: PassSequence::from_passes(config.prepare_passes()),
-            pre_isel: PassSequence::from_passes(config.pre_isel_passes()),
-            post_isel: PassSequence::from_passes(config.post_isel_passes()),
-            post_regalloc: PassSequence::from_passes(config.post_regalloc_passes()),
+            prepare: PassSequence::from_passes(config.prepare_passes(level)),
+            pre_isel: PassSequence::from_passes(config.pre_isel_passes(level)),
+            post_isel: PassSequence::from_passes(post_isel),
+            post_regalloc: PassSequence::from_passes(config.post_regalloc_passes(level)),
         }
     }
     pub fn run(
@@ -84,7 +93,6 @@ impl<'a> FunctionPipeline<'a> {
             &mut mfunc,
             &mut ctx,
         )?;
-        self.maybe_dump_mfunc("abi-lowered", &mfunc);
         self.profile
             .measure("prepare", 0, || self.prepare.run(&mut mfunc, &mut ctx))?;
         run_function_pass(
@@ -92,7 +100,6 @@ impl<'a> FunctionPipeline<'a> {
             &mut mfunc,
             &mut ctx,
         )?;
-        self.maybe_dump_mfunc("legalized", &mfunc);
         ctx.profile
             .record_lazy(Metric::count("legalized_insts"), || {
                 mfunc
@@ -105,13 +112,11 @@ impl<'a> FunctionPipeline<'a> {
         // Target preparation may change the CFG. Selection always receives
         // reachable blocks only, even when optional optimizations are disabled.
         run_function_pass(&RemoveUnreachablePass, &mut mfunc, &mut ctx)?;
-        self.maybe_dump_mfunc("pre-isel", &mfunc);
         run_function_pass(
             &InstructionSelectionPass::new(self.target.selector()),
             &mut mfunc,
             &mut ctx,
         )?;
-        self.maybe_dump_mfunc("selected", &mfunc);
         ctx.profile
             .record_lazy(Metric::count("selected_insts"), || {
                 mfunc
@@ -122,15 +127,6 @@ impl<'a> FunctionPipeline<'a> {
 
         self.profile
             .measure("post_isel", 0, || self.post_isel.run(&mut mfunc, &mut ctx))?;
-        self.maybe_dump_mfunc("post-isel-target", &mfunc);
-        run_function_pass(
-            &PostIselOptimizePass::new(self.target.post_isel()),
-            &mut mfunc,
-            &mut ctx,
-        )?;
-        self.maybe_dump_mfunc("post-isel-optimized", &mfunc);
-        run_function_pass(&crate::passes::schedule::SchedulePass, &mut mfunc, &mut ctx)?;
-        self.maybe_dump_mfunc("scheduled", &mfunc);
 
         // Allocation owns its exact input until its plan is materialized.
         let mut mfunc = self.profile.measure("regalloc", 0, || {
@@ -142,17 +138,16 @@ impl<'a> FunctionPipeline<'a> {
             .apply(crate::analysis::ChangeSet::WHOLE_FUNCTION);
         ctx.stage = FunctionStage::Allocated;
         self.verify_function("regalloc", &mfunc, verify_allocated)?;
+        super::dump_after("regalloc", &mfunc, self.options);
 
         self.profile.measure("post_regalloc", 0, || {
             self.post_regalloc.run(&mut mfunc, &mut ctx)
         })?;
-        self.maybe_dump_mfunc("post-regalloc", &mfunc);
         run_function_pass(
             &FrameFinalizePass::new(self.target.frame_lowering()),
             &mut mfunc,
             &mut ctx,
         )?;
-        self.maybe_dump_mfunc("frame-finalized", &mfunc);
         ctx.profile.record_lazy(Metric::count("final_insts"), || {
             mfunc
                 .blocks()
@@ -162,7 +157,6 @@ impl<'a> FunctionPipeline<'a> {
         ctx.profile
             .count("stack_slots", mfunc.stack_frame.slots().len() as u64);
 
-        self.maybe_dump_mfunc("final", &mfunc);
         super::dump_after("final", &mfunc, self.options);
         Ok(mfunc)
     }
@@ -179,26 +173,6 @@ impl<'a> FunctionPipeline<'a> {
                 })
                 .map_err(|e| Error::codegen(std::format!("{name}: {e}")))?;
         }
-        self.maybe_dump_mfunc(name, mfunc);
         Ok(())
-    }
-    fn maybe_dump_mfunc(&self, stage: &str, mfunc: &MachineFunction) {
-        use std::env;
-
-        let filter = if self.options.dump_lir {
-            Some(std::string::String::from("*"))
-        } else {
-            env::var("VELOC_DUMP_LIR").ok()
-        };
-        let Some(filter) = filter else {
-            return;
-        };
-
-        if filter != "*" && filter != mfunc.name {
-            return;
-        }
-
-        std::eprintln!("===== LIR {}: {} =====", stage, mfunc.name);
-        std::eprintln!("{}", mfunc.format_for_dump());
     }
 }

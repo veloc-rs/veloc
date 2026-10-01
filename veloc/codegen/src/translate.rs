@@ -10,6 +10,12 @@ use veloc_lir::InstBuild;
 use veloc_lir::{BlockId, CallInfo, MachineFunction, MachineModule, Reg};
 use veloc_mir::{InstView, Module, Opcode, TypeInfo, Value};
 
+/// Machine IR and source identities recorded together during translation.
+pub struct TranslatedModule {
+    pub machine: MachineModule,
+    pub sources: PrimaryMap<veloc_lir::MachineFuncId, veloc_mir::FuncId>,
+}
+
 /// IR 到 LIR 的翻译器
 pub struct IRTranslator<'a> {
     module: &'a Module,
@@ -36,7 +42,7 @@ impl<'a> IRTranslator<'a> {
     /// Translate valid MIR. Callers may run the MIR validator before this stage.
     /// Unsupported backend features are still diagnosed during lowering.
     /// 将 IR 模块翻译为 MachineModule
-    pub fn translate_module(&self) -> Result<MachineModule> {
+    pub fn translate_module(&self) -> Result<TranslatedModule> {
         for (_, func) in self.module.functions() {
             if func.body.is_some_and(|body| {
                 body.dfg()
@@ -64,7 +70,8 @@ impl<'a> IRTranslator<'a> {
         }
         let mut mmodule = MachineModule::new(std::string::String::from("default"));
 
-        for (_, func) in self.module.functions().filter(|(_, f)| f.body.is_some()) {
+        let mut sources = PrimaryMap::new();
+        for (source, func) in self.module.functions().filter(|(_, f)| f.body.is_some()) {
             let mfunc = FuncTranslator::new(
                 self.module,
                 self.layout,
@@ -73,10 +80,15 @@ impl<'a> IRTranslator<'a> {
                 &mut mmodule,
             )
             .translate()?;
-            mmodule.add_function(mfunc);
+            let machine_id = mmodule.add_function(mfunc);
+            let source_id = sources.push(source);
+            debug_assert_eq!(machine_id, source_id);
         }
 
-        Ok(mmodule)
+        Ok(TranslatedModule {
+            machine: mmodule,
+            sources,
+        })
     }
 }
 

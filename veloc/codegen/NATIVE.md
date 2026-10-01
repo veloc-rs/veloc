@@ -17,7 +17,8 @@ cc veloc/codegen/examples/sum.c "$native_dir/sum.o" -o "$native_dir/sum"
 "$native_dir/sum"
 ```
 
-The result is `sum(100) = 5050`. `--no-opt` disables scheduling; `VELOC_DUMP_LIR=sum`
+The result is `sum(100) = 5050`. `--no-opt` selects `OptLevel::None`, omitting
+post-selection combining and scheduling; `VELOC_DUMP_LIR=sum`
 prints intermediate stages. This driver validates MIR before compilation and
 emits an ELF object; it does not implement a JIT or a linker.
 

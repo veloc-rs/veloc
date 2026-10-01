@@ -21,9 +21,6 @@ pub enum CodegenError {
     TargetMachineUnavailable {
         arch: TargetArch,
     },
-    UnexpectedRelocation {
-        symbol: String,
-    },
     TranslatedFunctionNotFound {
         function: String,
     },
@@ -67,12 +64,6 @@ impl Error {
 
     pub fn target_machine_unavailable(arch: TargetArch) -> Self {
         Self::Codegen(CodegenError::TargetMachineUnavailable { arch })
-    }
-
-    pub fn unexpected_relocation(symbol: impl Into<String>) -> Self {
-        Self::Codegen(CodegenError::UnexpectedRelocation {
-            symbol: symbol.into(),
-        })
     }
 
     pub fn translated_function_not_found(function: impl Into<String>) -> Self {
@@ -136,11 +127,6 @@ impl fmt::Display for CodegenError {
                 f,
                 "failed to create target machine for requested architecture `{}`",
                 arch.name()
-            ),
-            CodegenError::UnexpectedRelocation { symbol } => write!(
-                f,
-                "raw code emission cannot resolve external symbol relocation to `{}`",
-                symbol
             ),
             CodegenError::TranslatedFunctionNotFound { function } => {
                 write!(f, "translated function not found: `{}`", function)

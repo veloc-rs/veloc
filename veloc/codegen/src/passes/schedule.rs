@@ -28,9 +28,6 @@ impl FunctionPass for SchedulePass {
         FunctionStage::Selected
     }
     fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
-        if !cx.options.optimize {
-            return Ok(());
-        }
         let target = cx.target;
         let plan = cx.with_liveness(|function, liveness| plan_schedule(function, target, liveness));
         cx.profile.count("scheduled_regions", plan.regions as u64);
