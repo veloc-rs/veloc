@@ -436,17 +436,13 @@ pub(super) fn compile(
                             return Err(format!("{target} is not in {class}"));
                         }
                         allowed.retain(|r| r == target);
-                        if !is_result {
-                            operands[index] = OperandConstraint::FixedUse {
-                                reg: target.into(),
-                                src: operand.clone(),
-                            };
-                        }
                     } else {
                         if !is_result {
                             return Err("tied constraints belong to results".into());
                         }
-                        let input = operands.iter().position(|o| matches!(o, OperandConstraint::Use(n) | OperandConstraint::FixedUse { src: n, .. } if n == target))
+                        let input = operands
+                            .iter()
+                            .position(|o| matches!(o, OperandConstraint::Use(n) if n == target))
                             .ok_or_else(|| format!("tied input `{target}` does not exist"))?;
                         ties.push((index, input));
                     }
@@ -465,22 +461,13 @@ pub(super) fn compile(
                     ));
                 }
             }
-            let mut implicit = fields
-                .remove("implicit")
-                .map(object)
-                .transpose()?
-                .unwrap_or_default();
-            let implicit_uses = list(implicit.remove("reads"))?;
-            let implicit_defs = list(implicit.remove("writes"))?;
-            let clobbers = list(implicit.remove("clobbers"))?;
-            finish(&implicit)?;
-            for reg in implicit_uses.iter().chain(&implicit_defs).chain(&clobbers) {
+            let clobbers = list(fields.remove("clobbers"))?;
+            for reg in &clobbers {
                 if !regs.contains(reg) {
-                    return Err(format!("unknown implicit register `{reg}`"));
+                    return Err(format!("unknown clobbered register {reg}"));
                 }
             }
-            // A result installs a new value; an implicit write only destroys the
-            // old contents. A storage root must not have both descriptions.
+            // State results install values; clobbers only destroy old contents.
             let mut state_results = BTreeSet::new();
             for operand in &operands {
                 let OperandConstraint::Def(name) = operand else {
@@ -492,7 +479,7 @@ pub(super) fn compile(
                 if !state_results.insert(reg) {
                     return Err(format!("multiple results occupy state register `{reg}`"));
                 }
-                if implicit_defs.contains(reg) || clobbers.contains(reg) {
+                if clobbers.contains(reg) {
                     return Err(format!(
                         "state result `{name}` already describes the write to `{reg}`"
                     ));
@@ -542,13 +529,7 @@ pub(super) fn compile(
                 Some(node) if name(&node)? == "true" => true,
                 _ => return Err("rematerializable must be true when specified".into()),
             };
-            if rematerializable
-                && (memory.is_some()
-                    || flow != "Next"
-                    || is_pseudo
-                    || !implicit_uses.is_empty()
-                    || !implicit_defs.is_empty())
-            {
+            if rematerializable && (memory.is_some() || flow != "Next" || is_pseudo) {
                 return Err("state rematerialization requires a pure producer".into());
             }
             // Checked by the shared expression compiler after operand resolution.
@@ -562,8 +543,6 @@ pub(super) fn compile(
                 rematerializable,
                 value_types,
                 ties,
-                implicit_uses,
-                implicit_defs,
                 clobbers,
                 schedule_class,
                 flow,
@@ -599,6 +578,5 @@ fn operand_name(op: &OperandConstraint) -> &str {
         | OperandConstraint::Global(n)
         | OperandConstraint::StackSlot(n)
         | OperandConstraint::Call(n) => n,
-        OperandConstraint::FixedUse { src, .. } => src,
     }
 }

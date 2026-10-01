@@ -399,9 +399,7 @@ pub(super) fn check_construction(
         let fields = collect_field_variable_bindings(&rule.fields);
         for (operand, binding) in definition.operands.iter().zip(bindings) {
             let name = match operand {
-                OperandConstraint::Def(name)
-                | OperandConstraint::Use(name)
-                | OperandConstraint::FixedUse { src: name, .. } => name,
+                OperandConstraint::Def(name) | OperandConstraint::Use(name) => name,
                 _ => continue,
             };
             let variable = match binding {

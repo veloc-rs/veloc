@@ -47,12 +47,13 @@ execute on the host. Scheduling costs remain separate from ISA availability.
 1. MIR translation produces typed generic LIR. Local stack slots have a symbolic
    `StackBase::Frame`, not an early dependency on a particular physical register.
 2. Block arguments become edge copies, including cycle breaking and split edges.
-3. Legalization checks expansions; ABI lowering places argument copies before
-   calls and result copies after them, and reserves the maximum outgoing area.
+3. Legalization checks expansions; ABI lowering attaches argument/result location
+   constraints and describes stack arguments in symbolic outgoing areas.
 4. Spec selects target instructions. Calls explicitly expose ABI register uses
    and caller-saved clobbers, even though these operands have no encoding fields.
-5. Operand constraints are materialized before scheduling. A move defines its
-   destination; it must not pretend to read the previous destination value.
+5. Operand constraints survive scheduling and are consumed by allocation.
+   Fixed hardware state values use explicit SSA edges; state placement resolves
+   their non-copyable locations before ordinary register allocation.
 6. Scheduling preserves register dependencies and effect boundaries. Allocation
    uses the same cached CFG liveness, then inserts target-provided spill code.
 7. Frame finalization saves modified callee-saved registers and restores them at
@@ -60,25 +61,21 @@ execute on the host. Scheduling costs remain separate from ISA availability.
 
 ## Scheduling driven by target definitions
 
-An instruction or template may declare `(schedule 3)`: it promises a movable,
-nontrapping, non-memory, non-control operation with estimated result latency 3.
-Missing declarations are barriers. A concrete instruction can override an
-inherited latency. The definition compiler rejects invalid/duplicate latencies,
-opaque implicit dependencies, and scheduled branch/stack operands. Descriptions
-remain trusted semantic contracts: the generator cannot infer safety from x86
-encoding bytes alone.
+An instruction or template may declare a scheduling class, such as
+`schedule = "IntAlu"`. CPU definitions provide result latency, resource occupancy
+and issue width. Missing scheduling classes and memory/control operations are
+region boundaries; declarations remain trusted semantic contracts.
 
-`TargetInstMetadata` contains the generated schedule information. The scheduler
-has no x86 opcode switch. Integer flag clobbers come from existing declarations;
-flag consumers remain barriers. Within a region the final flag writer stays last
-among flag writers, preserving the flags observed by following instructions.
+Values read and produced by instructions are explicit operands, including flags
+and fixed-register division inputs/results. Destruction without a result uses
+`clobbers = [...]` in Spec. Call stack pointers are explicit physical inputs;
+ABI argument/result values retain their separate fixed location constraints.
 
-Each region has at most 256 instructions, bounding compile-time work. A register
-dependency DAG preserves RAW, WAR and WAW ordering, including physical and tied
-operands. List scheduling weighs estimated readiness, critical-path height and
-live virtual-register pressure separately for each register class. Memory, calls,
-variable shifts and floating-point arithmetic currently remain barriers. These
-are latency estimates, not a CPU port/throughput model.
+A region dependency graph borrows the IR and preserves RAW, WAR and WAW ordering,
+including fixed hardware state. Timing and register-pressure analyses operate on
+the same region. List scheduling considers resource readiness, critical-path
+height and register pressure. Regions end at effect boundaries, without a fixed
+instruction-count window.
 
 ## Simple allocator, explicit limitations
 

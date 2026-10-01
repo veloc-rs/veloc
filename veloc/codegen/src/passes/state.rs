@@ -299,8 +299,7 @@ impl FunctionPass for ResolveStatePass {
                 let fields: Vec<_> = (0..source.fields().len())
                     .map(|i| source.fields().at(i))
                     .collect();
-                let reads = source.implicit_uses().to_vec();
-                let writes = source.implicit_defs().to_vec();
+                let clobbers: Vec<_> = source.clobbers().collect();
                 let mut results = Vec::new();
                 for value in original_results {
                     if let Some(location) = values.location(value) {
@@ -317,7 +316,7 @@ impl FunctionPass for ResolveStatePass {
                 f.editor()
                     .before(id)
                     .writer()
-                    .with_effects(&reads, &writes)
+                    .with_clobbers(clobbers)
                     .write(opcode, &results, &inputs, fields);
             }
         }

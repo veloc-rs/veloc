@@ -317,20 +317,15 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     assert_eq!(f.inst(mixed).inputs(), &[b, b]);
     f.check_refs().unwrap();
     f.editor().invalidate_inst(mixed);
-    // Result edits and implicit physical effects have independent locations.
+    // Result edits and register clobbers have independent storage.
     f.editor().set_inst_result(add, 0, b);
     assert_eq!(f.defs(dst).count(), 0);
     assert_eq!(f.defs(b).single().unwrap().operand(), f.result_id(add, 0));
     let preg = Reg::new_preg(3);
-    f.editor().set_inst_effects(
-        add,
-        veloc_lir::RegEffects {
-            uses: vec![preg],
-            defs: vec![preg],
-        },
-    );
-    assert_eq!(f.uses(preg).single().unwrap().role(), RefRole::Use);
-    assert_eq!(f.defs(preg).single().unwrap().role(), RefRole::Def);
+    f.editor().set_inst_clobbers(add, &[preg]);
+    assert_eq!(f.uses(preg).count(), 0);
+    assert_eq!(f.defs(preg).count(), 0);
+    assert_eq!(f.inst(add).clobbers().collect::<Vec<_>>(), [preg]);
     assert_eq!(f.inst(add).results(), &[b]);
     f.check_refs().unwrap();
     f.editor().invalidate_inst(add);
@@ -341,7 +336,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     assert_eq!(f.uses(b).count(), 0);
     assert_eq!(f.defs(dst).count(), 0);
     f.check_refs().unwrap();
-    // Jump-table edges and implicit effects use the same pool as explicit operands.
+    // Jump-table edges use the operand pool; clobbers remain independent.
     let edges = [
         f.editor().create_edge(block, &[a, a, b]),
         f.editor().create_edge(block, &[]),
@@ -354,13 +349,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
         &[a],
         fields,
     );
-    f.editor().set_inst_effects(
-        source,
-        veloc_lir::RegEffects {
-            uses: vec![preg],
-            defs: vec![preg],
-        },
-    );
+    f.editor().set_inst_clobbers(source, &[preg]);
     let source_slot = f.input_id(source, 0);
     let source_slots: std::collections::HashSet<_> = f.uses(a).map(|r| r.operand()).collect();
     f.editor()
@@ -377,8 +366,9 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     f.editor().replace_inst(branch, source);
     assert_eq!(f.input_id(branch, 0), source_slot);
     assert!(f.uses(b).all(|r| r.inst() == branch));
-    assert_eq!(f.uses(preg).single().unwrap().inst(), branch);
-    assert_eq!(f.defs(preg).single().unwrap().inst(), branch);
+    assert_eq!(f.inst(branch).clobbers().collect::<Vec<_>>(), [preg]);
+    assert_eq!(f.uses(preg).count(), 0);
+    assert_eq!(f.defs(preg).count(), 0);
     f.check_refs().unwrap();
     f.editor().invalidate_inst(branch);
     f.check_refs().unwrap();

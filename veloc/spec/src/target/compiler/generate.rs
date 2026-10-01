@@ -24,7 +24,6 @@ pub(super) fn find_operand_info<'a>(
         .enumerate()
         .find(|(_, op)| match op {
             OperandConstraint::Use(name)
-            | OperandConstraint::FixedUse { src: name, .. }
             | OperandConstraint::Def(name)
             | OperandConstraint::Imm(name)
             | OperandConstraint::Block(name)
@@ -35,7 +34,7 @@ pub(super) fn find_operand_info<'a>(
         .map(|(index, op)| {
             let class = |op: &OperandConstraint| match op {
                 OperandConstraint::Def(_) => 0,
-                OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => 1,
+                OperandConstraint::Use(_) => 1,
                 _ => 2,
             };
             let index = operands[..index]
@@ -205,9 +204,7 @@ pub(crate) fn generate_target_inst_metadata(
         .unwrap();
         let constraints = inst_def.operands.iter().filter_map(|op| match op {
             OperandConstraint::Def(n) => Some((n, true)),
-            OperandConstraint::Use(n) | OperandConstraint::FixedUse { src: n, .. } => {
-                Some((n, false))
-            }
+            OperandConstraint::Use(n) => Some((n, false)),
             _ => None,
         });
         let mut defs = 0;
@@ -249,12 +246,7 @@ pub(crate) fn generate_target_inst_metadata(
                 .count();
             let input = inst_def.operands[..src]
                 .iter()
-                .filter(|op| {
-                    matches!(
-                        op,
-                        OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. }
-                    )
-                })
+                .filter(|op| matches!(op, OperandConstraint::Use(_)))
                 .count();
             entries.push(format!("OperandConstraint {{ operand: OperandRef::Result({def}), placement: Placement::Reuse({input}) }}"));
         }
@@ -272,24 +264,8 @@ pub(crate) fn generate_target_inst_metadata(
         .unwrap();
         writeln!(
             output,
-            "    implicit_uses: {},",
-            format_reg_metadata_slice(&inst_def.implicit_uses, &reg_names, name, "implicit-use")
-        )
-        .unwrap();
-        writeln!(
-            output,
-            "    implicit_defs: {},",
-            format_reg_metadata_slice(
-                &inst_def
-                    .implicit_defs
-                    .iter()
-                    .chain(&inst_def.clobbers)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                &reg_names,
-                name,
-                "implicit-def"
-            )
+            "    clobbers: {},",
+            format_reg_metadata_slice(&inst_def.clobbers, &reg_names, name, "clobber")
         )
         .unwrap();
         writeln!(output, "}};").unwrap();
@@ -318,10 +294,10 @@ pub(crate) fn generate_target_inst_metadata(
     writeln!(output, "}}").unwrap();
     output.push_str(r#"
 impl TargetInst {
-    /// Construct explicit and fixed implicit operands together from the schema.
+    /// Construct register operands and destruction effects from the schema.
     pub fn write(self, writer: veloc_lir::InstWriter<'_>, results: &[Reg], inputs: &[Reg], fields: impl IntoIterator<Item = FieldValue>) -> veloc_lir::InstId {
         let metadata = target_inst_metadata(self);
-        writer.with_effects(metadata.implicit_uses, metadata.implicit_defs)
+        writer.with_clobbers(metadata.clobbers.iter().copied())
             .write(veloc_lir::MachineOpcode::Target(self.as_u32()), results, inputs, fields)
     }
 }
@@ -380,12 +356,7 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
         let inputs = instruction
             .operands
             .iter()
-            .filter(|op| {
-                matches!(
-                    op,
-                    OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. }
-                )
-            })
+            .filter(|op| matches!(op, OperandConstraint::Use(_)))
             .count();
         let fields = instruction.operands.len() - inputs - results;
         // A call contract carries ABI register operands in addition to the
@@ -461,9 +432,7 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
                 unreachable!()
             };
             let input = match &instruction.operands[input] {
-                OperandConstraint::Use(name) | OperandConstraint::FixedUse { src: name, .. } => {
-                    name
-                }
+                OperandConstraint::Use(name) => name,
                 _ => unreachable!(),
             };
             let (result, _) = find_operand_info(result, &instruction.operands).unwrap();

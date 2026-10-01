@@ -10,7 +10,7 @@ use veloc_lir::BlockId as Block;
 #[cfg(test)]
 use veloc_lir::InstBuild;
 use veloc_lir::InstRead;
-use veloc_lir::{ControlFlow, MachineFunction, Reg};
+use veloc_lir::{MachineFunction, Reg};
 
 /// Selected code is SSA with target instructions and symbolic call-frame boundaries.
 pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
@@ -157,15 +157,11 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
                 }
                 define(reg, index + 1)?;
             }
-            match target.control_flow(&inst) {
-                ControlFlow::Branch => transferred = true,
-                ControlFlow::Jump | ControlFlow::Return | ControlFlow::Trap
-                    if f.layout().next_inst(id).is_some() =>
-                {
-                    return Err(fail(format!("instruction after unconditional exit {id:?}")));
-                }
-                _ => {}
+            let flow = target.control_flow(&inst);
+            if !flow.may_continue() && f.layout().next_inst(id).is_some() {
+                return Err(fail(format!("instruction after unconditional exit {id:?}")));
             }
+            transferred |= flow.may_leave_block();
         }
     }
     let mut analyses = FunctionAnalysisCtx::default();
@@ -180,12 +176,10 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
     }
     let dom = analyses.dominators(f, target);
     for block in f.blocks() {
-        let falls_through = f.layout().last_inst(block).is_none_or(|id| {
-            matches!(
-                target.control_flow(&f.inst(id)),
-                ControlFlow::Next | ControlFlow::Call | ControlFlow::Branch
-            )
-        });
+        let falls_through = f
+            .layout()
+            .last_inst(block)
+            .is_none_or(|id| target.control_flow(&f.inst(id)).may_continue());
         if falls_through
             && f.layout()
                 .next_block(block)
@@ -278,12 +272,7 @@ pub(crate) fn verify_call_frames(
                 }
                 continue;
             }
-            if active.is_some()
-                && !matches!(
-                    target.control_flow(&inst),
-                    ControlFlow::Next | ControlFlow::Call
-                )
-            {
+            if active.is_some() && target.control_flow(&inst).may_leave_block() {
                 return Err(fail("control transfer inside a block-local call frame"));
             }
             for index in 0..inst.fields().len() {

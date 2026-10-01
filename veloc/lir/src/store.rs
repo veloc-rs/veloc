@@ -28,30 +28,15 @@ impl Range {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Operands<T> {
-    data: Vec<T>,
+#[derive(Debug, Clone, Default)]
+struct OperandStorage {
+    data: Vec<Reg>,
     free: Vec<Vec<u32>>,
 }
 
-impl<T> Default for Operands<T> {
-    fn default() -> Self {
-        Self {
-            data: Vec::new(),
-            free: Vec::new(),
-        }
-    }
-}
-
-impl<T: Clone> Operands<T> {
-    fn insert(&mut self, values: &[T]) -> Range {
-        self.insert_pair(values, &[])
-    }
-    fn insert_pair(&mut self, values: &[T], tail: &[T]) -> Range {
-        let len = values
-            .len()
-            .checked_add(tail.len())
-            .expect("operand count overflow");
+impl OperandStorage {
+    fn insert(&mut self, values: &[Reg]) -> Range {
+        let len = values.len();
         if len == 0 {
             return Range::default();
         }
@@ -69,19 +54,14 @@ impl<T: Clone> Operands<T> {
                 .checked_add(capacity)
                 .expect("operand store overflow");
             assert!(end <= u32::MAX as usize, "operand store overflow");
-            self.data.resize(
-                end,
-                values.first().or_else(|| tail.first()).unwrap().clone(),
-            );
+            self.data.resize(end, values[0]);
             start
         });
         let range = Range {
             start,
             len: len.try_into().expect("operand count overflow"),
         };
-        let (first, second) = self.data[range.indices()].split_at_mut(values.len());
-        first.clone_from_slice(values);
-        second.clone_from_slice(tail);
+        self.data[range.indices()].copy_from_slice(values);
         range
     }
 
@@ -94,40 +74,12 @@ impl<T: Clone> Operands<T> {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct RegEffects<R = Vec<Reg>> {
-    pub uses: R,
-    pub defs: R,
-}
-
-/// One allocation: explicit operands followed by implicit physical registers.
-/// Store the boundary locally so storage need not depend on target descriptors.
-#[derive(Debug, Clone, Copy, Default)]
-struct RegRange {
-    all: Range,
-    explicit: u32,
-}
-impl RegRange {
-    fn explicit(self) -> Range {
-        Range {
-            start: self.all.start,
-            len: self.explicit,
-        }
-    }
-    fn implicit(self) -> Range {
-        Range {
-            start: self.all.start + self.explicit,
-            len: self.all.len - self.explicit,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct StoredInst {
     opcode: MachineOpcode,
-    inputs: RegRange,
+    inputs: Range,
     fields: crate::Fields,
-    results: RegRange,
+    results: Range,
 }
 
 #[derive(Debug, Clone)]
@@ -140,11 +92,12 @@ struct StoredEdge {
 #[derive(Debug, Clone, Default)]
 pub struct InstStore {
     instructions: PrimaryMap<InstId, StoredInst>,
-    registers: Operands<Reg>,
+    registers: OperandStorage,
     fields: crate::FieldPools,
     // Access facts are directly indexed; call contracts live in common fields.
     memory: SecondaryMap<InstId, Option<MemoryAccess>>,
     constraints: hashbrown::HashMap<InstId, Vec<crate::OperandConstraint>>,
+    clobbers: hashbrown::HashMap<InstId, SmallVec<[Reg; 4]>>,
     edges: PrimaryMap<crate::EdgeId, Option<StoredEdge>>,
     pub(crate) references: References,
 }
@@ -153,10 +106,11 @@ impl InstStore {
     pub(crate) fn with_capacity(insts: usize) -> Self {
         Self {
             instructions: PrimaryMap::with_capacity(insts),
-            registers: Operands::default(),
+            registers: OperandStorage::default(),
             fields: crate::FieldPools::default(),
             memory: SecondaryMap::with_capacity(insts),
             constraints: hashbrown::HashMap::new(),
+            clobbers: hashbrown::HashMap::new(),
             edges: PrimaryMap::new(),
             references: References::default(),
         }
@@ -187,16 +141,16 @@ impl InstStore {
         self.registers.data[id.as_u32() as usize]
     }
     pub fn input_id(&self, id: InstId, index: usize) -> OperandId {
-        self.instructions[id].inputs.explicit().at(index)
+        self.instructions[id].inputs.at(index)
     }
     pub fn result_id(&self, id: InstId, index: usize) -> OperandId {
-        self.instructions[id].results.explicit().at(index)
+        self.instructions[id].results.at(index)
     }
     pub fn results(&self, id: InstId) -> &[Reg] {
-        self.registers(self.instructions[id].results.explicit())
+        self.registers(self.instructions[id].results)
     }
     pub fn inputs(&self, id: InstId) -> &[Reg] {
-        self.registers(self.instructions[id].inputs.explicit())
+        self.registers(self.instructions[id].inputs)
     }
     pub fn fields(&self, id: InstId) -> crate::FieldView<'_> {
         self.fields.view(&self.instructions[id].fields)
@@ -219,9 +173,8 @@ impl InstStore {
             }
             return;
         }
-        let implicit = self.implicit_defs(id).to_vec();
-        self.release_registers(self.instructions[id].results.all);
-        self.instructions[id].results = self.alloc_group(id, RefRole::Def, results, &implicit);
+        self.release_registers(self.instructions[id].results);
+        self.instructions[id].results = self.alloc_registers(id, RefRole::Def, results);
     }
     pub fn set_result(&mut self, id: InstId, index: usize, reg: Reg) {
         self.set_operand(self.result_id(id, index), reg);
@@ -236,9 +189,8 @@ impl InstStore {
             }
             return;
         }
-        let implicit = self.implicit_uses(id).to_vec();
-        self.release_registers(self.instructions[id].inputs.all);
-        self.instructions[id].inputs = self.alloc_group(id, RefRole::Use, inputs, &implicit);
+        self.release_registers(self.instructions[id].inputs);
+        self.instructions[id].inputs = self.alloc_registers(id, RefRole::Use, inputs);
     }
     pub fn memory(&self, id: InstId) -> Option<MemoryAccess> {
         self.memory[id]
@@ -250,13 +202,13 @@ impl InstStore {
         inputs: &[Reg],
         fields: crate::Fields,
         memory: Option<MemoryAccess>,
-        implicit: RegEffects<&[Reg]>,
+        clobbers: &[Reg],
     ) -> InstId {
         let id = self.instructions.next_key();
         self.check_edges(id, &fields);
-        let inputs = self.alloc_group(id, RefRole::Use, inputs, implicit.uses);
+        let inputs = self.alloc_registers(id, RefRole::Use, inputs);
         self.attach_edges(id, &fields);
-        let results = self.alloc_group(id, RefRole::Def, results, implicit.defs);
+        let results = self.alloc_registers(id, RefRole::Def, results);
         let id = self.instructions.push(StoredInst {
             opcode,
             inputs,
@@ -266,6 +218,7 @@ impl InstStore {
         if memory.is_some() {
             self.memory[id] = memory;
         }
+        self.set_clobbers(id, clobbers);
         id
     }
     /// Transfer a detached instruction into a stable destination ID.
@@ -276,9 +229,9 @@ impl InstStore {
         self.clear(id);
         let empty = StoredInst {
             opcode: MachineOpcode::Invalid,
-            inputs: RegRange::default(),
+            inputs: Range::default(),
             fields: crate::Fields::None,
-            results: RegRange::default(),
+            results: Range::default(),
         };
         self.instructions[id] = core::mem::replace(&mut self.instructions[source], empty);
         if let Some(access) = self.memory[source] {
@@ -287,6 +240,9 @@ impl InstStore {
         }
         if let Some(constraints) = self.constraints.remove(&source) {
             self.constraints.insert(id, constraints);
+        }
+        if let Some(clobbers) = self.clobbers.remove(&source) {
+            self.clobbers.insert(id, clobbers);
         }
         let edge_ids: Vec<_> = self.edge_ids(id).collect();
         for edge in edge_ids {
@@ -310,10 +266,7 @@ impl InstStore {
             &[],
             crate::Fields::None,
             None,
-            RegEffects {
-                uses: &[],
-                defs: &[],
-            },
+            &[],
         );
     }
     pub(crate) fn write_full_at(
@@ -324,7 +277,7 @@ impl InstStore {
         inputs: &[Reg],
         fields: crate::Fields,
         memory: Option<MemoryAccess>,
-        implicit: RegEffects<&[Reg]>,
+        clobbers: &[Reg],
     ) {
         self.check_edges(id, &fields);
         let removed: Vec<_> = self
@@ -335,13 +288,14 @@ impl InstStore {
             self.delete_edge(edge);
         }
         self.attach_edges(id, &fields);
-        self.release_registers(self.instructions[id].inputs.all);
-        self.release_registers(self.instructions[id].results.all);
+        self.release_registers(self.instructions[id].inputs);
+        self.release_registers(self.instructions[id].results);
         self.fields
             .remove(core::mem::take(&mut self.instructions[id].fields));
-        self.instructions[id].inputs = self.alloc_group(id, RefRole::Use, inputs, implicit.uses);
-        self.instructions[id].results = self.alloc_group(id, RefRole::Def, results, implicit.defs);
+        self.instructions[id].inputs = self.alloc_registers(id, RefRole::Use, inputs);
+        self.instructions[id].results = self.alloc_registers(id, RefRole::Def, results);
         self.instructions[id].fields = fields;
+        self.set_clobbers(id, clobbers);
         self.set_memory(id, memory);
         self.instructions[id].opcode = opcode;
         self.constraints.remove(&id);
@@ -361,25 +315,33 @@ impl InstStore {
             self.memory[id] = access;
         }
     }
-    pub fn implicit_uses(&self, id: InstId) -> &[Reg] {
-        self.registers(self.instructions[id].inputs.implicit())
+    pub fn clobbers(&self, id: InstId) -> &[Reg] {
+        self.clobbers
+            .get(&id)
+            .map(|regs| regs.as_slice())
+            .unwrap_or(&[])
     }
-    pub fn implicit_defs(&self, id: InstId) -> &[Reg] {
-        self.registers(self.instructions[id].results.implicit())
-    }
-    pub fn effects(&self, id: InstId) -> Option<RegEffects<&[Reg]>> {
-        let uses = self.implicit_uses(id);
-        let defs = self.implicit_defs(id);
-        (!uses.is_empty() || !defs.is_empty()).then_some(RegEffects { uses, defs })
-    }
-    pub fn set_effects(&mut self, id: InstId, effects: RegEffects) {
-        assert!(effects.uses.iter().chain(&effects.defs).all(Reg::is_preg));
-        let inputs = self.inputs(id).to_vec();
-        let results = self.results(id).to_vec();
-        self.release_registers(self.instructions[id].inputs.all);
-        self.release_registers(self.instructions[id].results.all);
-        self.instructions[id].inputs = self.alloc_group(id, RefRole::Use, &inputs, &effects.uses);
-        self.instructions[id].results = self.alloc_group(id, RefRole::Def, &results, &effects.defs);
+    pub fn set_clobbers(&mut self, id: InstId, regs: &[Reg]) {
+        assert!(
+            regs.iter().all(Reg::is_preg),
+            "clobbers require physical registers"
+        );
+        let abi = self.call_info(id).map(|info| info.clobbers);
+        let mut clobbers = SmallVec::<[Reg; 4]>::new();
+        for &reg in regs {
+            // Keep ABI destruction in the shared mask when copying through
+            // the unified clobbers() view.
+            if !abi.is_some_and(|mask| mask.contains(reg.as_preg().unwrap()))
+                && !clobbers.contains(&reg)
+            {
+                clobbers.push(reg);
+            }
+        }
+        if clobbers.is_empty() {
+            self.clobbers.remove(&id);
+        } else {
+            self.clobbers.insert(id, clobbers);
+        }
     }
     pub fn call_info(&self, id: InstId) -> Option<&crate::CallInfo> {
         self.fields(id).call_info()
@@ -396,7 +358,7 @@ impl InstStore {
             self.call_info(id).expect("call fields").frame.is_none(),
             "call already lowered"
         );
-        // These updates preserve implicit register occurrences and memory facts.
+        // These updates preserve instruction clobbers and memory facts.
         self.set_inputs(id, inputs);
         let info = self.fields.call_info_mut(&self.instructions[id].fields);
         info.frame = Some(frame);
@@ -543,20 +505,6 @@ impl InstStore {
             next: self.references.head(reg, RefRole::Def),
         }
     }
-    fn alloc_group(
-        &mut self,
-        inst: InstId,
-        role: RefRole,
-        explicit: &[Reg],
-        implicit: &[Reg],
-    ) -> RegRange {
-        let range = self.registers.insert_pair(explicit, implicit);
-        self.attach_range(inst, role, range);
-        RegRange {
-            all: range,
-            explicit: explicit.len().try_into().expect("operand count overflow"),
-        }
-    }
     fn alloc_registers(&mut self, inst: InstId, role: RefRole, regs: &[Reg]) -> Range {
         let range = self.registers.insert(regs);
         self.attach_range(inst, role, range);
@@ -581,15 +529,12 @@ impl InstStore {
     }
     fn operand_ranges(&self, id: InstId) -> impl Iterator<Item = (Range, RefRole)> + '_ {
         let inst = &self.instructions[id];
-        [
-            (inst.inputs.all, RefRole::Use),
-            (inst.results.all, RefRole::Def),
-        ]
-        .into_iter()
-        .chain(
-            self.edge_ids(id)
-                .map(|edge| (self.edges[edge].as_ref().unwrap().args, RefRole::Use)),
-        )
+        [(inst.inputs, RefRole::Use), (inst.results, RefRole::Def)]
+            .into_iter()
+            .chain(
+                self.edge_ids(id)
+                    .map(|edge| (self.edges[edge].as_ref().unwrap().args, RefRole::Use)),
+            )
     }
 
     /// Replace virtual uses directly by slot identity, including edge arguments.
@@ -620,7 +565,7 @@ impl InstStore {
             }
             Ok(())
         };
-        for (inst, data) in self.instructions.iter() {
+        for inst in self.instructions.keys() {
             for edge in self.edge_ids(inst) {
                 if !seen_edges.insert(edge) {
                     return Err("successor referenced more than once");
@@ -633,19 +578,6 @@ impl InstStore {
                 {
                     return Err("incorrect successor owner or deleted edge");
                 }
-            }
-            for group in [data.inputs, data.results] {
-                if group.explicit > group.all.len {
-                    return Err("invalid explicit operand boundary");
-                }
-            }
-            if !self
-                .implicit_uses(inst)
-                .iter()
-                .chain(self.implicit_defs(inst))
-                .all(Reg::is_preg)
-            {
-                return Err("implicit operand is not a physical register");
             }
             for (range, role) in self.operand_ranges(inst) {
                 if range.len == 0 {
@@ -791,104 +723,74 @@ mod tests {
             &[],
             crate::Fields::default(),
             None,
-            RegEffects::default(),
+            &[],
         );
         for n in 0..100 {
             let fields = store.pack_fields([FieldValue::Imm(n)]);
-            store.write_full_at(
-                id,
-                MachineOpcode::Target(1),
-                &[],
-                &[reg],
-                fields,
-                None,
-                RegEffects::default(),
-            );
+            store.write_full_at(id, MachineOpcode::Target(1), &[], &[reg], fields, None, &[]);
             store.set_memory(id, Some(MemoryAccess::new(MemoryKind::Read, 8)));
             store.clear(id);
         }
         assert!(store.fields(id).is_empty());
         assert!(store.memory(id).is_none());
-        assert!(store.effects(id).is_none());
+        assert!(store.clobbers(id).is_empty());
         let source = store.write_full(
             MachineOpcode::Target(2),
             &[],
             &[],
             crate::Fields::default(),
             None,
-            RegEffects::default(),
+            &[],
         );
-        store.set_effects(
-            source,
-            RegEffects {
-                uses: alloc::vec![Reg::new_preg(1)],
-                defs: alloc::vec![Reg::new_preg(2)],
-            },
-        );
+        store.set_inputs(source, &[Reg::new_preg(1)]);
+        store.set_clobbers(source, &[Reg::new_preg(2)]);
         store.replace(id, source);
-        assert_eq!(store.effects(id).unwrap().uses, [Reg::new_preg(1)]);
-        assert_eq!(store.effects(id).unwrap().defs, [Reg::new_preg(2)]);
-        assert!(store.effects(source).is_none());
+        assert_eq!(store.inputs(id), [Reg::new_preg(1)]);
+        assert_eq!(store.clobbers(id), [Reg::new_preg(2)]);
+        assert!(store.clobbers(source).is_empty());
         store.check_refs().unwrap();
         store.clear(id);
-        assert!(store.effects(id).is_none());
+        assert!(store.clobbers(id).is_empty());
         store.check_refs().unwrap();
 
-        // One range per direction, with explicit APIs excluding the suffix.
+        // Clobbers are independent of operand ranges and never define values.
         let input = Reg::new_vreg(7);
         let output = Reg::new_vreg(8);
         let physical = Reg::new_preg(1);
         let combined = store.write_full(
             MachineOpcode::Target(3),
             &[output],
-            &[input],
+            &[input, physical],
             crate::Fields::default(),
             None,
-            RegEffects {
-                uses: &[physical],
-                defs: &[physical],
-            },
+            &[physical],
         );
-        assert_eq!(store.inputs(combined), &[input]);
+        assert_eq!(store.inputs(combined), &[input, physical]);
         assert_eq!(store.results(combined), &[output]);
-        assert_eq!(store.implicit_uses(combined), &[physical]);
-        assert_eq!(store.implicit_defs(combined), &[physical]);
-        assert_eq!(
-            store.inputs(combined).as_ptr().wrapping_add(1),
-            store.implicit_uses(combined).as_ptr()
-        );
-        assert_eq!(
-            store.results(combined).as_ptr().wrapping_add(1),
-            store.implicit_defs(combined).as_ptr()
-        );
+        assert_eq!(store.clobbers(combined), &[physical]);
+        assert_eq!(store.defs(physical).count(), 0);
         assert_eq!(
             store.get(combined).uses().collect::<Vec<_>>(),
             [input, physical]
         );
-        // Reshaping explicit results must preserve the implicit suffix.
         store.set_results(combined, &[output, input]);
         assert_eq!(store.results(combined), &[output, input]);
-        assert_eq!(store.implicit_defs(combined), &[physical]);
+        assert_eq!(store.clobbers(combined), &[physical]);
         store.check_refs().unwrap();
-        store.set_effects(combined, RegEffects::default());
-        assert!(store.implicit_uses(combined).is_empty());
-        assert!(store.implicit_defs(combined).is_empty());
+        store.set_clobbers(combined, &[]);
+        assert!(store.clobbers(combined).is_empty());
         assert_eq!(store.results(combined), &[output, input]);
-        assert_eq!(store.inputs(combined), &[input]);
+        assert_eq!(store.inputs(combined), &[input, physical]);
         store.check_refs().unwrap();
         store.write_full_at(
             combined,
             MachineOpcode::Target(4),
             &[],
-            &[],
+            &[physical],
             crate::Fields::None,
             None,
-            RegEffects {
-                uses: &[physical],
-                defs: &[physical],
-            },
+            &[physical],
         );
-        assert!(store.inputs(combined).is_empty());
         assert!(store.results(combined).is_empty());
         assert_eq!(store.get(combined).uses().collect::<Vec<_>>(), [physical]);
         store.clear(combined);

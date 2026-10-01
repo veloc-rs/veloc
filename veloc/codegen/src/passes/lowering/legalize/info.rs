@@ -54,9 +54,7 @@ impl<'a> RewriteContext<'a> {
         let mut fields: SmallVec<[FieldValue; 2]> = (0..inst.fields().len())
             .map(|i| inst.fields().at(i))
             .collect();
-        let effects = inst.effects().unwrap_or_default();
-        let uses: SmallVec<[Reg; 4]> = SmallVec::from_slice(effects.uses);
-        let defs: SmallVec<[Reg; 4]> = SmallVec::from_slice(effects.defs);
+        let clobbers: SmallVec<[Reg; 4]> = inst.clobbers().collect();
         for &(index, value) in changes {
             assert_eq!(
                 self.function.vreg_data(inputs[index]).ty,
@@ -68,7 +66,7 @@ impl<'a> RewriteContext<'a> {
         for (index, value) in attributes {
             fields[*index] = value.clone();
         }
-        let mut writer = self.function.replace(self.root).with_effects(&uses, &defs);
+        let mut writer = self.function.replace(self.root).with_clobbers(clobbers);
         if let Some(access) = memory {
             writer = writer.with_memory(access);
         }

@@ -178,11 +178,6 @@ pub struct RegClassDef {
 pub enum OperandConstraint {
     /// 普通使用: (use $name)
     Use(String),
-    /// 固定寄存器使用: (use (fixed REG $name))
-    FixedUse {
-        reg: String,
-        src: String,
-    },
     /// 普通定义: (def $name)
     Def(String),
     /// 立即数使用: (imm $name)

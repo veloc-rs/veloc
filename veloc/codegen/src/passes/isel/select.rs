@@ -118,22 +118,6 @@ impl<'a> InstructionSelector<'a> {
             &mut scratch.edge_transfers,
         )
         .ok_or_else(|| crate::error::Error::select(opcode, "No matching selection rule"))?;
-        let constraints = edit.inst(inst_id).constraints().to_vec();
-        if !constraints.is_empty() {
-            let [destination] = scratch.selected.as_slice() else {
-                return Err(crate::Error::codegen(
-                    "constrained boundary must select one instruction",
-                ));
-            };
-            let old = edit.inst(inst_id);
-            let new = edit.inst(*destination);
-            if old.inputs() != new.inputs() || old.results() != new.results() {
-                return Err(crate::Error::codegen(
-                    "selection changed constrained operand identities",
-                ));
-            }
-            edit.set_inst_constraints(*destination, constraints);
-        }
         if let Some(access) = memory {
             let mut destination = None;
             for &id in scratch.selected.iter() {

@@ -192,7 +192,7 @@ impl FuncEditor<'_> {
     }
 
     /// Rebuild one instruction in place, retaining its ID and layout position.
-    /// Unspecified memory facts and implicit register effects are cleared.
+    /// Unspecified memory facts and instruction clobbers are cleared.
     pub fn replace(&mut self, id: InstId) -> InstWriter<'_> {
         assert_ne!(self.inst(id).opcode(), crate::MachineOpcode::Invalid);
         InstWriter {
@@ -201,7 +201,8 @@ impl FuncEditor<'_> {
             changes: self.changes.as_deref_mut(),
             position: Position::Replace(id),
             memory: None,
-            effects: crate::RegEffects::default(),
+            clobbers: smallvec::SmallVec::new(),
+            constraints: Vec::new(),
         }
     }
 
@@ -222,8 +223,10 @@ impl FuncEditor<'_> {
         self.alloc_vreg_data(VRegData { ty, bank: None })
     }
 
-    pub fn set_inst_effects(&mut self, id: InstId, effects: crate::RegEffects) {
-        self.function.body.store.set_effects(id, effects);
+    /// Replace instruction-local destruction effects. A call's ABI mask is
+    /// owned by its call contract and remains in the unified clobbers() view.
+    pub fn set_inst_clobbers(&mut self, id: InstId, clobbers: &[Reg]) {
+        self.function.body.store.set_clobbers(id, clobbers);
         self.changed_inst(id);
     }
     /// Set complete call inputs, including the indirect callee, and record stack
@@ -431,10 +434,6 @@ impl InstInserter<'_> {
         self.writer().with_memory(access)
     }
 
-    pub fn with_effects<'a>(&'a mut self, uses: &'a [Reg], defs: &'a [Reg]) -> InstWriter<'a> {
-        self.writer().with_effects(uses, defs)
-    }
-
     pub fn edge(&mut self, block: crate::BlockId, args: &[Reg]) -> crate::EdgeId {
         self.editor.create_edge(block, args)
     }
@@ -458,7 +457,8 @@ impl InstInserter<'_> {
                 before: self.before,
             },
             memory: None,
-            effects: crate::RegEffects::default(),
+            clobbers: smallvec::SmallVec::new(),
+            constraints: Vec::new(),
         }
     }
 
@@ -502,7 +502,8 @@ pub struct InstWriter<'a> {
     layout: &'a mut crate::layout::Layout,
     position: Position,
     memory: Option<crate::MemoryAccess>,
-    effects: crate::RegEffects<&'a [Reg]>,
+    clobbers: smallvec::SmallVec<[Reg; 4]>,
+    constraints: Vec<crate::OperandConstraint>,
 }
 
 impl<'a> InstWriter<'a> {
@@ -511,16 +512,24 @@ impl<'a> InstWriter<'a> {
         self.store.create_edge(block, args)
     }
 
-    pub fn with_effects(mut self, uses: &'a [Reg], defs: &'a [Reg]) -> Self {
-        assert!(
-            uses.iter().chain(defs).all(Reg::is_preg),
-            "implicit effects require physical registers"
-        );
-        self.effects = crate::RegEffects { uses, defs };
+    /// Add destruction effects without introducing value definitions.
+    pub fn with_clobbers(mut self, regs: impl IntoIterator<Item = Reg>) -> Self {
+        for reg in regs {
+            assert!(reg.is_preg(), "clobbers require physical registers");
+            if !self.clobbers.contains(&reg) {
+                self.clobbers.push(reg);
+            }
+        }
         self
     }
     pub fn with_memory(mut self, access: crate::MemoryAccess) -> Self {
         self.memory = Some(access);
+        self
+    }
+
+    /// Attach occurrence constraints using the new instruction's operand layout.
+    pub fn with_constraints(mut self, constraints: Vec<crate::OperandConstraint>) -> Self {
+        self.constraints = constraints;
         self
     }
 
@@ -538,10 +547,6 @@ impl<'a> InstWriter<'a> {
             "cannot construct an invalid instruction"
         );
         let fields = self.store.pack_fields(fields);
-        let implicit = crate::RegEffects {
-            uses: self.effects.uses,
-            defs: self.effects.defs,
-        };
         let id = match self.position {
             Position::Replace(id) => {
                 self.store.write_full_at(
@@ -551,14 +556,19 @@ impl<'a> InstWriter<'a> {
                     inputs,
                     fields,
                     self.memory,
-                    implicit,
+                    &self.clobbers,
                 );
                 id
             }
             Position::Insert { block, before } => {
-                let id =
-                    self.store
-                        .write_full(opcode, results, inputs, fields, self.memory, implicit);
+                let id = self.store.write_full(
+                    opcode,
+                    results,
+                    inputs,
+                    fields,
+                    self.memory,
+                    &self.clobbers,
+                );
                 if let Some(anchor) = before {
                     self.layout.insert_before(anchor, id);
                 } else {
@@ -567,6 +577,7 @@ impl<'a> InstWriter<'a> {
                 id
             }
         };
+        self.store.set_constraints(id, self.constraints);
         if let Some(changes) = self.changes {
             changes.insts.push(id);
         }

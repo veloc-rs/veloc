@@ -11,9 +11,7 @@ template GprBinary(Opcode: ident, Byte: expr, Wide: expr, Mnemonic: expr, Bits: 
             src2: GPR64,
             src1: GPR64,
         };
-        implicit = {
-            clobbers: [AF],
-        };
+        clobbers = [AF];
         rematerializable = true;
         schedule = "IntAlu";
         assembly = {
@@ -47,9 +45,7 @@ template GprBinaryImm(Opcode: ident, Wide: expr, Extension: expr, Imm: ident, Mn
             dst: tied(src, GPR64),
             src: GPR64,
         };
-        implicit = {
-            clobbers: [AF],
-        };
+        clobbers = [AF];
         rematerializable = true;
         schedule = "IntAlu";
         assembly = {
@@ -84,9 +80,7 @@ template GprMultiply(Opcode: ident, Wide: expr, Mnemonic: expr, Bits: expr) {
             src2: GPR64,
             src1: GPR64,
         };
-        implicit = {
-            clobbers: [PF, ZF, SF, AF],
-        };
+        clobbers = [PF, ZF, SF, AF];
         rematerializable = true;
         schedule = "IntMul";
         assembly = {
@@ -111,9 +105,7 @@ template GprShiftCl(Opcode: ident, Wide: expr, Extension: expr, Mnemonic: expr, 
             count: fixed(RCX, GPR64),
             src1: GPR64,
         };
-        implicit = {
-            clobbers: [CF, PF, ZF, SF, OF, AF],
-        };
+        clobbers = [CF, PF, ZF, SF, OF, AF];
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(count, 8)] }]
         };
@@ -151,9 +143,7 @@ template GprShiftImm(Opcode: ident, Wide: expr, Extension: expr, Mnemonic: expr,
             dst: tied(src, GPR64),
             src: GPR64,
         };
-        implicit = {
-            clobbers: [CF, PF, ZF, SF, OF, AF],
-        };
+        clobbers = [CF, PF, ZF, SF, OF, AF];
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), imm(imm)] }]
         };
@@ -168,85 +158,53 @@ expand GprShiftImm(X86Sar32ri, false, 7, "sar", 32);
 
 expand GprShiftImm(X86Sar64ri, true, 7, "sar", 64);
 
-template Divide32(Opcode: ident, Extension: expr, Mnemonic: expr) {
-    op Opcode(src: Value<GprValue>) -> () {
+// Hardware register operands remain SSA values until allocation. The low/high
+// inputs and quotient/remainder results occupy the same roots at different times.
+template Divide(Opcode: ident, Ty: expr, Wide: expr, Bits: expr, Extension: expr, Mnemonic: expr) {
+    op Opcode(low: Value<Ty>, high: Value<Ty>, divisor: Value<Ty>) -> (quotient: Value<Ty>, remainder: Value<Ty>) {
         encoding = Emission::legacy(
-            Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xF7, wide: false },
-            Form::ModRm(RegField::Extension(Extension), Rm::Register(src)),
+            Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xF7, wide: Wide },
+            Form::ModRm(RegField::Extension(Extension), Rm::Register(divisor)),
             Immediate::None,
         );
         registers = {
-            src: GPR64,
+            low: fixed(RAX, GPR64),
+            high: fixed(RDX, GPR64),
+            divisor: GPR64,
+            quotient: fixed(RAX, GPR64),
+            remainder: fixed(RDX, GPR64),
         };
-        implicit = {
-            reads: [EAX, EDX],
-            writes: [EAX, EDX],
-            clobbers: [CF, PF, ZF, SF, OF, AF],
-        };
+        clobbers = [CF, PF, ZF, SF, OF, AF];
         assembly = {
-            lines: [{ mnemonic: Mnemonic, operands: [reg(src, 32)] }]
+            lines: [{ mnemonic: Mnemonic, operands: [reg(divisor, Bits)] }]
         };
     }
 }
 
-expand Divide32(X86IDiv32, 7, "idiv");
+expand Divide(X86IDiv32, Type::I32, false, 32, 7, "idiv");
+expand Divide(X86IDiv64, Type::I64, true, 64, 7, "idiv");
+expand Divide(X86Div32, Type::I32, false, 32, 6, "div");
+expand Divide(X86Div64, Type::I64, true, 64, 6, "div");
 
-template Divide64(Opcode: ident, Extension: expr, Mnemonic: expr) {
-    op Opcode(src: Value<GprValue>) -> () {
+template SignExtendDividend(Opcode: ident, Ty: expr, Wide: expr, Mnemonic: expr) {
+    op Opcode(low: Value<Ty>) -> (high: Value<Ty>) {
         encoding = Emission::legacy(
-            Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xF7, wide: true },
-            Form::ModRm(RegField::Extension(Extension), Rm::Register(src)),
+            Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x99, wide: Wide },
+            Form::None,
             Immediate::None,
         );
         registers = {
-            src: GPR64,
-        };
-        implicit = {
-            reads: [RAX, RDX],
-            writes: [RAX, RDX],
-            clobbers: [CF, PF, ZF, SF, OF, AF],
+            low: fixed(RAX, GPR64),
+            high: fixed(RDX, GPR64),
         };
         assembly = {
-            lines: [{ mnemonic: Mnemonic, operands: [reg(src, 64)] }]
+            lines: [{ mnemonic: Mnemonic, operands: [] }]
         };
     }
 }
 
-expand Divide64(X86IDiv64, 7, "idiv");
-
-expand Divide32(X86Div32, 6, "div");
-
-expand Divide64(X86Div64, 6, "div");
-
-op X86Cqo() -> () {
-    encoding = Emission::legacy(
-        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x99, wide: true },
-        Form::None,
-        Immediate::None,
-    );
-    implicit = {
-        reads: [RAX],
-        writes: [RDX],
-    };
-    assembly = {
-        lines: [{ mnemonic: "cqo", operands: [] }]
-    };
-}
-
-op X86Cdq() -> () {
-    encoding = Emission::legacy(
-        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x99, wide: false },
-        Form::None,
-        Immediate::None,
-    );
-    implicit = {
-        reads: [EAX],
-        writes: [EDX],
-    };
-    assembly = {
-        lines: [{ mnemonic: "cdq", operands: [] }]
-    };
-}
+expand SignExtendDividend(X86Cqo, Type::I64, true, "cqo");
+expand SignExtendDividend(X86Cdq, Type::I32, false, "cdq");
 
 select(n: lir::PtrAdd) {
     choose {
@@ -403,11 +361,15 @@ select(n: lir::Sdiv) {
     choose {
         case {
             require(type_is<Type::I64>(n.rhs));
-            replace(n, [build(X86Mov64(reg(RAX), n.lhs)), build(X86Cqo()), build(X86IDiv64(n.rhs)), build(X86Mov64(n.dst, reg(RAX)))]);
+            let high = temp(Type::I64);
+            let remainder = temp(Type::I64);
+            replace(n, [build(X86Cqo(high, n.lhs)), build(X86IDiv64(n.dst, remainder, n.lhs, high, n.rhs))]);
         }
         case {
             require(type_is<Type::I32>(n.rhs));
-            replace(n, [build(X86Mov32(reg(RAX), n.lhs)), build(X86Cdq()), build(X86IDiv32(n.rhs)), build(X86Mov32(n.dst, reg(RAX)))]);
+            let high = temp(Type::I32);
+            let remainder = temp(Type::I32);
+            replace(n, [build(X86Cdq(high, n.lhs)), build(X86IDiv32(n.dst, remainder, n.lhs, high, n.rhs))]);
         }
     }
 }
@@ -416,11 +378,15 @@ select(n: lir::Srem) {
     choose {
         case {
             require(type_is<Type::I64>(n.rhs));
-            replace(n, [build(X86Mov64(reg(RAX), n.lhs)), build(X86Cqo()), build(X86IDiv64(n.rhs)), build(X86Mov64(n.dst, reg(RDX)))]);
+            let high = temp(Type::I64);
+            let quotient = temp(Type::I64);
+            replace(n, [build(X86Cqo(high, n.lhs)), build(X86IDiv64(quotient, n.dst, n.lhs, high, n.rhs))]);
         }
         case {
             require(type_is<Type::I32>(n.rhs));
-            replace(n, [build(X86Mov32(reg(RAX), n.lhs)), build(X86Cdq()), build(X86IDiv32(n.rhs)), build(X86Mov32(n.dst, reg(RDX)))]);
+            let high = temp(Type::I32);
+            let quotient = temp(Type::I32);
+            replace(n, [build(X86Cdq(high, n.lhs)), build(X86IDiv32(quotient, n.dst, n.lhs, high, n.rhs))]);
         }
     }
 }
@@ -429,11 +395,16 @@ select(n: lir::Udiv) {
     choose {
         case {
             require(type_is<Type::I64>(n.rhs));
-            replace(n, [build(X86Mov64(reg(RAX), n.lhs)), build(X86Xor64(reg(RDX), reg(RDX), reg(RDX))), build(X86Div64(n.rhs)), build(X86Mov64(n.dst, reg(RAX)))]);
+            let high = temp(Type::I64);
+            let remainder = temp(Type::I64);
+            // A 32-bit zero write also defines the full 64-bit high word.
+            replace(n, [build(X86Mov32Imm(high, 0)), build(X86Div64(n.dst, remainder, n.lhs, high, n.rhs))]);
         }
         case {
             require(type_is<Type::I32>(n.rhs));
-            replace(n, [build(X86Mov32(reg(RAX), n.lhs)), build(X86Xor32(reg(RDX), reg(RDX), reg(RDX))), build(X86Div32(n.rhs)), build(X86Mov32(n.dst, reg(RAX)))]);
+            let high = temp(Type::I32);
+            let remainder = temp(Type::I32);
+            replace(n, [build(X86Mov32Imm(high, 0)), build(X86Div32(n.dst, remainder, n.lhs, high, n.rhs))]);
         }
     }
 }
@@ -442,11 +413,15 @@ select(n: lir::Urem) {
     choose {
         case {
             require(type_is<Type::I64>(n.rhs));
-            replace(n, [build(X86Mov64(reg(RAX), n.lhs)), build(X86Xor64(reg(RDX), reg(RDX), reg(RDX))), build(X86Div64(n.rhs)), build(X86Mov64(n.dst, reg(RDX)))]);
+            let high = temp(Type::I64);
+            let quotient = temp(Type::I64);
+            replace(n, [build(X86Mov32Imm(high, 0)), build(X86Div64(quotient, n.dst, n.lhs, high, n.rhs))]);
         }
         case {
             require(type_is<Type::I32>(n.rhs));
-            replace(n, [build(X86Mov32(reg(RAX), n.lhs)), build(X86Xor32(reg(RDX), reg(RDX), reg(RDX))), build(X86Div32(n.rhs)), build(X86Mov32(n.dst, reg(RDX)))]);
+            let high = temp(Type::I32);
+            let quotient = temp(Type::I32);
+            replace(n, [build(X86Mov32Imm(high, 0)), build(X86Div32(quotient, n.dst, n.lhs, high, n.rhs))]);
         }
     }
 }

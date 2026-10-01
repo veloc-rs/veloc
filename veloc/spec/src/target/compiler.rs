@@ -18,8 +18,6 @@ pub(crate) struct FinalInstDef {
     rematerializable: bool,
     value_types: Vec<(String, crate::types::TypeSet)>,
     ties: Vec<(usize, usize)>,
-    implicit_uses: Vec<String>,
-    implicit_defs: Vec<String>,
     clobbers: Vec<String>,
     schedule_class: Option<String>,
     flow: String,

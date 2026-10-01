@@ -47,7 +47,6 @@ impl<'a> Adapters<'a> {
         for op in &definition.operands {
             let (name, ty, variant) = match op {
                 OperandConstraint::Def(name) | OperandConstraint::Use(name) => (name, "Reg", None),
-                OperandConstraint::FixedUse { src, .. } => (src, "Reg", None),
                 OperandConstraint::Imm(name) => (name, "i64", Some("Imm")),
                 OperandConstraint::Block(name) => (name, "veloc_lir::EdgeId", Some("Edge")),
                 OperandConstraint::Global(name) => (name, "veloc_lir::SymbolId", Some("Global")),
@@ -76,11 +75,7 @@ impl<'a> Adapters<'a> {
         if !self.builders.contains_key(&build) {
             let mut body = String::new();
             if call {
-                params.extend([
-                    "abi_args: &[Reg]".into(),
-                    "abi_results: &[Reg]".into(),
-                    "effects: veloc_lir::RegEffects<&[Reg]>".into(),
-                ]);
+                params.extend(["abi_args: &[Reg]".into(), "abi_results: &[Reg]".into()]);
             }
             if returns {
                 params.push("abi_uses: &[Reg]".into());
@@ -96,26 +91,18 @@ impl<'a> Adapters<'a> {
                 writeln!(body, "let mut results = smallvec::SmallVec::<[Reg; 4]>::from_slice(&[{}]); results.extend_from_slice(abi_results);", results.join(", ")).unwrap();
                 writeln!(
                     body,
-                    "let metadata = target_inst_metadata(TargetInst::{opcode});"
+                    "TargetInst::{opcode}.write(writer, &results, &inputs, [{}])",
+                    fields.join(", ")
                 )
                 .unwrap();
-                body.push_str(
-                    "let mut uses = smallvec::SmallVec::<[Reg; 4]>::from_slice(metadata.implicit_uses);
-                     let mut defs = smallvec::SmallVec::<[Reg; 4]>::from_slice(metadata.implicit_defs);
-                     for &reg in effects.uses { if !uses.contains(&reg) { uses.push(reg); } }
-                     for &reg in effects.defs { if !defs.contains(&reg) { defs.push(reg); } }
-"
-                );
-                writeln!(body, "writer.with_effects(&uses, &defs).write(veloc_lir::MachineOpcode::Target(TargetInst::{opcode}.as_u32()), &results, &inputs, [{}])", fields.join(", ")).unwrap();
             } else if returns {
                 writeln!(
                     body,
-                    "let metadata = target_inst_metadata(TargetInst::{opcode});"
+                    "TargetInst::{opcode}.write(writer, &[{}], abi_uses, [{}])",
+                    results.join(", "),
+                    fields.join(", ")
                 )
                 .unwrap();
-
-                writeln!(body, "writer.with_effects(metadata.implicit_uses, metadata.implicit_defs).write(veloc_lir::MachineOpcode::Target(TargetInst::{opcode}.as_u32()), &[{}], abi_uses, [{}])",
-                    results.join(", "), fields.join(", ")).unwrap();
             } else {
                 writeln!(
                     body,
@@ -144,20 +131,36 @@ impl<'a> Adapters<'a> {
                 .iter()
                 .find(|m| m.domain == Domain::Input && m.field.shape == Shape::Sequence)
                 .expect("call construction requires source ABI arguments");
+            let result = self.layouts[source]
+                .members
+                .iter()
+                .find(|m| m.domain == Domain::Result && m.field.shape == Shape::Sequence)
+                .expect("call construction requires source ABI results");
             writeln!(body, "let source = store.inst(_source);").unwrap();
             writeln!(body, "let abi_args = smallvec::SmallVec::<[Reg; 8]>::from_slice(&source.inputs()[{}..]);", input.index).unwrap();
+            writeln!(body, "let abi_results = smallvec::SmallVec::<[Reg; 4]>::from_slice(&source.results()[{}..]);", result.index).unwrap();
+            // ABI operands are appended after the target's declared operands.
+            // Generate their mapping from both schemas, not from runtime values.
+            writeln!(body, "let map_input = |index: usize| index.checked_sub({}).expect(\"constraint outside ABI arguments\") + {};", input.index, inputs.len()).unwrap();
+            writeln!(body, "let map_result = |index: usize| index.checked_sub({}).expect(\"constraint outside ABI results\") + {};", result.index, results.len()).unwrap();
             body.push_str(
-                "let abi_results = smallvec::SmallVec::<[Reg; 4]>::from_slice(source.results());\n",
+                r#"let constraints = source.constraints().iter().copied().map(|mut constraint| {
+    constraint.operand = match constraint.operand {
+        veloc_lir::OperandRef::Input(index) => veloc_lir::OperandRef::Input(map_input(index)),
+        veloc_lir::OperandRef::Result(index) => veloc_lir::OperandRef::Result(map_result(index)),
+    };
+    if let veloc_lir::Placement::Reuse(index) = &mut constraint.placement {
+        *index = map_input(*index);
+    }
+    constraint
+}).collect();
+"#,
             );
-            body.push_str("let effects = source.effects().unwrap_or_default();\nlet uses = smallvec::SmallVec::<[Reg; 4]>::from_slice(effects.uses);\nlet defs = smallvec::SmallVec::<[Reg; 4]>::from_slice(effects.defs);\n");
-            args.extend([
-                "&abi_args".into(),
-                "&abi_results".into(),
-                "veloc_lir::RegEffects { uses: &uses, defs: &defs }".into(),
-            ]);
+            args.extend(["&abi_args".into(), "&abi_results".into()]);
         }
         if returns {
             body.push_str("let abi_uses = smallvec::SmallVec::<[Reg; 4]>::from_slice(store.inst(_source).inputs());\n");
+            body.push_str("let constraints = store.inst(_source).constraints().to_vec();\n");
             args.push("&abi_uses".into());
         }
         let arguments = if args.is_empty() {
@@ -165,7 +168,12 @@ impl<'a> Adapters<'a> {
         } else {
             format!(", {}", args.join(", "))
         };
-        writeln!(body, "{build}(store.writer(){arguments})\n}}").unwrap();
+        let writer = if call || returns {
+            "store.writer().with_constraints(constraints)"
+        } else {
+            "store.writer()"
+        };
+        writeln!(body, "{build}({writer}{arguments})\n}}").unwrap();
         self.builders.insert(adapter.clone(), body);
         adapter
     }
@@ -427,7 +435,7 @@ impl Code {
             for (index, operand) in definition.operands.iter().enumerate() {
                 let category = match operand {
                     OperandConstraint::Def(_) => 0,
-                    OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => 1,
+                    OperandConstraint::Use(_) => 1,
                     _ => 2,
                 };
                 if rule.builds.len() == 1

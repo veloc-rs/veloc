@@ -514,18 +514,10 @@ fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetInstructions) -> CfgI
         for id in mfunc.block_insts(block) {
             let inst = &mfunc.inst(id);
             let flow = target.control_flow(inst);
-            if matches!(
-                flow,
-                veloc_lir::ControlFlow::Branch | veloc_lir::ControlFlow::Jump
-            ) {
+            if flow.has_explicit_successors() {
                 block_succs.extend(mfunc.successors(id).map(|edge| edge.block));
             }
-            if matches!(
-                flow,
-                veloc_lir::ControlFlow::Jump
-                    | veloc_lir::ControlFlow::Return
-                    | veloc_lir::ControlFlow::Trap
-            ) {
+            if !flow.may_continue() {
                 falls_through = false;
                 break;
             }
@@ -554,13 +546,13 @@ fn compute_liveness(mfunc: &MachineFunction, cfg: &CfgInfo) -> LivenessInfo {
             defs.insert(reg);
         }
         for inst_id in mfunc.block_insts(block) {
-            let inst = &mfunc.inst(inst_id);
-            for reg in inst.uses() {
+            let access = mfunc.inst(inst_id).register_access();
+            for reg in access.reads() {
                 if !defs.contains(&reg) {
                     uses.insert(reg);
                 }
             }
-            for reg in inst.defs().chain(inst.clobbers()) {
+            for reg in access.writes() {
                 defs.insert(reg);
             }
         }

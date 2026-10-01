@@ -2,7 +2,7 @@
 use crate::{InstRef, Reg};
 use smallvec::SmallVec;
 
-/// A view of an instruction's explicit and implicit register access.
+/// A view of an instruction's register operands and destruction effects.
 /// Each iterator yields distinct register identities in first-occurrence order.
 /// Physical register aliases must already use the target's storage roots.
 #[derive(Clone, Copy)]
@@ -15,12 +15,12 @@ impl<'a> RegisterAccess<'a> {
         Self { inst }
     }
 
-    /// Explicit inputs, successor arguments and implicit reads.
+    /// Register inputs and successor arguments.
     pub fn reads(self) -> impl Iterator<Item = Reg> + 'a {
         distinct(self.inst.uses())
     }
 
-    /// Explicit results, implicit writes and ABI clobbers.
+    /// Results, instruction clobbers and ABI clobbers.
     /// Clobbers destroy a register's contents without defining an SSA value.
     pub fn writes(self) -> impl Iterator<Item = Reg> + 'a {
         distinct(self.inst.defs().chain(self.inst.clobbers()))

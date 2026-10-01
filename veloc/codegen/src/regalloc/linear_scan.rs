@@ -152,11 +152,11 @@ impl<'a> RegisterAllocator<'a> {
                 for reg in inst.defs() {
                     extend_range(&mut ranges, &mut local_fixed, reg, pos * 2 + 1);
                 }
-                // Clobbers reserve a write point, not the entire block span
-                // between separate calls. Uses occur one position earlier.
+                // Instruction and ABI clobbers reserve only the write point.
+                // Input reads occur one position earlier.
                 for reg in inst.clobbers() {
                     // A fixed result defines the new value in this register;
-                    // the ABI clobber mask describes destruction of the old one.
+                    // a clobber describes destruction of the old one.
                     if !requirements.iter().any(|c| {
                         matches!(c.operand, veloc_lir::OperandRef::Result(_))
                             && c.placement == veloc_lir::Placement::Fixed(reg)

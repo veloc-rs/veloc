@@ -67,7 +67,7 @@ fn operand(node: &Node, inst: &FinalInstDef) -> Result<Operand, String> {
             let (index, role) = field(name)?;
             let result = match role {
                 OperandConstraint::Def(_) => true,
-                OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => false,
+                OperandConstraint::Use(_) => false,
                 _ => return Err("reg requires a register operand".into()),
             };
             Ok(Operand::Reg {
@@ -97,7 +97,7 @@ fn operand(node: &Node, inst: &FinalInstDef) -> Result<Operand, String> {
             let (index, role) = field(base)?;
             let result = match role {
                 OperandConstraint::Def(_) => true,
-                OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => false,
+                OperandConstraint::Use(_) => false,
                 _ => return Err("memory base must be a register".into()),
             };
             let (offset, OperandConstraint::Imm(_)) = field(offset)? else {

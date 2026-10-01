@@ -150,7 +150,10 @@ impl core::fmt::Debug for InstRef<'_> {
             .field("results", &self.results())
             .field("inputs", &self.inputs())
             .field("fields", &self.fields())
-            .field("effects", &self.effects())
+            .field(
+                "clobbers",
+                &self.clobbers().collect::<smallvec::SmallVec<[Reg; 4]>>(),
+            )
             .field("memory", &self.memory())
             .finish()
     }
@@ -211,8 +214,7 @@ impl<'a> InstRef<'a> {
                 .traits
                 .intersects(OpTraits::MAY_TRAP | OpTraits::ABORT | OpTraits::TERMINATOR)
             && self.memory().is_none()
-            && self.implicit_uses().is_empty()
-            && self.implicit_defs().is_empty()
+            && self.clobbers().next().is_none()
             && !self.results().is_empty()
             && self
                 .results()
@@ -234,15 +236,6 @@ impl<'a> InstRef<'a> {
     pub fn fields(self) -> crate::FieldView<'a> {
         self.store.fields(self.id)
     }
-    pub fn implicit_uses(self) -> &'a [Reg] {
-        self.store.implicit_uses(self.id)
-    }
-    pub fn implicit_defs(self) -> &'a [Reg] {
-        self.store.implicit_defs(self.id)
-    }
-    pub fn effects(self) -> Option<crate::RegEffects<&'a [Reg]>> {
-        self.store.effects(self.id)
-    }
     pub fn constraints(self) -> &'a [crate::OperandConstraint] {
         self.store.constraints(self.id)
     }
@@ -261,29 +254,26 @@ impl<'a> InstRef<'a> {
         matches!(self.opcode(), MachineOpcode::Invalid)
     }
 
-    /// ABI clobbers are not value definitions and have no use-def occurrences.
+    /// Instruction and ABI destruction effects have no use-def occurrences.
     pub fn clobbers(self) -> impl Iterator<Item = Reg> + 'a {
-        self.store
-            .call_info(self.id)
-            .into_iter()
-            .flat_map(|info| info.clobbers.iter())
+        self.store.clobbers(self.id).iter().copied().chain(
+            self.store
+                .call_info(self.id)
+                .into_iter()
+                .flat_map(|info| info.clobbers.iter()),
+        )
     }
 
-    /// Explicit results and implicit physical register writes.
+    /// Result definitions; clobbers are separate destruction effects.
     pub fn defs(self) -> impl Iterator<Item = Reg> + 'a {
-        self.results()
-            .iter()
-            .copied()
-            .chain(self.implicit_defs().iter().copied())
+        self.results().iter().copied()
     }
 
-    /// Explicit register inputs, edge arguments and implicit physical reads.
+    /// Register inputs and edge arguments, including explicit physical inputs.
     /// Repeated operands remain separate occurrences.
     pub fn uses(self) -> impl Iterator<Item = Reg> + 'a {
         let operands = self.inputs().iter().copied();
-        operands
-            .chain(self.implicit_uses().iter().copied())
-            .chain(self.store.edge_args(self.id))
+        operands.chain(self.store.edge_args(self.id))
     }
 
     /// 检查是否是通用操作码（尚未指令选择）

@@ -1,24 +1,26 @@
 import "../common.spec";
 
-op X86Call(target: Global, info: CallInfo) -> () {
+op X86Call(sp: Value<AddressValue>, target: Global, info: CallInfo) -> () {
     encoding = Emission::relative(target, Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xE8, wide: false }, Form::None, 0);
-    implicit = { reads: [RSP], clobbers: [CF, PF, ZF, SF, OF, AF] };
+    registers = { sp: fixed(RSP, GPR64) };
+    clobbers = [CF, PF, ZF, SF, OF, AF];
     flow = Call;
     assembly = {
         lines: [{ mnemonic: "call", operands: [target(target)] }]
     };
 }
 
-op X86CallReg(target: Value<AddressValue>, info: CallInfo) -> () {
+op X86CallReg(sp: Value<AddressValue>, target: Value<AddressValue>, info: CallInfo) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xFF, wide: false },
         Form::ModRm(RegField::Extension(2), Rm::Register(target)),
         Immediate::None,
     );
     registers = {
+        sp: fixed(RSP, GPR64),
         target: GPR64,
     };
-    implicit = { reads: [RSP], clobbers: [CF, PF, ZF, SF, OF, AF] };
+    clobbers = [CF, PF, ZF, SF, OF, AF];
     flow = Call;
     assembly = {
         lines: [{ mnemonic: "call", operands: [reg(target, 64)] }]
@@ -150,7 +152,7 @@ select(n: lir::Ret) {
 select(n: lir::Call) {
     choose {
         case {
-            replace(n, build(X86Call(n.callee, n.info)));
+            replace(n, build(X86Call(reg(RSP), n.callee, n.info)));
         }
     }
 }
@@ -158,7 +160,7 @@ select(n: lir::Call) {
 select(n: lir::Callind) {
     choose {
         case {
-            replace(n, build(X86CallReg(n.callee, n.info)));
+            replace(n, build(X86CallReg(reg(RSP), n.callee, n.info)));
         }
     }
 }

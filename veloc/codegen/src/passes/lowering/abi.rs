@@ -128,12 +128,9 @@ pub(super) fn emit_libcall(
     symbol: &str,
 ) -> Result<()> {
     let inst = mfunc.inst(id);
-    if inst.memory().is_some()
-        || !inst.implicit_uses().is_empty()
-        || !inst.implicit_defs().is_empty()
-    {
+    if inst.memory().is_some() || inst.clobbers().next().is_some() {
         return Err(Error::codegen(
-            "libcall replacement cannot discard memory facts or implicit register effects",
+            "libcall replacement cannot discard memory facts or register clobbers",
         ));
     }
     let args = SmallVec::<[Reg; 4]>::from_slice(inst.inputs());

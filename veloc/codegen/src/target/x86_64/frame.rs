@@ -36,11 +36,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
                     }
                     outgoing = outgoing.max(stack.size);
                 }
-                for reg in mfunc
-                    .inst(inst_id)
-                    .defs()
-                    .chain(mfunc.inst(inst_id).clobbers())
-                {
+                for reg in mfunc.inst(inst_id).register_access().writes() {
                     if reg != generated::REG_RBP
                         && reg != generated::REG_RSP
                         && preserved_regs.contains(&reg)

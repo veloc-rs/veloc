@@ -3,6 +3,26 @@ use crate::{BlockId, Reg, StackSlot};
 use smallvec::SmallVec;
 use veloc_mir::Signature;
 
+impl crate::ControlFlow {
+    /// Local branch targets are stored in the instruction's successor operands.
+    pub const fn has_explicit_successors(self) -> bool {
+        matches!(self, Self::Branch | Self::Jump)
+    }
+
+    /// A modeled path continues at the next instruction (or layout fallthrough).
+    /// Branch has both a taken path and a continuation; Jump has only targets,
+    /// including generic conditional branches with two explicit successors.
+    pub const fn may_continue(self) -> bool {
+        matches!(self, Self::Next | Self::Call | Self::Branch)
+    }
+
+    /// A modeled path leaves the block without executing the next instruction.
+    /// Ordinary calls resume locally; their other effects are described separately.
+    pub const fn may_leave_block(self) -> bool {
+        matches!(self, Self::Branch | Self::Jump | Self::Return | Self::Trap)
+    }
+}
+
 /// Function-local identity of a control-flow edge. Moving an edge to a selected
 /// instruction preserves its ID; copying an instruction creates fresh edges.
 /// Deleted IDs are not reused, so optional analysis tables cannot alias new edges.

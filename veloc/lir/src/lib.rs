@@ -34,7 +34,7 @@ pub use function::*;
 pub use instr::*;
 pub use memory::*;
 pub use module::*;
-pub use store::{InstStore, RegEffects};
+pub use store::InstStore;
 pub use symbol::*;
 pub use use_def::{OperandId, RefRole, RegRef, RegRefs};
 pub use validation::TypeError;

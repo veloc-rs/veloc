@@ -42,7 +42,6 @@ pub(super) fn compile(
             let name = match operand {
                 OperandConstraint::Def(n)
                 | OperandConstraint::Use(n)
-                | OperandConstraint::FixedUse { src: n, .. }
                 | OperandConstraint::Imm(n)
                 | OperandConstraint::StackSlot(n)
                 | OperandConstraint::Block(n)
@@ -52,9 +51,7 @@ pub(super) fn compile(
             let (index, _) = find_operand_info(name, &inst.operands).unwrap();
             let (ty, rust) = match operand {
                 OperandConstraint::Def(_) => ("Reg", format!("register(inst.results()[{index}])?")),
-                OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => {
-                    ("Reg", format!("register(inst.inputs()[{index}])?"))
-                }
+                OperandConstraint::Use(_) => ("Reg", format!("register(inst.inputs()[{index}])?")),
                 OperandConstraint::Imm(_) => ("i64", field(index, "Imm")),
                 OperandConstraint::StackSlot(_) => (
                     "Address",

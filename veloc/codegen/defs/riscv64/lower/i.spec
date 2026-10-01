@@ -51,7 +51,7 @@ op RvLi32(imm: i64) -> (dst: Value<GprValue>) {
 op RvRotl32(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(59,Reg::X29,1,lhs,rhs,0), Instruction::R(59,Reg::X30,5,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-    implicit = { writes: [X28,X29,X30] };
+    clobbers = [X28,X29,X30];
     assembly = {
         lines: [{ mnemonic: "rotl32", operands: [] }]
     };
@@ -60,7 +60,7 @@ op RvRotl32(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>
 op RvRotr32(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(59,Reg::X29,5,lhs,rhs,0), Instruction::R(59,Reg::X30,1,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-    implicit = { writes: [X28,X29,X30] };
+    clobbers = [X28,X29,X30];
     assembly = {
         lines: [{ mnemonic: "rotr32", operands: [] }]
     };
@@ -85,7 +85,7 @@ op RvLi64(imm: i64) -> (dst: Value<GprValue>) {
 op RvRotl64(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(51,Reg::X29,1,lhs,rhs,0), Instruction::R(51,Reg::X30,5,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-    implicit = { writes: [X28,X29,X30] };
+    clobbers = [X28,X29,X30];
     assembly = {
         lines: [{ mnemonic: "rotl64", operands: [] }]
     };
@@ -94,7 +94,7 @@ op RvRotl64(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>
 op RvRotr64(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(51,Reg::X29,5,lhs,rhs,0), Instruction::R(51,Reg::X30,1,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
-    implicit = { writes: [X28,X29,X30] };
+    clobbers = [X28,X29,X30];
     assembly = {
         lines: [{ mnemonic: "rotr64", operands: [] }]
     };
@@ -449,19 +449,19 @@ op RvBranch(cond: Value<Type::BOOL>, target: Successor) -> () {
     };
 }
 
-op RvCall(target: Global, info: CallInfo) -> () {
+op RvCall(sp: Value<GprValue>, target: Global, info: CallInfo) -> () {
     encoding = Emission::call(target);
-    registers = {  };
-    flow = Call; implicit = {reads:[X2]};
+    registers = { sp: fixed(X2, GPR) };
+    flow = Call;
     assembly = {
         lines: [{ mnemonic: "call", operands: [] }]
     };
 }
 
-op RvCallReg(target: Value<GprValue>, info: CallInfo) -> () {
+op RvCallReg(sp: Value<GprValue>, target: Value<GprValue>, info: CallInfo) -> () {
     encoding = Emission::instructions([Instruction::I(103,Reg::X1,0,target,0)]);
-    registers = { target: GPR };
-    flow = Call; implicit = {reads:[X2]};
+    registers = { sp: fixed(X2, GPR), target: GPR };
+    flow = Call;
     assembly = {
         lines: [{ mnemonic: "callreg", operands: [] }]
     };
@@ -1011,11 +1011,11 @@ select(n: lir::Brcond) {
 }
 
 select(n: lir::Call) {
-    replace(n, build(RvCall(n.callee, n.info)));
+    replace(n, build(RvCall(reg(X2), n.callee, n.info)));
 }
 
 select(n: lir::Callind) {
-    replace(n, build(RvCallReg(n.callee, n.info)));
+    replace(n, build(RvCallReg(reg(X2), n.callee, n.info)));
 }
 
 select(n: lir::Ret) {

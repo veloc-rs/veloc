@@ -20,7 +20,7 @@ impl TargetFrameLowering for Frame {
                     }
                     outgoing = outgoing.max(area.size);
                 }
-                for r in f.inst(id).defs() {
+                for r in f.inst(id).register_access().writes() {
                     if ABI.preserved.contains(&r) && !saved.contains(&r) {
                         saved.push(r);
                     }

@@ -168,18 +168,11 @@ pub(super) fn plan(
         for id in f.block_insts(block) {
             let inst = f.inst(id);
             let mut groups = groups(allocator, f, inst)?;
-            let restore = matches!(
-                allocator.target.control_flow(&inst),
-                veloc_lir::ControlFlow::Next | veloc_lir::ControlFlow::Call
-            );
+            // A conditional exit may continue, but its taken path skips restores.
+            let restore = !allocator.target.control_flow(&inst).may_leave_block();
             for n in 0..groups.len() {
                 let g = &groups[n];
                 let available = |reg: Reg| {
-                    if g.input.is_some() && inst.implicit_uses().contains(&reg)
-                        || g.output.is_some() && inst.implicit_defs().contains(&reg)
-                    {
-                        return false;
-                    }
                     if g.input
                         .is_some_and(|v| v.is_vreg() && live.reserved(reg, pos, v))
                         || g.output

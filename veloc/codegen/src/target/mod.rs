@@ -86,10 +86,6 @@ pub trait TargetInstructions {
             veloc_lir::MachineOpcode::Target(op) => self.instruction_metadata(op).flow,
         }
     }
-
-    fn is_call(&self, inst: &veloc_lir::InstRef<'_>) -> bool {
-        self.control_flow(inst) == veloc_lir::ControlFlow::Call
-    }
 }
 
 /// CPU-specific estimates, separate from instruction semantics and pass policy.
@@ -262,20 +258,9 @@ pub struct TargetInstMetadata {
     /// Reexecuting this producer with the same inputs is safe. Data results
     /// receive fresh identities when hardware state must be recomputed.
     pub rematerializable: bool,
-    pub implicit_uses: &'static [Reg],
-    pub implicit_defs: &'static [Reg],
-}
-
-impl TargetInstMetadata {
-    pub const EMPTY: Self = Self {
-        constraints: &[],
-        memory: None,
-        flow: veloc_lir::ControlFlow::Next,
-        schedule: None,
-        rematerializable: false,
-        implicit_uses: &[],
-        implicit_defs: &[],
-    };
+    /// Destroyed physical storage roots, without defining result values.
+    /// Per-call ABI destruction is supplied separately by CallInfo.
+    pub clobbers: &'static [Reg],
 }
 
 pub trait TargetPostIsel: Send + Sync {
