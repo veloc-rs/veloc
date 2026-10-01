@@ -1,5 +1,5 @@
-//! Resolve feature dependencies once and generate target-local typed capabilities.
-use crate::target::ast::{Def, FeatureDef, Module};
+//! Resolve named CPU capabilities and scheduling costs into indexed tables.
+use crate::target::ast::{CpuSchedule, Def, FeatureDef, Module, ScheduleResource};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -35,13 +35,74 @@ fn set(indices: impl IntoIterator<Item = usize>, features: &[FeatureDef]) -> Str
         })
 }
 
+/// Resource references have been resolved; class order matches the target's IDs.
+struct Schedule {
+    issue_width: u32,
+    resources: Vec<ScheduleResource>,
+    classes: Vec<ScheduleCost>,
+}
+
+struct ScheduleCost {
+    resource: u16,
+    latency: u32,
+    occupancy: u32,
+}
+
+impl Schedule {
+    fn prepare(schedule: &CpuSchedule, classes: &BTreeMap<String, u16>) -> Result<Self, String> {
+        let resources: BTreeMap<_, _> = schedule
+            .resources
+            .iter()
+            .enumerate()
+            .map(|(index, resource)| {
+                u16::try_from(index)
+                    .map(|id| (resource.name.as_str(), id))
+                    .map_err(|_| "too many CPU scheduling resources".to_string())
+            })
+            .collect::<Result<_, _>>()?;
+        let costs: BTreeMap<_, _> = schedule
+            .classes
+            .iter()
+            .map(|cost| (cost.class.as_str(), cost))
+            .collect();
+        // The caller checks class coverage; the parser checks resource names.
+        let classes = classes
+            .keys()
+            .map(|name| {
+                let cost = costs[name.as_str()];
+                ScheduleCost {
+                    resource: resources[cost.resource.as_str()],
+                    latency: cost.latency,
+                    occupancy: cost.occupancy,
+                }
+            })
+            .collect();
+        Ok(Self {
+            issue_width: schedule.issue_width,
+            resources: schedule.resources.clone(),
+            classes,
+        })
+    }
+}
+
 pub(super) struct Plan {
     features: Vec<FeatureDef>,
     closures: Vec<BTreeSet<usize>>,
-    cpus: Vec<(String, BTreeSet<usize>, crate::target::ast::CpuSchedule)>,
+    schedule_classes: BTreeMap<String, u16>,
+    cpus: Vec<(String, BTreeSet<usize>, Schedule)>,
 }
 impl Plan {
-    pub(super) fn prepare(module: &Module) -> Result<Self, String> {
+    pub(super) fn prepare(module: &Module, classes: &BTreeSet<&str>) -> Result<Self, String> {
+        // Assign each class once, in name order, independently of CPU declarations.
+        let schedule_classes = classes
+            .iter()
+            .enumerate()
+            .map(|(index, &name)| {
+                u16::try_from(index)
+                    .map(|id| (name.to_owned(), id))
+                    .map_err(|_| "too many target scheduling classes".to_string())
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         let features: Vec<_> = module
             .defs
             .iter()
@@ -78,14 +139,24 @@ impl Plan {
                 enabled.insert(index);
                 enabled.extend(closures[index].iter().copied());
             }
-            cpus.push((cpu.name.clone(), enabled, cpu.schedule.clone()));
+            cpus.push((
+                cpu.name.clone(),
+                enabled,
+                Schedule::prepare(&cpu.schedule, &schedule_classes)?,
+            ));
         }
         Ok(Self {
             features,
             closures,
+            schedule_classes,
             cpus,
         })
     }
+
+    pub(super) fn schedule_class(&self, name: &str) -> u16 {
+        self.schedule_classes[name]
+    }
+
     pub(super) fn generate(&self, out: &mut String) {
         let features = &self.features;
         let closures = &self.closures;
@@ -213,7 +284,7 @@ pub const SUPPORTED_CPUS: &[CpuModel] = &[
             }
             out.push_str("], classes: &[");
             for c in &schedule.classes {
-                writeln!(out, "crate::target::ScheduleCost {{ class: {:?}, resource: {:?}, latency: {}, occupancy: {} }},", c.name, c.resource, c.latency, c.occupancy).unwrap();
+                writeln!(out, "crate::target::ScheduleCost {{ resource: crate::target::ResourceId({}), latency: {}, occupancy: {} }},", c.resource, c.latency, c.occupancy).unwrap();
             }
             out.push_str("] } },\n");
         }

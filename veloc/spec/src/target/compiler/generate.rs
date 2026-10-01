@@ -156,10 +156,11 @@ fn format_reg_metadata_slice(
     format_slice(entries)
 }
 
-pub(crate) fn generate_target_inst_metadata(
+pub(super) fn generate_target_inst_metadata(
     output: &mut String,
     module: &crate::target::ast::Module,
     final_inst_defs: &HashMap<String, FinalInstDef>,
+    cpu: &super::cpu::Plan,
 ) {
     let reg_names: BTreeSet<String> = module
         .defs
@@ -187,7 +188,10 @@ pub(crate) fn generate_target_inst_metadata(
             sanitize_ident(name).to_ascii_uppercase()
         );
         let schedule = match &inst_def.schedule_class {
-            Some(class) => format!("Some(crate::target::ScheduleInfo {{ class: {:?} }})", class,),
+            Some(class) => format!(
+                "Some(crate::target::ScheduleInfo {{ class: crate::target::ScheduleClassId({}) }})",
+                cpu.schedule_class(class),
+            ),
             None => "None".into(),
         };
         writeln!(

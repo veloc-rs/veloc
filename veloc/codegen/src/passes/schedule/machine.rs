@@ -1,12 +1,11 @@
 //! Resource reservations affect priorities, never semantic legality.
 use crate::target::{ScheduleCost, ScheduleModel};
-use hashbrown::HashMap;
 
 pub(super) struct MachineState {
     pub cycle: u32,
     width: u32,
     issued: u32,
-    resources: HashMap<&'static str, Vec<u32>>,
+    resources: Vec<Vec<u32>>,
 }
 
 impl MachineState {
@@ -19,16 +18,13 @@ impl MachineState {
             resources: model
                 .resources
                 .iter()
-                .map(|r| (r.name, vec![0; r.units as usize]))
+                .map(|r| vec![0; r.units as usize])
                 .collect(),
         }
     }
 
     pub fn earliest(&self, available: u32, cost: ScheduleCost) -> u32 {
-        let resource = self
-            .resources
-            .get(cost.resource)
-            .expect("unknown CPU resource")
+        let resource = self.resources[cost.resource.index()]
             .iter()
             .min()
             .copied()
@@ -45,10 +41,7 @@ impl MachineState {
 
     pub fn issue(&mut self, cost: ScheduleCost) {
         assert!(cost.occupancy > 0);
-        let units = self
-            .resources
-            .get_mut(cost.resource)
-            .expect("unknown CPU resource");
+        let units = &mut self.resources[cost.resource.index()];
         let next = units.iter_mut().min().unwrap();
         assert!(*next <= self.cycle);
         *next = self.cycle.saturating_add(cost.occupancy);

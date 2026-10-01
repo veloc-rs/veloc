@@ -144,10 +144,30 @@ pub trait TargetMachine: TargetRegalloc + TargetSchedule {
     fn emitter(&self) -> &dyn crate::target::TargetEmitter;
 }
 
+/// Dense scheduling class index, shared by all CPU models of one target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleClassId(pub(crate) u16);
+
+impl ScheduleClassId {
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// Dense resource index within one CPU model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceId(pub(crate) u16);
+
+impl ResourceId {
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// A movable, nontrapping operation without memory or control effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScheduleInfo {
-    pub class: &'static str,
+    pub class: ScheduleClassId,
 }
 
 /// A scheduling class reserves one resource pool. Classes can share a pool.
@@ -155,8 +175,7 @@ pub struct ScheduleInfo {
 /// does not yet describe instructions that reserve multiple execution ports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScheduleCost {
-    pub class: &'static str,
-    pub resource: &'static str,
+    pub resource: ResourceId,
     pub latency: u32,
     pub occupancy: u32,
 }
@@ -164,6 +183,7 @@ pub struct ScheduleCost {
 /// Execution resources belong to the CPU, independently of instruction classes.
 #[derive(Debug, Clone, Copy)]
 pub struct ScheduleResource {
+    /// Diagnostic name; resource lookup uses ResourceId.
     pub name: &'static str,
     pub units: u32,
 }
@@ -171,19 +191,17 @@ pub struct ScheduleResource {
 #[derive(Debug, Clone, Copy)]
 pub struct ScheduleModel {
     pub issue_width: u32,
+    /// Indexed by this CPU model's ResourceId.
     pub resources: &'static [ScheduleResource],
+    /// Indexed by the target's ScheduleClassId, identically across CPU models.
     pub classes: &'static [ScheduleCost],
 }
 
 impl ScheduleModel {
     /// Spec generation checks every instruction class, including optional ISA
     /// features, so feature overrides cannot introduce an unmodeled operation.
-    pub fn cost(&self, class: &str) -> ScheduleCost {
-        *self
-            .classes
-            .iter()
-            .find(|cost| cost.class == class)
-            .expect("instruction scheduling class missing from CPU model")
+    pub fn cost(&self, class: ScheduleClassId) -> ScheduleCost {
+        self.classes[class.index()]
     }
 }
 

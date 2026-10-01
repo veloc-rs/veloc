@@ -31,7 +31,7 @@ impl Reader<'_> {
                     let allowed: &[&str] = if resource {
                         &["name", "units"]
                     } else {
-                        &["name", "resource", "latency", "occupancy"]
+                        &["class", "resource", "latency", "occupancy"]
                     };
                     let mut names = BTreeSet::new();
                     for entry in self.list(value)? {
@@ -52,7 +52,17 @@ impl Reader<'_> {
                                 )
                             })
                         };
-                        let name = self.name(required("name")?)?;
+                        let name = if resource {
+                            self.name(required("name")?)?
+                        } else {
+                            let node = required("class")?;
+                            let Kind::Name(name) = &node.kind else {
+                                return Err(
+                                    self.error(node, "expected a scheduling class reference")
+                                );
+                            };
+                            name.clone()
+                        };
                         if !names.insert(name.clone()) {
                             return Err(self.error(
                                 entry,
@@ -65,8 +75,8 @@ impl Reader<'_> {
                                 units: positive(required("units")?)?,
                             });
                         } else {
-                            result.classes.push(ScheduleClass {
-                                name,
+                            result.classes.push(ScheduleCost {
+                                class: name,
                                 resource: self.name(required("resource")?)?,
                                 latency: positive(required("latency")?)?,
                                 occupancy: positive(required("occupancy")?)?,
@@ -115,6 +125,15 @@ impl Reader<'_> {
     }
     fn names(&self, node: &Node) -> Result<Vec<String>, Error> {
         self.list(node)?.iter().map(|n| self.name(n)).collect()
+    }
+    fn feature_names(&self, node: &Node) -> Result<Vec<String>, Error> {
+        self.list(node)?
+            .iter()
+            .map(|node| match &node.kind {
+                Kind::Name(name) => Ok(name.clone()),
+                _ => Err(self.error(node, "expected a reference to a declared feature")),
+            })
+            .collect()
     }
     fn record<'a>(&self, node: &'a Node) -> Result<&'a BTreeMap<String, Node>, Error> {
         if let Kind::Record(fields) = &node.kind {
@@ -362,7 +381,26 @@ impl Reader<'_> {
                     requires: d
                         .fields
                         .get("requires")
-                        .map(|n| self.names(n))
+                        .map(|n| self.feature_names(n))
+                        .transpose()?
+                        .unwrap_or_default(),
+                })
+            }
+            "schedule_class" => {
+                self.fields(d, &["doc"])?;
+                if d.name == "None" {
+                    return Err(Error::at(
+                        self.source,
+                        d.offset,
+                        "None is reserved for unscheduled instructions",
+                    ));
+                }
+                Def::ScheduleClass(ScheduleClassDef {
+                    name: d.name.clone(),
+                    doc: d
+                        .fields
+                        .get("doc")
+                        .map(|n| self.name(n))
                         .transpose()?
                         .unwrap_or_default(),
                 })
@@ -376,7 +414,7 @@ impl Reader<'_> {
                         .map(|n| self.name(n))
                         .transpose()?
                         .unwrap_or_else(|| d.name.clone()),
-                    features: self.names(self.required(d, "features")?)?,
+                    features: self.feature_names(self.required(d, "features")?)?,
                     schedule: d
                         .fields
                         .get("schedule")

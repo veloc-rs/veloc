@@ -9,7 +9,7 @@ template GprCompare(Opcode: ident, Byte: expr, Wide: expr, Mnemonic: expr, Bits:
         };
         clobbers = [AF];
         rematerializable = true;
-        schedule = "IntAlu";
+        schedule = IntAlu;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(lhs, Bits), reg(rhs, Bits)] }]
         };
@@ -29,7 +29,7 @@ op X86Cmp32ri(src: Value<GprValue>, imm: i64) -> (cf: Value<CARRY>, pf: Value<PA
     };
     clobbers = [AF];
         rematerializable = true;
-    schedule = "IntAlu";
+    schedule = IntAlu;
     assembly = {
         lines: [{ mnemonic: "cmp", operands: [reg(src, 32), imm(imm)] }]
     };
@@ -71,7 +71,7 @@ template SetCondition1(Opcode: ident, Byte: expr, Mnemonic: expr, Flag0: type) {
             Form::ModRm(RegField::Extension(0), Rm::ByteRegister(dst)), Immediate::None,
         );
         registers = { dst: GPR64, };
-        schedule = "IntAlu";
+        schedule = IntAlu;
         assembly = { lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 8)] }] };
     }
 }
@@ -83,7 +83,7 @@ template SetCondition2(Opcode: ident, Byte: expr, Mnemonic: expr, Flag0: type, F
             Form::ModRm(RegField::Extension(0), Rm::ByteRegister(dst)), Immediate::None,
         );
         registers = { dst: GPR64, };
-        schedule = "IntAlu";
+        schedule = IntAlu;
         assembly = { lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 8)] }] };
     }
 }
@@ -95,7 +95,7 @@ template SetCondition3(Opcode: ident, Byte: expr, Mnemonic: expr, Flag0: type, F
             Form::ModRm(RegField::Extension(0), Rm::ByteRegister(dst)), Immediate::None,
         );
         registers = { dst: GPR64, };
-        schedule = "IntAlu";
+        schedule = IntAlu;
         assembly = { lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 8)] }] };
     }
 }

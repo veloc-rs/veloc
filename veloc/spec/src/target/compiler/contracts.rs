@@ -374,9 +374,9 @@ pub(super) fn compile(
                 }) => nodes
                     .iter()
                     .map(|node| {
-                        let Kind::Text(feature) = &node.kind else {
+                        let Kind::Name(feature) = &node.kind else {
                             return Err(
-                                "requires expects declared feature names as strings".to_owned()
+                                "requires expects references to declared features".to_owned()
                             );
                         };
                         if !features.contains(feature.as_str()) {
@@ -489,8 +489,10 @@ pub(super) fn compile(
                 .remove("schedule")
                 .map(|node| match node.kind {
                     Kind::Name(name) if name == "None" => Ok(None),
-                    Kind::Text(class) if !class.is_empty() => Ok(Some(class)),
-                    _ => Err("schedule must be a class name string or None".to_owned()),
+                    Kind::Name(class) => Ok(Some(class)),
+                    _ => Err(
+                        "schedule must reference a declared scheduling class or None".to_owned(),
+                    ),
                 })
                 .transpose()?
                 .flatten();

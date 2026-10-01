@@ -18,6 +18,8 @@ pub enum Def {
     Extractor(ExtractorDef),
     /// Target CPU capability and its dependencies.
     Feature(FeatureDef),
+    /// Target-wide scheduling category referenced by instructions and CPU costs.
+    ScheduleClass(ScheduleClassDef),
     /// Named target CPU model.
     Cpu(CpuDef),
     /// Target calling convention metadata.
@@ -47,10 +49,16 @@ pub struct CpuDef {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ScheduleClassDef {
+    pub name: String,
+    pub doc: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct CpuSchedule {
     pub issue_width: u32,
     pub resources: Vec<ScheduleResource>,
-    pub classes: Vec<ScheduleClass>,
+    pub classes: Vec<ScheduleCost>,
 }
 
 impl Default for CpuSchedule {
@@ -70,8 +78,8 @@ pub struct ScheduleResource {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ScheduleClass {
-    pub name: String,
+pub struct ScheduleCost {
+    pub class: String,
     pub resource: String,
     pub latency: u32,
     pub occupancy: u32,

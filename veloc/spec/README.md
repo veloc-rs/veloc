@@ -1572,6 +1572,31 @@ families by ISA extension, while x86_64 groups them by operation family and
 optional extensions. `lower.spec` controls family import order; rule order within
 each input opcode determines matching priority.
 
+ISA features are declared with `feature` and referenced by identifiers:
+instruction requirements (`requires = [I];`), feature dependencies
+(`requires = [AVX];`) and CPU defaults (`features = [I, M];`) all refer to
+declared, imported features. Templates taking one feature use an `ident`
+parameter. Quoted feature references are rejected; user-facing CPU names and
+assembly mnemonics remain strings.
+
+Each target declares its scheduling categories in `schedule.spec`, imported by
+both instruction definitions and CPU models:
+
+```text
+schedule_class IntMul64 { doc = "64-bit integer multiplication"; }
+```
+
+Instructions reference a category with `schedule = IntMul64;`. CPU schedule
+tables provide its cost with `{ class: IntMul64, resource: "Mul", latency: 4,
+occupancy: 2 }`, where `Mul` names a resource in that CPU's `resources` list.
+Category references are identifiers, not strings. Declarations own category
+identity; instruction usage does not create categories implicitly. Every CPU
+must provide exactly one cost for every declared category, including categories
+for optional ISA features. Duplicate declarations, undeclared references and
+missing costs are rejected before generation. Generated `ScheduleClassId`s use
+the same declaration-name order for every CPU of a target; `ResourceId`s index
+each CPU's own resource table.
+
 Instruction selection emits one `Program` per target. Its opcode-indexed entries
 hold bytecode offsets and per-entry scratch sizes; bytecode and constant tables
 are shared across entries. Matching graphs are still compiled independently for

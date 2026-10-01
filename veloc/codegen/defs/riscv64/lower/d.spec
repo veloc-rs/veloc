@@ -1,12 +1,12 @@
 import "../common.spec";
 
-expand Binary(RvFadd64, Type::F64, FPR, 83, 0, 1, "fadd.d", "D", None);
+expand Binary(RvFadd64, Type::F64, FPR, 83, 0, 1, "fadd.d", D, None);
 
-expand Binary(RvFsub64, Type::F64, FPR, 83, 0, 5, "fsub.d", "D", None);
+expand Binary(RvFsub64, Type::F64, FPR, 83, 0, 5, "fsub.d", D, None);
 
-expand Binary(RvFmul64, Type::F64, FPR, 83, 0, 9, "fmul.d", "D", None);
+expand Binary(RvFmul64, Type::F64, FPR, 83, 0, 9, "fmul.d", D, None);
 
-expand Binary(RvFdiv64, Type::F64, FPR, 83, 0, 13, "fdiv.d", "D", None);
+expand Binary(RvFdiv64, Type::F64, FPR, 83, 0, 13, "fdiv.d", D, None);
 
 op RvLoadF64(base: Value<Type::PTR>, offset: i64) -> (dst: Value<Type::F64>) {
     encoding = Emission::instructions([Instruction::Load(7,dst,Address { base: base, offset: offset },3)]);

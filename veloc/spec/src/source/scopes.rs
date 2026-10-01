@@ -29,7 +29,9 @@ pub(crate) fn check(
                 DeclKind::Fields(kind) if matches!(kind.as_str(), "extractor" | "predicate") => {
                     Space::Function
                 }
-                DeclKind::Fields(kind) if matches!(kind.as_str(), "feature" | "cpu") => {
+                DeclKind::Fields(kind)
+                    if matches!(kind.as_str(), "feature" | "cpu" | "schedule_class") =>
+                {
                     Space::Value
                 }
                 DeclKind::Constant { .. } => Space::Value,

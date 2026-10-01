@@ -1,6 +1,8 @@
 import "../../../defs/prelude.spec";
 import "../../../encoder/defs/x86_64.spec";
 import "registers.spec";
+import "cpu/features.spec";
+import "schedule.spec";
 
 type CallInfo = rust("veloc_lir::CallInfo") { view = borrowed; }
 

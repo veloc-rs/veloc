@@ -1,15 +1,12 @@
 import "../common.spec";
 
-expand Binary(RvSh1Add, GprValue, GPR, 51, 2, 16, "sh1add", "Zba", "IntAlu");
-
-expand Binary(RvSh2Add, GprValue, GPR, 51, 4, 16, "sh2add", "Zba", "IntAlu");
-
-expand Binary(RvSh3Add, GprValue, GPR, 51, 6, 16, "sh3add", "Zba", "IntAlu");
-
 op RvZext32Zba(src: Value<GprValue>) -> (dst: Value<GprValue>) {
-    encoding = Emission::instructions([Instruction::R(59,dst,0,src,Reg::X0,4)]);
+    // add.uw dst, src, x0: opcode=OP-32, funct3=000, funct7=0000100.
+    encoding = Emission::instructions([
+        Instruction::R(0b0111011, dst, 0b000, src, Reg::X0, 0b0000100)
+    ]);
     registers = { dst: GPR, src: GPR };
-    requires = ["Zba"];
+    requires = [Zba];
     assembly = {
         lines: [{ mnemonic: "zext.w", operands: [reg(dst,64),reg(src,64)] }]
     };
@@ -20,7 +17,7 @@ select(n: lir::Zext) {
     replace(n, build(RvZext32Zba(n.src)));
 }
 
-template ShiftAdd(Source: ident, Amount: expr, Target: ident) {
+template SelectShiftAdd(Source: ident, Amount: expr, Target: ident) {
     select(n: Source<Type::I64>) {
         choose {
             case {
@@ -33,14 +30,13 @@ template ShiftAdd(Source: ident, Amount: expr, Target: ident) {
     }
 }
 
-expand ShiftAdd(lir::Add, 1, RvSh1Add);
+template ShiftAdd(Name: ident, Amount: expr, Funct3: expr, Mnemonic: expr) {
+    // R-type: opcode=OP (0110011), funct7=0010000; funct3 selects the shift.
+    expand Binary(Name, GprValue, GPR, 0b0110011, Funct3, 0b0010000, Mnemonic, Zba, IntAlu);
+    expand SelectShiftAdd(lir::Add, Amount, Name);
+    expand SelectShiftAdd(lir::PtrAdd, Amount, Name);
+}
 
-expand ShiftAdd(lir::Add, 2, RvSh2Add);
-
-expand ShiftAdd(lir::Add, 3, RvSh3Add);
-
-expand ShiftAdd(lir::PtrAdd, 1, RvSh1Add);
-
-expand ShiftAdd(lir::PtrAdd, 2, RvSh2Add);
-
-expand ShiftAdd(lir::PtrAdd, 3, RvSh3Add);
+expand ShiftAdd(RvSh1Add, 1, 0b010, "sh1add");
+expand ShiftAdd(RvSh2Add, 2, 0b100, "sh2add");
+expand ShiftAdd(RvSh3Add, 3, 0b110, "sh3add");

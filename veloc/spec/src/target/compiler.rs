@@ -145,19 +145,32 @@ impl Plan {
             }
         }
         // Validate fallible target metadata even when only one artifact is requested.
-        // Model all instruction classes, even optional features: users can enable
-        // those features independently of the CPU's default ISA selection.
-        let classes: std::collections::BTreeSet<_> = final_inst_defs
-            .values()
-            .filter_map(|inst| inst.schedule_class.as_deref())
+        // Declarations own class identities, independently of instruction usage.
+        // Every CPU models them all, including classes for optional ISA features.
+        let classes: std::collections::BTreeSet<_> = module
+            .defs
+            .iter()
+            .filter_map(|def| match def {
+                Def::ScheduleClass(class) => Some(class.name.as_str()),
+                _ => None,
+            })
             .collect();
+        for (name, inst) in &final_inst_defs {
+            if let Some(class) = &inst.schedule_class
+                && !classes.contains(class.as_str())
+            {
+                return Err(error(format!(
+                    "{name} references undeclared scheduling class {class}"
+                )));
+            }
+        }
         for def in &module.defs {
             if let Def::Cpu(cpu) = def {
                 let modeled: std::collections::BTreeSet<_> = cpu
                     .schedule
                     .classes
                     .iter()
-                    .map(|class| class.name.as_str())
+                    .map(|cost| cost.class.as_str())
                     .collect();
                 for class in classes.difference(&modeled) {
                     return Err(error(format!(
@@ -173,7 +186,7 @@ impl Plan {
                 }
             }
         }
-        let cpu = cpu::Plan::prepare(&module).map_err(&error)?;
+        let cpu = cpu::Plan::prepare(&module, &classes).map_err(&error)?;
         generate::check_abi_descriptors(&module).map_err(&error)?;
         Ok(Self {
             module,
@@ -219,7 +232,7 @@ impl Plan {
         output.push_str("\n// Target opcodes, metadata and validation.\n");
         generate::generate_enum(&mut output, &final_inst_defs);
         generate::generate_enum_conversions(&mut output, &final_inst_defs);
-        generate::generate_target_inst_metadata(&mut output, &module, &final_inst_defs);
+        generate::generate_target_inst_metadata(&mut output, &module, &final_inst_defs, &self.cpu);
         generate::generate_validation(&mut output, &final_inst_defs);
         output.push_str("\n// Machine-code emission.\n");
         encoding::generate(&mut output, arch, &final_inst_defs);

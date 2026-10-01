@@ -2,6 +2,7 @@ import "../../../defs/prelude.spec";
 import "../../../encoder/defs/riscv64.spec";
 import "registers.spec";
 import "features.spec";
+import "schedule.spec";
 
 type CallInfo = rust("veloc_lir::CallInfo") { view = borrowed; }
 
@@ -21,7 +22,7 @@ typeset GprValue = Type::BOOL | ScalarInteger | Type::PTR;
 typeset ScalarValue = GprValue | ScalarFloat;
 
 // All arithmetic families describe actual encoding fields here.
-template Binary(Name: ident, Domain: expr, Class: ident, Major: expr, F3: expr, F7: expr, Mnemonic: expr, Extension: expr, Scheduling: expr) {
+template Binary(Name: ident, Domain: expr, Class: ident, Major: expr, F3: expr, F7: expr, Mnemonic: expr, Extension: ident, Scheduling: ident) {
     op Name(lhs: Value<Domain>, rhs: Value<Domain>) -> (dst: Value<Domain>) {
         encoding = Emission::instructions([Instruction::R(Major,dst,F3,lhs,rhs,F7)]);
         registers = { dst: Class, lhs: Class, rhs: Class };

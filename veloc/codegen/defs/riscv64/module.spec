@@ -1,5 +1,6 @@
 import "abi.spec";
 import "features.spec";
+import "schedule.spec";
 import "lower.spec";
 // Even the generic model explicitly owns its estimates and execution resources.
 cpu generic {
@@ -9,11 +10,11 @@ cpu generic {
         issue_width: 1,
         resources: [{ name: "Scalar", units: 1 }],
         classes: [
-            { name: "IntAlu", resource: "Scalar", latency: 1, occupancy: 1 },
-            { name: "IntMul32", resource: "Scalar", latency: 3, occupancy: 1 },
-            { name: "IntMul64", resource: "Scalar", latency: 4, occupancy: 1 },
-            { name: "IntDiv32", resource: "Scalar", latency: 20, occupancy: 1 },
-            { name: "IntDiv64", resource: "Scalar", latency: 20, occupancy: 1 },
+            { class: IntAlu, resource: "Scalar", latency: 1, occupancy: 1 },
+            { class: IntMul32, resource: "Scalar", latency: 3, occupancy: 1 },
+            { class: IntMul64, resource: "Scalar", latency: 4, occupancy: 1 },
+            { class: IntDiv32, resource: "Scalar", latency: 20, occupancy: 1 },
+            { class: IntDiv64, resource: "Scalar", latency: 20, occupancy: 1 },
         ],
     };
 }
@@ -29,12 +30,12 @@ cpu c908 {
             { name: "Div", units: 1 },
         ],
         classes: [
-            { name: "IntAlu", resource: "Alu", latency: 1, occupancy: 1 },
-            { name: "IntMul32", resource: "Mul", latency: 3, occupancy: 1 },
-            { name: "IntMul64", resource: "Mul", latency: 4, occupancy: 2 },
+            { class: IntAlu, resource: "Alu", latency: 1, occupancy: 1 },
+            { class: IntMul32, resource: "Mul", latency: 3, occupancy: 1 },
+            { class: IntMul64, resource: "Mul", latency: 4, occupancy: 2 },
             // Division is operand-dependent; these are coarse estimates.
-            { name: "IntDiv32", resource: "Div", latency: 24, occupancy: 24 },
-            { name: "IntDiv64", resource: "Div", latency: 24, occupancy: 24 },
+            { class: IntDiv32, resource: "Div", latency: 24, occupancy: 24 },
+            { class: IntDiv64, resource: "Div", latency: 24, occupancy: 24 },
         ],
     };
 }

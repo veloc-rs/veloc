@@ -1,12 +1,12 @@
 import "../common.spec";
 
-expand Binary(RvFadd32, Type::F32, FPR, 83, 0, 0, "fadd.s", "F", None);
+expand Binary(RvFadd32, Type::F32, FPR, 83, 0, 0, "fadd.s", F, None);
 
-expand Binary(RvFsub32, Type::F32, FPR, 83, 0, 4, "fsub.s", "F", None);
+expand Binary(RvFsub32, Type::F32, FPR, 83, 0, 4, "fsub.s", F, None);
 
-expand Binary(RvFmul32, Type::F32, FPR, 83, 0, 8, "fmul.s", "F", None);
+expand Binary(RvFmul32, Type::F32, FPR, 83, 0, 8, "fmul.s", F, None);
 
-expand Binary(RvFdiv32, Type::F32, FPR, 83, 0, 12, "fdiv.s", "F", None);
+expand Binary(RvFdiv32, Type::F32, FPR, 83, 0, 12, "fdiv.s", F, None);
 
 op RvLoadF32(base: Value<Type::PTR>, offset: i64) -> (dst: Value<Type::F32>) {
     encoding = Emission::instructions([Instruction::Load(7,dst,Address { base: base, offset: offset },2)]);
