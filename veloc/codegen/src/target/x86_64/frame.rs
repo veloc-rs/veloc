@@ -150,7 +150,9 @@ impl TargetFrameLowering for X86_64FrameLowering {
     }
 
     fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction) {
-        use crate::target::x86_64::inst::{REG_RBP, REG_RSP, TargetInst};
+        use crate::target::x86_64::inst::{
+            REG_CF, REG_OF, REG_PF, REG_RBP, REG_RSP, REG_SF, REG_ZF, TargetInst,
+        };
         use veloc_lir::MachineOpcode;
 
         let layout = mfunc.stack_frame.layout().expect("finalized frame");
@@ -169,7 +171,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
             if stack_size > 0 {
                 let _ = TargetInst::X86Sub64ri.write(
                     insert.writer(),
-                    &[(REG_RSP)],
+                    &[REG_RSP, REG_CF, REG_PF, REG_ZF, REG_SF, REG_OF],
                     &[REG_RSP],
                     [veloc_lir::FieldValue::Imm(stack_size as i64)],
                 );
@@ -207,7 +209,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
                 if stack_size > 0 {
                     let _ = TargetInst::X86Add64ri.write(
                         mfunc.editor().before(id).writer(),
-                        &[(REG_RSP)],
+                        &[REG_RSP, REG_CF, REG_PF, REG_ZF, REG_SF, REG_OF],
                         &[REG_RSP],
                         [veloc_lir::FieldValue::Imm(stack_size as i64)],
                     );

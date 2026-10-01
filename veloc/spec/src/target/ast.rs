@@ -151,6 +151,8 @@ pub struct RegDef {
     pub hw_enc: u32,
     pub reserved: bool,
     pub roles: Vec<String>,
+    /// Exact operand category whose values reside in this non-renamable root.
+    pub state_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

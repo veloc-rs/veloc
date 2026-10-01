@@ -245,6 +245,88 @@ fn constructor_arg_bindings_by_target_operand<'a>(
     bindings
 }
 
+/// Omitted fixed-state results are fresh dead SSA values, never missing machine
+/// effects. Explicitly supplied results can be connected to other constructors.
+pub(super) fn complete_state_results(
+    rule: &mut SelectRuleDef,
+    instructions: &HashMap<String, FinalInstDef>,
+    types: &crate::types::Types,
+) -> Result<(), String> {
+    let source = infer_schema_source_def_field(&rule.fields);
+    let fields = collect_field_variable_bindings(&rule.fields);
+    let mut source = fields
+        .iter()
+        .find(|(_, field)| Some(field.as_str()) == source)
+        .map(|(value, _)| value.clone());
+    let single = rule.builds.len() == 1;
+    for (build_index, ctor) in rule.builds.iter_mut().enumerate() {
+        let Constructor::Inst { opcode, args } = ctor else {
+            continue;
+        };
+        let Some(definition) = instructions.get(opcode) else {
+            continue;
+        };
+        if args.len() == definition.operands.len() {
+            continue;
+        }
+        let omitted = definition.operands.iter().filter(|op| matches!(op, OperandConstraint::Def(n) if definition.state_operands.contains(n))).count();
+        if omitted == 0 {
+            continue;
+        }
+        let remaining = definition.operands.len() - omitted;
+        let implicit_result = single && args.len() + 1 == remaining;
+        if args.len() != remaining && !implicit_result {
+            continue;
+        }
+        if implicit_result && source.is_none() {
+            let name = "__state_source_result".to_owned();
+            rule.fields.push(PatternArg::Named {
+                name: "dst".into(),
+                pattern: Box::new(Pattern::Variable(name.clone())),
+            });
+            source = Some(name);
+        }
+        let mut original = core::mem::take(args).into_iter();
+        let mut source = implicit_result.then(|| source.clone().unwrap());
+        for op in &definition.operands {
+            if let OperandConstraint::Def(name) = op {
+                if definition.state_operands.contains(name) {
+                    let fresh = format!("__state_{build_index}_{name}");
+                    if rule.temps.iter().any(|(name, _)| name == &fresh)
+                        || fields.contains_key(&fresh)
+                    {
+                        return Err("reserved state temporary name used in selection".into());
+                    }
+                    let domain = &definition
+                        .value_types
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .unwrap()
+                        .1;
+                    let scalar = types
+                        .scalars
+                        .iter()
+                        .find(|scalar| &types.exact[&scalar.name] == domain)
+                        .ok_or_else(|| {
+                            format!(
+                                "{opcode}: state result `{name}` requires a scalar representation"
+                            )
+                        })?;
+                    rule.temps
+                        .push((fresh.clone(), format!("Type::{}", scalar.name)));
+                    args.push(Constructor::Variable(fresh));
+                    continue;
+                }
+                if let Some(value) = source.take() {
+                    args.push(Constructor::Variable(value));
+                    continue;
+                }
+            }
+            args.push(original.next().ok_or("missing constructor operand")?);
+        }
+    }
+    Ok(())
+}
 pub(super) fn check_construction(
     rule: &SelectRuleDef,
     instructions: &HashMap<String, FinalInstDef>,

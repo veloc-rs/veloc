@@ -68,22 +68,19 @@ impl FuncEditor<'_> {
         }
     }
     pub fn append_param(&mut self, param: Reg) {
-        assert!(
-            param.is_vreg(),
-            "function parameters must be virtual registers"
-        );
-        self.function.body.params.push(param);
+        self.append_block_param(self.entry_block(), param);
     }
 
-    /// Transfer formal definitions when lowering stack arguments or materializing allocation.
+    /// Transfer entry definitions during ABI lowering. Their bindings must be
+    /// rebuilt for the remaining register inputs; stack inputs become loads.
     pub fn take_params(&mut self) -> Vec<Reg> {
-        self.function.body.param_locations.clear();
-        core::mem::take(&mut self.function.body.params)
+        self.function.body.entry_bindings.clear();
+        let entry = self.entry_block();
+        core::mem::take(&mut self.function.body.blocks[entry].params)
     }
 
-    pub fn set_param_locations(&mut self, locations: Vec<crate::PReg>) {
-        assert_eq!(locations.len(), self.params().len());
-        self.function.body.param_locations = locations;
+    pub fn set_entry_bindings(&mut self, bindings: Vec<EntryBinding>) {
+        self.function.body.entry_bindings = bindings;
     }
     pub fn set_inst_constraints(&mut self, id: InstId, constraints: Vec<crate::OperandConstraint>) {
         self.function.body.store.set_constraints(id, constraints);
@@ -107,14 +104,6 @@ impl FuncEditor<'_> {
         self.function.body.layout.append_block(block);
         block
     }
-    pub fn set_entry_block(&mut self, block: Block) {
-        assert!(
-            self.function.body.layout.contains_block(block),
-            "unknown entry block"
-        );
-
-        self.function.body.entry = block;
-    }
     pub fn append_block_param(&mut self, block: Block, param: Reg) {
         assert!(
             self.function.body.layout.contains_block(block),
@@ -127,6 +116,7 @@ impl FuncEditor<'_> {
         self.function.body.blocks[block].params.push(param);
     }
     pub fn clear_block_params(&mut self) {
+        self.function.body.entry_bindings.clear();
         let mut next = self.blocks().next();
         while let Some(block) = next {
             next = self.layout().next_block(block);

@@ -143,7 +143,6 @@ impl Allocation {
                 transfer.emit(target, insert.writer())?;
             }
         }
-        source.editor().take_params();
         // Layout changes happen only now: each nonempty edge plan gets a block,
         // so conditional branches and critical edges execute only their own moves.
         for edge in edges {
@@ -172,10 +171,6 @@ impl Allocation {
             block = next_block;
         }
         source.editor().clear_block_params();
-        assert!(
-            source.params().is_empty(),
-            "allocation must consume function parameters"
-        );
         Ok(source)
     }
 }

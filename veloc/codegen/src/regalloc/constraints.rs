@@ -3,7 +3,7 @@ use crate::target::TargetInstructions;
 use crate::{Error, Result};
 use veloc_lir::{InstRef, MachineOpcode, OperandConstraint, OperandRef, Placement, Reg};
 
-pub(super) fn constraints<'a>(
+pub(crate) fn constraints<'a>(
     inst: InstRef<'a>,
     target: &dyn TargetInstructions,
 ) -> impl Iterator<Item = OperandConstraint> + 'a {
@@ -36,7 +36,9 @@ pub(crate) fn validate(
             .get(inst.inputs(), inst.results())
             .ok_or_else(|| Error::codegen("constraint refers to a missing operand"))?;
         let accepts = match constraint.placement {
-            Placement::Fixed(reg) => reg.is_preg() && (!allocated || value == reg),
+            Placement::Fixed(reg) | Placement::State(reg) => {
+                reg.is_preg() && (!allocated || value == reg)
+            }
             Placement::Registers(regs) => {
                 !regs.is_empty()
                     && regs.iter().all(Reg::is_preg)

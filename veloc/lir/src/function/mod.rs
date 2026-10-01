@@ -15,17 +15,24 @@ struct BlockData {
     params: Vec<Reg>,
 }
 
+/// A fixed ABI location for a value defined by an entry block parameter.
+/// This constrains the incoming definition, not the value's whole live range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryBinding {
+    pub value: Reg,
+    pub location: crate::PReg,
+}
+
 /// All function-local identities and their editable body.
 #[derive(Debug, Clone)]
 pub struct FuncBody {
     blocks: PrimaryMap<Block, BlockData>,
+    /// Dedicated call entry, retained for the lifetime of the function.
     entry: Block,
     layout: crate::layout::Layout,
     store: crate::store::InstStore,
     vregs: PrimaryMap<VReg, VRegData>,
-    /// SSA definitions supplied by the caller, independent of CFG block parameters.
-    params: Vec<Reg>,
-    param_locations: Vec<crate::PReg>,
+    entry_bindings: Vec<EntryBinding>,
 }
 
 impl FuncBody {
@@ -40,8 +47,7 @@ impl FuncBody {
             layout,
             store: crate::store::InstStore::with_capacity(insts),
             vregs: PrimaryMap::with_capacity(vregs),
-            params: Vec::new(),
-            param_locations: Vec::new(),
+            entry_bindings: Vec::new(),
         }
     }
 
@@ -99,11 +105,13 @@ impl MachineFunction {
     pub fn body(&self) -> &FuncBody {
         &self.body
     }
-    pub fn param_locations(&self) -> &[crate::PReg] {
-        &self.body.param_locations
+    pub fn entry_bindings(&self) -> &[EntryBinding] {
+        &self.body.entry_bindings
     }
+    /// Entry block parameters: all inputs before ABI lowering, register inputs
+    /// afterward. The source signature remains the authority for call arguments.
     pub fn params(&self) -> &[Reg] {
-        &self.body.params
+        &self.body.blocks[self.entry_block()].params
     }
     pub fn layout(&self) -> &crate::layout::Layout {
         self.body.layout()
@@ -151,8 +159,8 @@ impl MachineFunction {
     pub fn uses(&self, reg: Reg) -> crate::RegRefs<'_> {
         self.body.store.uses(reg)
     }
-    /// Instruction definitions only. Function and block parameters have no
-    /// defining operand slot; they are exposed by `params` and `block_params`.
+    /// Instruction definitions only. Block parameters (including entry inputs)
+    /// have no defining operand slot; they are exposed by `block_params`.
     pub fn defs(&self, reg: Reg) -> crate::RegRefs<'_> {
         self.body.store.defs(reg)
     }
@@ -184,19 +192,6 @@ impl MachineFunction {
         let mut out = String::new();
         let _ = writeln!(out, "function {}", self.name);
 
-        if !self.params().is_empty() {
-            let params = self
-                .params()
-                .iter()
-                .map(|reg| format!("{:?}:{}", reg, self.vreg_data(*reg).ty))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let _ = writeln!(out, "  params: {}", params);
-            if !self.param_locations().is_empty() {
-                let _ = writeln!(out, "  incoming: {:?}", self.param_locations());
-            }
-        }
-
         for block in self.blocks() {
             let _ = writeln!(out, "  block {:?}:", block);
             if !self.block_params(block).unwrap().is_empty() {
@@ -208,6 +203,9 @@ impl MachineFunction {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let _ = writeln!(out, "    params: {}", params);
+            }
+            if block == self.entry_block() && !self.entry_bindings().is_empty() {
+                let _ = writeln!(out, "    incoming: {:?}", self.entry_bindings());
             }
             for inst_id in self.block_insts(block) {
                 let inst = self.inst(inst_id);

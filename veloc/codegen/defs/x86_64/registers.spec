@@ -1,3 +1,13 @@
+import "../../../defs/prelude.spec";
+
+// Logical representations of target state operands; placement belongs to the roots below.
+type CARRY = Type::BOOL;
+type PARITY = Type::BOOL;
+type ZERO = Type::BOOL;
+type SIGN = Type::BOOL;
+type OVERFLOW = Type::BOOL;
+type AUXILIARY_CARRY = Type::BOOL;
+
 // Machine constants use the target schema's Register, RegisterView and
 // RegisterClass types. Views share a root identity and declare write effects.
 template Root(Name: ident, Bits: expr, Id: expr, Encoding: expr) {
@@ -124,7 +134,28 @@ const FPR128: RegisterClass = RegisterClass {
     members: [XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15],
 };
 
-// Flags are a dependency resource, never an allocatable register operand.
-const EFLAGS: Register = Register {
-    bits: 64, id: 32, encoding: 0, reserved: true, roles: [],
+// Independent hardware state bits, excluded from allocation.
+const CF: Register = Register {
+    state_type: CARRY,
+    bits: 1, id: 32, encoding: 0, reserved: true, roles: [],
+};
+const PF: Register = Register {
+    state_type: PARITY,
+    bits: 1, id: 33, encoding: 0, reserved: true, roles: [],
+};
+const ZF: Register = Register {
+    state_type: ZERO,
+    bits: 1, id: 34, encoding: 0, reserved: true, roles: [],
+};
+const SF: Register = Register {
+    state_type: SIGN,
+    bits: 1, id: 35, encoding: 0, reserved: true, roles: [],
+};
+const OF: Register = Register {
+    state_type: OVERFLOW,
+    bits: 1, id: 36, encoding: 0, reserved: true, roles: [],
+};
+const AF: Register = Register {
+    state_type: AUXILIARY_CARRY,
+    bits: 1, id: 37, encoding: 0, reserved: true, roles: [],
 };

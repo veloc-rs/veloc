@@ -15,6 +15,8 @@ use veloc_lir::{ControlFlow, MachineFunction, Reg};
 /// Selected code is SSA with target instructions and symbolic call-frame boundaries.
 pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
     verify(f, target)?;
+    crate::passes::state::StateValues::collect(f, target)?;
+    verify_entry_bindings(f)?;
     for block in f.blocks() {
         for id in f.block_insts(block) {
             if !matches!(f.inst(id).opcode(), veloc_lir::MachineOpcode::Target(_))
@@ -32,11 +34,11 @@ pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> 
 pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
     verify_call_frames(f, target)?;
     f.check_refs().map_err(|e| Error::codegen(e))?;
-    if !f.params().is_empty() {
-        return Err(Error::codegen(
-            "function parameters remain after allocation",
-        ));
+    if !f.entry_bindings().is_empty() {
+        return Err(Error::codegen("entry ABI bindings remain after allocation"));
     }
+    let mut analyses = FunctionAnalysisCtx::default();
+    verify_entry_block(f, analyses.cfg(f, target))?;
     for block in f.blocks() {
         if !f.block_params(block).unwrap().is_empty() {
             return Err(Error::codegen("block parameters remain after allocation"));
@@ -62,24 +64,52 @@ pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetInstructions) ->
     Ok(())
 }
 
+/// ABI lowering must bind every remaining entry parameter exactly once.
+/// Before lowering there may be no bindings yet; SSA definitions still come
+/// exclusively from the entry block's parameter list.
+pub(crate) fn verify_entry_bindings(f: &MachineFunction) -> Result<()> {
+    if f.entry_bindings().len() != f.params().len() {
+        return Err(Error::codegen(
+            "entry parameters require complete ABI bindings",
+        ));
+    }
+    let mut values = HashSet::new();
+    let mut locations = HashSet::new();
+    for binding in f.entry_bindings() {
+        if !f.params().contains(&binding.value)
+            || binding
+                .value
+                .as_vreg()
+                .is_none_or(|value| f.vregs().get(value).is_none())
+            || !values.insert(binding.value)
+        {
+            return Err(Error::codegen("invalid or duplicate entry ABI parameter"));
+        }
+        if !locations.insert(binding.location) {
+            return Err(Error::codegen("duplicate entry ABI register"));
+        }
+    }
+    Ok(())
+}
+
+fn verify_entry_block(f: &MachineFunction, cfg: &crate::analysis::CfgInfo) -> Result<()> {
+    if f.blocks().next() != Some(f.entry_block()) {
+        return Err(Error::codegen("call entry must be the first layout block"));
+    }
+    if !cfg.preds(f.entry_block()).is_empty() {
+        return Err(Error::codegen("call entry must not have CFG predecessors"));
+    }
+    Ok(())
+}
+
 pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
     verify_call_frames(f, target)?;
     let fail = |message| Error::codegen(format!("machine SSA in {}: {message}", f.name));
     f.check_refs().map_err(|e| fail(e.into()))?;
-    if !f.param_locations().is_empty() && f.param_locations().len() != f.params().len() {
-        return Err(fail(
-            "incoming ABI locations do not match function parameters".into(),
-        ));
+    if !f.entry_bindings().is_empty() {
+        verify_entry_bindings(f)?;
     }
     let mut defs = HashMap::new();
-    for &param in f.params() {
-        if param.as_vreg().is_none_or(|v| f.vregs().get(v).is_none()) {
-            return Err(fail(format!("invalid function parameter {param:?}")));
-        }
-        if defs.insert(param, (f.entry_block(), 0)).is_some() {
-            return Err(fail(format!("duplicate function parameter {param:?}")));
-        }
-    }
     let mut blocks = HashSet::new();
     let mut instructions = HashSet::new();
     for block in f.blocks() {
@@ -140,11 +170,7 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
     }
     let mut analyses = FunctionAnalysisCtx::default();
     let cfg = analyses.cfg(f, target).clone();
-    if !f.params().is_empty() && !cfg.preds(f.entry_block()).is_empty() {
-        return Err(fail(
-            "function parameters require a dedicated call entry without predecessors".into(),
-        ));
-    }
+    verify_entry_block(f, &cfg)?;
     let mut reachable = HashSet::new();
     let mut pending: Vec<_> = std::vec![f.entry_block()];
     while let Some(block) = pending.pop() {

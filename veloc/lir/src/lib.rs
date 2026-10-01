@@ -10,6 +10,8 @@ pub use constraints::*;
 pub use veloc_bytecode::OperandRef;
 
 pub mod control;
+mod register_access;
+pub use register_access::RegisterAccess;
 mod regmask;
 pub use regmask::RegMask;
 pub mod error;

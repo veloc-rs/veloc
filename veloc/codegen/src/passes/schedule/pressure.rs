@@ -1,17 +1,14 @@
 //! Approximate live-register pressure using the allocator's register classes.
-use super::{
-    before,
-    graph::{DependencyGraph, Node},
-};
+use super::{Region, before};
 use crate::{
     analysis::RegSet,
     target::{RegClassInfo, TargetDescription},
 };
 use hashbrown::HashMap;
-use veloc_lir::{MachineFunction, Reg};
+use veloc_lir::{Reg, RegisterAccess};
 
 pub(super) struct PressureTracker<'a> {
-    function: &'a MachineFunction,
+    region: Region<'a>,
     target: &'a TargetDescription,
     sets: &'a [RegClassInfo],
     live: RegSet,
@@ -22,17 +19,13 @@ pub(super) struct PressureTracker<'a> {
 }
 
 impl<'a> PressureTracker<'a> {
-    pub fn new(
-        function: &'a MachineFunction,
-        graph: &DependencyGraph,
-        target: &'a TargetDescription,
-        live_out: &'a RegSet,
-    ) -> Self {
+    pub fn new(region: Region<'a>, target: &'a TargetDescription, live_out: &'a RegSet) -> Self {
         let mut live = live_out.clone();
         let mut remaining = HashMap::new();
-        for node in graph.nodes.iter().rev() {
-            before(function, node.inst, &mut live);
-            for &r in &node.uses {
+        for i in (0..region.insts.len()).rev() {
+            let inst = region.inst(i);
+            before(inst, &mut live);
+            for r in inst.register_access().reads() {
                 *remaining.entry(r).or_default() += 1;
             }
         }
@@ -47,7 +40,7 @@ impl<'a> PressureTracker<'a> {
             })
             .collect();
         let mut result = Self {
-            function,
+            region,
             target,
             sets,
             live,
@@ -67,51 +60,57 @@ impl<'a> PressureTracker<'a> {
     }
 
     fn in_set(&self, r: Reg, set: &RegClassInfo) -> bool {
+        if self.region.states.location(r).is_some() {
+            return false;
+        }
         if r.is_preg() {
             return set.allocatable.contains(&r);
         }
-        let data = self.function.vreg_data(r);
+        let data = self.region.function.vreg_data(r);
         self.target.reg_class_for_vreg(&data.ty, data.bank) == set.kind
     }
 
-    fn needed_after(&self, node: &Node, r: Reg) -> bool {
-        self.remaining.get(&r).copied().unwrap_or(0) > usize::from(node.uses.contains(&r))
+    fn needed_after(&self, access: RegisterAccess<'_>, r: Reg) -> bool {
+        self.remaining.get(&r).copied().unwrap_or(0) > usize::from(access.is_read(r))
             || self.live_out.contains(&r)
     }
 
-    fn delta(&self, node: &Node, set: &RegClassInfo) -> isize {
-        node.uses
-            .iter()
-            .chain(node.defs.iter().filter(|r| !node.uses.contains(r)))
-            .filter(|&&r| self.in_set(r, set))
-            .map(|&r| isize::from(self.needed_after(node, r)) - isize::from(self.live.contains(&r)))
+    fn delta(&self, access: RegisterAccess<'_>, set: &RegClassInfo) -> isize {
+        access
+            .all()
+            .filter(|&r| self.in_set(r, set))
+            .map(|r| {
+                isize::from(self.needed_after(access, r)) - isize::from(self.live.contains(&r))
+            })
             .sum()
     }
 
-    pub fn score(&self, node: &Node) -> (isize, isize) {
+    pub fn score(&self, node: usize) -> (isize, isize) {
+        let access = self.region.inst(node).register_access();
         self.sets
             .iter()
             .enumerate()
             .fold((0, 0), |(excess, total), (i, set)| {
-                let next = self.pressure[i] + self.delta(node, set);
+                let next = self.pressure[i] + self.delta(access, set);
                 (excess + (next - self.capacity[i]).max(0), total + next)
             })
     }
 
-    pub fn advance(&mut self, node: &Node) {
+    pub fn advance(&mut self, node: usize) {
+        let access = self.region.inst(node).register_access();
         for (i, set) in self.sets.iter().enumerate() {
-            self.pressure[i] += self.delta(node, set);
+            self.pressure[i] += self.delta(access, set);
         }
-        // Compute before decrementing remaining uses, including repeated operands.
-        for &r in node.uses.iter().chain(&node.defs) {
-            if self.needed_after(node, r) {
+        // Remaining uses count instructions, independent of operand multiplicity.
+        for r in access.all() {
+            if self.needed_after(access, r) {
                 self.live.insert(r);
             } else {
                 self.live.remove(&r);
             }
         }
-        for r in &node.uses {
-            *self.remaining.get_mut(r).unwrap() -= 1;
+        for r in access.reads() {
+            *self.remaining.get_mut(&r).unwrap() -= 1;
         }
     }
 }

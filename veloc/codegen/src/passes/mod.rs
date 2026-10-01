@@ -10,3 +10,4 @@ pub use lowering::LegalizePass;
 pub use postisel::PostIselOptimizePass;
 pub use unreachable::RemoveUnreachablePass;
 pub mod schedule;
+pub(crate) mod state;

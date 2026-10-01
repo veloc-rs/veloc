@@ -2,7 +2,7 @@ import "../common.spec";
 
 op X86Call(target: Global, info: CallInfo) -> () {
     encoding = Emission::relative(target, Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xE8, wide: false }, Form::None, 0);
-    implicit = { reads: [RSP] };
+    implicit = { reads: [RSP], clobbers: [CF, PF, ZF, SF, OF, AF] };
     flow = Call;
     assembly = {
         lines: [{ mnemonic: "call", operands: [target(target)] }]
@@ -18,7 +18,7 @@ op X86CallReg(target: Value<AddressValue>, info: CallInfo) -> () {
     registers = {
         target: GPR64,
     };
-    implicit = { reads: [RSP] };
+    implicit = { reads: [RSP], clobbers: [CF, PF, ZF, SF, OF, AF] };
     flow = Call;
     assembly = {
         lines: [{ mnemonic: "call", operands: [reg(target, 64)] }]
@@ -60,41 +60,49 @@ op X86Jmp(target: Successor) -> () {
     };
 }
 
-template ConditionalBranch(Opcode: ident, Near: expr, Short: expr, Mnemonic: expr) {
-    op Opcode(target: Successor) -> () {
-        encoding = Emission::branch(
-            target,
-            Branch { map: OpcodeMap::Map0F, near: Near, short: Short },
-        );
-        implicit = {
-            reads: [EFLAGS],
-        };
+template ConditionalBranch1(Opcode: ident, Near: expr, Short: expr, Mnemonic: expr, Flag0: type) {
+    op Opcode(f0: Value<Flag0>, target: Successor) -> () {
+        encoding = Emission::branch(target, Branch { map: OpcodeMap::Map0F, near: Near, short: Short });
         flow = Branch;
-        assembly = {
-            lines: [{ mnemonic: Mnemonic, operands: [target(target)] }]
-        };
+        assembly = { lines: [{ mnemonic: Mnemonic, operands: [target(target)] }] };
     }
 }
 
-expand ConditionalBranch(X86Je, 0x84, 0x74, "je");
+template ConditionalBranch2(Opcode: ident, Near: expr, Short: expr, Mnemonic: expr, Flag0: type, Flag1: type) {
+    op Opcode(f0: Value<Flag0>, f1: Value<Flag1>, target: Successor) -> () {
+        encoding = Emission::branch(target, Branch { map: OpcodeMap::Map0F, near: Near, short: Short });
+        flow = Branch;
+        assembly = { lines: [{ mnemonic: Mnemonic, operands: [target(target)] }] };
+    }
+}
 
-expand ConditionalBranch(X86Jne, 0x85, 0x75, "jne");
+template ConditionalBranch3(Opcode: ident, Near: expr, Short: expr, Mnemonic: expr, Flag0: type, Flag1: type, Flag2: type) {
+    op Opcode(f0: Value<Flag0>, f1: Value<Flag1>, f2: Value<Flag2>, target: Successor) -> () {
+        encoding = Emission::branch(target, Branch { map: OpcodeMap::Map0F, near: Near, short: Short });
+        flow = Branch;
+        assembly = { lines: [{ mnemonic: Mnemonic, operands: [target(target)] }] };
+    }
+}
 
-expand ConditionalBranch(X86Jb, 0x82, 0x72, "jb");
+expand ConditionalBranch1(X86Je, 0x84, 0x74, "je", ZERO);
 
-expand ConditionalBranch(X86Jae, 0x83, 0x73, "jae");
+expand ConditionalBranch1(X86Jne, 0x85, 0x75, "jne", ZERO);
 
-expand ConditionalBranch(X86Jbe, 0x86, 0x76, "jbe");
+expand ConditionalBranch1(X86Jb, 0x82, 0x72, "jb", CARRY);
 
-expand ConditionalBranch(X86Ja, 0x87, 0x77, "ja");
+expand ConditionalBranch1(X86Jae, 0x83, 0x73, "jae", CARRY);
 
-expand ConditionalBranch(X86Jl, 0x8C, 0x7C, "jl");
+expand ConditionalBranch2(X86Jbe, 0x86, 0x76, "jbe", CARRY, ZERO);
 
-expand ConditionalBranch(X86Jge, 0x8D, 0x7D, "jge");
+expand ConditionalBranch2(X86Ja, 0x87, 0x77, "ja", CARRY, ZERO);
 
-expand ConditionalBranch(X86Jle, 0x8E, 0x7E, "jle");
+expand ConditionalBranch2(X86Jl, 0x8C, 0x7C, "jl", SIGN, OVERFLOW);
 
-expand ConditionalBranch(X86Jg, 0x8F, 0x7F, "jg");
+expand ConditionalBranch2(X86Jge, 0x8D, 0x7D, "jge", SIGN, OVERFLOW);
+
+expand ConditionalBranch3(X86Jle, 0x8E, 0x7E, "jle", ZERO, SIGN, OVERFLOW);
+
+expand ConditionalBranch3(X86Jg, 0x8F, 0x7F, "jg", ZERO, SIGN, OVERFLOW);
 
 op X86PushRbp(rbp: Value<GprValue>) -> () {
     encoding = Emission::legacy(
@@ -168,9 +176,14 @@ template Select32(ResultType: expr, CondType: expr, Test: ident) {
             let mask = temp(Type::I32);
             let diff = temp(Type::I32);
             let masked = temp(Type::I32);
+            let cf = temp(Type::BOOL);
+            let pf = temp(Type::BOOL);
+            let zf = temp(Type::BOOL);
+            let sf = temp(Type::BOOL);
+            let of = temp(Type::BOOL);
             replace(n, [
-                build(Test(n.cond, n.cond)),
-                build(X86Setne(cond_byte)),
+                build(Test(cf, pf, zf, sf, of, n.cond, n.cond)),
+                build(X86Setne(cond_byte, zf)),
                 build(X86Movzx8to32(cond32, cond_byte)),
                 build(X86Mov32Imm(zero, 0)),
                 build(X86Sub32(mask, cond32, zero)),
@@ -196,9 +209,14 @@ template Select64(ResultType: expr, CondType: expr, Test: ident) {
             let diff = temp(Type::I64);
             let masked = temp(Type::I64);
             let wide = temp(Type::I64);
+            let cf = temp(Type::BOOL);
+            let pf = temp(Type::BOOL);
+            let zf = temp(Type::BOOL);
+            let sf = temp(Type::BOOL);
+            let of = temp(Type::BOOL);
             replace(n, [
-                build(Test(n.cond, n.cond)),
-                build(X86Setne(cond_byte)),
+                build(Test(cf, pf, zf, sf, of, n.cond, n.cond)),
+                build(X86Setne(cond_byte, zf)),
                 build(X86Movzx8to32(cond32, cond_byte)),
                 build(X86Mov32(wide, cond32)),
                 build(X86Mov64Imm32(zero, 0)),
@@ -227,9 +245,14 @@ template SelectF32(ResultType: expr, CondType: expr, Test: ident) {
             let true_bits = temp(Type::I32);
             let false_bits = temp(Type::I32);
             let result_bits = temp(Type::I32);
+            let cf = temp(Type::BOOL);
+            let pf = temp(Type::BOOL);
+            let zf = temp(Type::BOOL);
+            let sf = temp(Type::BOOL);
+            let of = temp(Type::BOOL);
             replace(n, [
-                build(Test(n.cond, n.cond)),
-                build(X86Setne(cond_byte)),
+                build(Test(cf, pf, zf, sf, of, n.cond, n.cond)),
+                build(X86Setne(cond_byte, zf)),
                 build(X86Movzx8to32(cond32, cond_byte)),
                 build(X86MovdFromXmm(true_bits, n.v1)),
                 build(X86MovdFromXmm(false_bits, n.v2)),
@@ -261,9 +284,14 @@ template SelectF64(ResultType: expr, CondType: expr, Test: ident) {
             let true_bits = temp(Type::I64);
             let false_bits = temp(Type::I64);
             let result_bits = temp(Type::I64);
+            let cf = temp(Type::BOOL);
+            let pf = temp(Type::BOOL);
+            let zf = temp(Type::BOOL);
+            let sf = temp(Type::BOOL);
+            let of = temp(Type::BOOL);
             replace(n, [
-                build(Test(n.cond, n.cond)),
-                build(X86Setne(cond_byte)),
+                build(Test(cf, pf, zf, sf, of, n.cond, n.cond)),
+                build(X86Setne(cond_byte, zf)),
                 build(X86Movzx8to32(cond32, cond_byte)),
                 build(X86Mov32(wide, cond32)),
                 build(X86MovqFromXmm(true_bits, n.v1)),
@@ -304,122 +332,200 @@ select(n: lir::Br) {
     }
 }
 
-template IntBranch(InputType: expr, Compare: ident, Condition: expr, Jump: ident) {
+template IntBranchZf(InputType: expr, Compare: ident, Condition: expr, Jump: ident) {
     select(n: lir::Brcond) {
         choose {
             case {
                 let cmp = def<lir::Icmp<InputType>>(n.cond);
                 require(matches(cmp.cc, Condition));
-                replace(n, [build(Compare(cmp.lhs, cmp.rhs)), build(Jump(n.then_blk)), build(X86Jmp(n.else_blk))]);
+                let cf = temp(Type::BOOL);
+                let pf = temp(Type::BOOL);
+                let zf = temp(Type::BOOL);
+                let sf = temp(Type::BOOL);
+                let of = temp(Type::BOOL);
+                replace(n, [build(Compare(cf, pf, zf, sf, of, cmp.lhs, cmp.rhs)), build(Jump(zf, n.then_blk)), build(X86Jmp(n.else_blk))]);
             }
         }
     }
 }
 
-expand IntBranch(Type::I8, X86Cmp32, CC::E, X86Je);
+template IntBranchCf(InputType: expr, Compare: ident, Condition: expr, Jump: ident) {
+    select(n: lir::Brcond) {
+        choose {
+            case {
+                let cmp = def<lir::Icmp<InputType>>(n.cond);
+                require(matches(cmp.cc, Condition));
+                let cf = temp(Type::BOOL);
+                let pf = temp(Type::BOOL);
+                let zf = temp(Type::BOOL);
+                let sf = temp(Type::BOOL);
+                let of = temp(Type::BOOL);
+                replace(n, [build(Compare(cf, pf, zf, sf, of, cmp.lhs, cmp.rhs)), build(Jump(cf, n.then_blk)), build(X86Jmp(n.else_blk))]);
+            }
+        }
+    }
+}
 
-expand IntBranch(Type::I8, X86Cmp32, CC::NE, X86Jne);
+template IntBranchCfZf(InputType: expr, Compare: ident, Condition: expr, Jump: ident) {
+    select(n: lir::Brcond) {
+        choose {
+            case {
+                let cmp = def<lir::Icmp<InputType>>(n.cond);
+                require(matches(cmp.cc, Condition));
+                let cf = temp(Type::BOOL);
+                let pf = temp(Type::BOOL);
+                let zf = temp(Type::BOOL);
+                let sf = temp(Type::BOOL);
+                let of = temp(Type::BOOL);
+                replace(n, [build(Compare(cf, pf, zf, sf, of, cmp.lhs, cmp.rhs)), build(Jump(cf, zf, n.then_blk)), build(X86Jmp(n.else_blk))]);
+            }
+        }
+    }
+}
 
-expand IntBranch(Type::I8, X86Cmp32, CC::L, X86Jl);
+template IntBranchSfOf(InputType: expr, Compare: ident, Condition: expr, Jump: ident) {
+    select(n: lir::Brcond) {
+        choose {
+            case {
+                let cmp = def<lir::Icmp<InputType>>(n.cond);
+                require(matches(cmp.cc, Condition));
+                let cf = temp(Type::BOOL);
+                let pf = temp(Type::BOOL);
+                let zf = temp(Type::BOOL);
+                let sf = temp(Type::BOOL);
+                let of = temp(Type::BOOL);
+                replace(n, [build(Compare(cf, pf, zf, sf, of, cmp.lhs, cmp.rhs)), build(Jump(sf, of, n.then_blk)), build(X86Jmp(n.else_blk))]);
+            }
+        }
+    }
+}
 
-expand IntBranch(Type::I8, X86Cmp32, CC::LE, X86Jle);
+template IntBranchZfSfOf(InputType: expr, Compare: ident, Condition: expr, Jump: ident) {
+    select(n: lir::Brcond) {
+        choose {
+            case {
+                let cmp = def<lir::Icmp<InputType>>(n.cond);
+                require(matches(cmp.cc, Condition));
+                let cf = temp(Type::BOOL);
+                let pf = temp(Type::BOOL);
+                let zf = temp(Type::BOOL);
+                let sf = temp(Type::BOOL);
+                let of = temp(Type::BOOL);
+                replace(n, [build(Compare(cf, pf, zf, sf, of, cmp.lhs, cmp.rhs)), build(Jump(zf, sf, of, n.then_blk)), build(X86Jmp(n.else_blk))]);
+            }
+        }
+    }
+}
 
-expand IntBranch(Type::I8, X86Cmp32, CC::G, X86Jg);
+expand IntBranchZf(Type::I8, X86Cmp32, CC::E, X86Je);
 
-expand IntBranch(Type::I8, X86Cmp32, CC::GE, X86Jge);
+expand IntBranchZf(Type::I8, X86Cmp32, CC::NE, X86Jne);
 
-expand IntBranch(Type::I8, X86Cmp32, CC::B, X86Jb);
+expand IntBranchSfOf(Type::I8, X86Cmp32, CC::L, X86Jl);
 
-expand IntBranch(Type::I8, X86Cmp32, CC::BE, X86Jbe);
+expand IntBranchZfSfOf(Type::I8, X86Cmp32, CC::LE, X86Jle);
 
-expand IntBranch(Type::I8, X86Cmp32, CC::A, X86Ja);
+expand IntBranchZfSfOf(Type::I8, X86Cmp32, CC::G, X86Jg);
 
-expand IntBranch(Type::I8, X86Cmp32, CC::AE, X86Jae);
+expand IntBranchSfOf(Type::I8, X86Cmp32, CC::GE, X86Jge);
 
-expand IntBranch(Type::I16, X86Cmp32, CC::E, X86Je);
+expand IntBranchCf(Type::I8, X86Cmp32, CC::B, X86Jb);
 
-expand IntBranch(Type::I16, X86Cmp32, CC::NE, X86Jne);
+expand IntBranchCfZf(Type::I8, X86Cmp32, CC::BE, X86Jbe);
 
-expand IntBranch(Type::I16, X86Cmp32, CC::L, X86Jl);
+expand IntBranchCfZf(Type::I8, X86Cmp32, CC::A, X86Ja);
 
-expand IntBranch(Type::I16, X86Cmp32, CC::LE, X86Jle);
+expand IntBranchCf(Type::I8, X86Cmp32, CC::AE, X86Jae);
 
-expand IntBranch(Type::I16, X86Cmp32, CC::G, X86Jg);
+expand IntBranchZf(Type::I16, X86Cmp32, CC::E, X86Je);
 
-expand IntBranch(Type::I16, X86Cmp32, CC::GE, X86Jge);
+expand IntBranchZf(Type::I16, X86Cmp32, CC::NE, X86Jne);
 
-expand IntBranch(Type::I16, X86Cmp32, CC::B, X86Jb);
+expand IntBranchSfOf(Type::I16, X86Cmp32, CC::L, X86Jl);
 
-expand IntBranch(Type::I16, X86Cmp32, CC::BE, X86Jbe);
+expand IntBranchZfSfOf(Type::I16, X86Cmp32, CC::LE, X86Jle);
 
-expand IntBranch(Type::I16, X86Cmp32, CC::A, X86Ja);
+expand IntBranchZfSfOf(Type::I16, X86Cmp32, CC::G, X86Jg);
 
-expand IntBranch(Type::I16, X86Cmp32, CC::AE, X86Jae);
+expand IntBranchSfOf(Type::I16, X86Cmp32, CC::GE, X86Jge);
 
-expand IntBranch(Type::I32, X86Cmp32, CC::E, X86Je);
+expand IntBranchCf(Type::I16, X86Cmp32, CC::B, X86Jb);
 
-expand IntBranch(Type::I32, X86Cmp32, CC::NE, X86Jne);
+expand IntBranchCfZf(Type::I16, X86Cmp32, CC::BE, X86Jbe);
 
-expand IntBranch(Type::I32, X86Cmp32, CC::L, X86Jl);
+expand IntBranchCfZf(Type::I16, X86Cmp32, CC::A, X86Ja);
 
-expand IntBranch(Type::I32, X86Cmp32, CC::LE, X86Jle);
+expand IntBranchCf(Type::I16, X86Cmp32, CC::AE, X86Jae);
 
-expand IntBranch(Type::I32, X86Cmp32, CC::G, X86Jg);
+expand IntBranchZf(Type::I32, X86Cmp32, CC::E, X86Je);
 
-expand IntBranch(Type::I32, X86Cmp32, CC::GE, X86Jge);
+expand IntBranchZf(Type::I32, X86Cmp32, CC::NE, X86Jne);
 
-expand IntBranch(Type::I32, X86Cmp32, CC::B, X86Jb);
+expand IntBranchSfOf(Type::I32, X86Cmp32, CC::L, X86Jl);
 
-expand IntBranch(Type::I32, X86Cmp32, CC::BE, X86Jbe);
+expand IntBranchZfSfOf(Type::I32, X86Cmp32, CC::LE, X86Jle);
 
-expand IntBranch(Type::I32, X86Cmp32, CC::A, X86Ja);
+expand IntBranchZfSfOf(Type::I32, X86Cmp32, CC::G, X86Jg);
 
-expand IntBranch(Type::I32, X86Cmp32, CC::AE, X86Jae);
+expand IntBranchSfOf(Type::I32, X86Cmp32, CC::GE, X86Jge);
 
-expand IntBranch(Type::I64, X86Cmp64, CC::E, X86Je);
+expand IntBranchCf(Type::I32, X86Cmp32, CC::B, X86Jb);
 
-expand IntBranch(Type::I64, X86Cmp64, CC::NE, X86Jne);
+expand IntBranchCfZf(Type::I32, X86Cmp32, CC::BE, X86Jbe);
 
-expand IntBranch(Type::I64, X86Cmp64, CC::L, X86Jl);
+expand IntBranchCfZf(Type::I32, X86Cmp32, CC::A, X86Ja);
 
-expand IntBranch(Type::I64, X86Cmp64, CC::LE, X86Jle);
+expand IntBranchCf(Type::I32, X86Cmp32, CC::AE, X86Jae);
 
-expand IntBranch(Type::I64, X86Cmp64, CC::G, X86Jg);
+expand IntBranchZf(Type::I64, X86Cmp64, CC::E, X86Je);
 
-expand IntBranch(Type::I64, X86Cmp64, CC::GE, X86Jge);
+expand IntBranchZf(Type::I64, X86Cmp64, CC::NE, X86Jne);
 
-expand IntBranch(Type::I64, X86Cmp64, CC::B, X86Jb);
+expand IntBranchSfOf(Type::I64, X86Cmp64, CC::L, X86Jl);
 
-expand IntBranch(Type::I64, X86Cmp64, CC::BE, X86Jbe);
+expand IntBranchZfSfOf(Type::I64, X86Cmp64, CC::LE, X86Jle);
 
-expand IntBranch(Type::I64, X86Cmp64, CC::A, X86Ja);
+expand IntBranchZfSfOf(Type::I64, X86Cmp64, CC::G, X86Jg);
 
-expand IntBranch(Type::I64, X86Cmp64, CC::AE, X86Jae);
+expand IntBranchSfOf(Type::I64, X86Cmp64, CC::GE, X86Jge);
 
-expand IntBranch(Type::PTR, X86Cmp64, CC::E, X86Je);
+expand IntBranchCf(Type::I64, X86Cmp64, CC::B, X86Jb);
 
-expand IntBranch(Type::PTR, X86Cmp64, CC::NE, X86Jne);
+expand IntBranchCfZf(Type::I64, X86Cmp64, CC::BE, X86Jbe);
 
-expand IntBranch(Type::PTR, X86Cmp64, CC::L, X86Jl);
+expand IntBranchCfZf(Type::I64, X86Cmp64, CC::A, X86Ja);
 
-expand IntBranch(Type::PTR, X86Cmp64, CC::LE, X86Jle);
+expand IntBranchCf(Type::I64, X86Cmp64, CC::AE, X86Jae);
 
-expand IntBranch(Type::PTR, X86Cmp64, CC::G, X86Jg);
+expand IntBranchZf(Type::PTR, X86Cmp64, CC::E, X86Je);
 
-expand IntBranch(Type::PTR, X86Cmp64, CC::GE, X86Jge);
+expand IntBranchZf(Type::PTR, X86Cmp64, CC::NE, X86Jne);
 
-expand IntBranch(Type::PTR, X86Cmp64, CC::B, X86Jb);
+expand IntBranchSfOf(Type::PTR, X86Cmp64, CC::L, X86Jl);
 
-expand IntBranch(Type::PTR, X86Cmp64, CC::BE, X86Jbe);
+expand IntBranchZfSfOf(Type::PTR, X86Cmp64, CC::LE, X86Jle);
 
-expand IntBranch(Type::PTR, X86Cmp64, CC::A, X86Ja);
+expand IntBranchZfSfOf(Type::PTR, X86Cmp64, CC::G, X86Jg);
 
-expand IntBranch(Type::PTR, X86Cmp64, CC::AE, X86Jae);
+expand IntBranchSfOf(Type::PTR, X86Cmp64, CC::GE, X86Jge);
+
+expand IntBranchCf(Type::PTR, X86Cmp64, CC::B, X86Jb);
+
+expand IntBranchCfZf(Type::PTR, X86Cmp64, CC::BE, X86Jbe);
+
+expand IntBranchCfZf(Type::PTR, X86Cmp64, CC::A, X86Ja);
+
+expand IntBranchCf(Type::PTR, X86Cmp64, CC::AE, X86Jae);
 
 select(n: lir::Brcond) {
     choose {
         case {
-            replace(n, [build(X86Test32(n.cond, n.cond)), build(X86Jne(n.then_blk)), build(X86Jmp(n.else_blk))]);
+            let cf = temp(Type::BOOL);
+            let pf = temp(Type::BOOL);
+            let zf = temp(Type::BOOL);
+            let sf = temp(Type::BOOL);
+            let of = temp(Type::BOOL);
+            replace(n, [build(X86Test32(cf, pf, zf, sf, of, n.cond, n.cond)), build(X86Jne(zf, n.then_blk)), build(X86Jmp(n.else_blk))]);
         }
     }
 }

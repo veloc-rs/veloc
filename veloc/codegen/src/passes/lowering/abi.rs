@@ -85,12 +85,15 @@ fn lower_formal_arguments(
         "ABI parameter count mismatch"
     );
     let params = mfunc.take_params();
-    let mut locations = Vec::new();
+    let mut bindings = Vec::new();
     for (dst, assignment) in params.into_iter().zip(&plan.args) {
         match assignment.loc {
             AbiLocation::Reg(reg) => {
                 mfunc.append_param(dst);
-                locations.push(reg.as_preg().expect("physical ABI location"));
+                bindings.push(veloc_lir::EntryBinding {
+                    value: dst,
+                    location: reg.as_preg().expect("physical ABI location"),
+                });
             }
             AbiLocation::Stack {
                 offset,
@@ -111,7 +114,7 @@ fn lower_formal_arguments(
             }
         }
     }
-    mfunc.set_param_locations(locations);
+    mfunc.set_entry_bindings(bindings);
 }
 
 /// Replace a checked value operation with a runtime call and establish its ABI

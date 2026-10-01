@@ -250,6 +250,12 @@ impl<'a> InstRef<'a> {
         self.store.memory(self.id)
     }
 
+    /// Distinct register access for dependency, liveness and pressure analyses.
+    /// Operand APIs retain their positions and multiplicity.
+    pub fn register_access(self) -> crate::RegisterAccess<'a> {
+        crate::RegisterAccess::new(self)
+    }
+
     /// 检查指令是否有效
     pub fn is_invalid(&self) -> bool {
         matches!(self.opcode(), MachineOpcode::Invalid)
@@ -264,7 +270,7 @@ impl<'a> InstRef<'a> {
     }
 
     /// Explicit results and implicit physical register writes.
-    pub fn defs(&self) -> impl Iterator<Item = Reg> + 'a {
+    pub fn defs(self) -> impl Iterator<Item = Reg> + 'a {
         self.results()
             .iter()
             .copied()
@@ -272,7 +278,8 @@ impl<'a> InstRef<'a> {
     }
 
     /// Explicit register inputs, edge arguments and implicit physical reads.
-    pub fn uses(&self) -> impl Iterator<Item = Reg> + 'a {
+    /// Repeated operands remain separate occurrences.
+    pub fn uses(self) -> impl Iterator<Item = Reg> + 'a {
         let operands = self.inputs().iter().copied();
         operands
             .chain(self.implicit_uses().iter().copied())

@@ -4,7 +4,7 @@ import "../common.spec";
 // Each instruction owns its encoding; templates share static family structure.
 
 template GprBinary(Opcode: ident, Byte: expr, Wide: expr, Mnemonic: expr, Bits: expr) {
-    op Opcode(src2: Value<GprValue>, src1: Value<GprValue>) -> (dst: Value<GprValue>) {
+    op Opcode(src2: Value<GprValue>, src1: Value<GprValue>) -> (dst: Value<GprValue>, cf: Value<CARRY>, pf: Value<PARITY>, zf: Value<ZERO>, sf: Value<SIGN>, of: Value<OVERFLOW>) {
         encoding = legacy_rr(Byte, Wide, src2, dst);
         registers = {
             dst: tied(src1, GPR64),
@@ -12,8 +12,9 @@ template GprBinary(Opcode: ident, Byte: expr, Wide: expr, Mnemonic: expr, Bits: 
             src1: GPR64,
         };
         implicit = {
-            clobbers: [EFLAGS],
+            clobbers: [AF],
         };
+        rematerializable = true;
         schedule = "IntAlu";
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src2, Bits)] }]
@@ -36,7 +37,7 @@ expand GprBinary(X86Add64, 0x01, true, "add", 64);
 expand GprBinary(X86Sub64, 0x29, true, "sub", 64);
 
 template GprBinaryImm(Opcode: ident, Wide: expr, Extension: expr, Imm: ident, Mnemonic: expr, Bits: expr) {
-    op Opcode(imm: i64, src: Value<GprValue>) -> (dst: Value<GprValue>) {
+    op Opcode(imm: i64, src: Value<GprValue>) -> (dst: Value<GprValue>, cf: Value<CARRY>, pf: Value<PARITY>, zf: Value<ZERO>, sf: Value<SIGN>, of: Value<OVERFLOW>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x81, wide: Wide },
             Form::ModRm(RegField::Extension(Extension), Rm::Register(dst)),
@@ -47,8 +48,9 @@ template GprBinaryImm(Opcode: ident, Wide: expr, Extension: expr, Imm: ident, Mn
             src: GPR64,
         };
         implicit = {
-            clobbers: [EFLAGS],
+            clobbers: [AF],
         };
+        rematerializable = true;
         schedule = "IntAlu";
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), imm(imm)] }]
@@ -71,7 +73,7 @@ expand GprBinary(X86Or64, 0x09, true, "or", 64);
 expand GprBinary(X86Xor64, 0x31, true, "xor", 64);
 
 template GprMultiply(Opcode: ident, Wide: expr, Mnemonic: expr, Bits: expr) {
-    op Opcode(src2: Value<GprValue>, src1: Value<GprValue>) -> (dst: Value<GprValue>) {
+    op Opcode(src2: Value<GprValue>, src1: Value<GprValue>) -> (dst: Value<GprValue>, cf: Value<CARRY>, of: Value<OVERFLOW>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xAF, wide: Wide },
             Form::ModRm(RegField::Register(dst), Rm::Register(src2)),
@@ -83,8 +85,9 @@ template GprMultiply(Opcode: ident, Wide: expr, Mnemonic: expr, Bits: expr) {
             src1: GPR64,
         };
         implicit = {
-            clobbers: [EFLAGS],
+            clobbers: [PF, ZF, SF, AF],
         };
+        rematerializable = true;
         schedule = "IntMul";
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src2, Bits)] }]
@@ -109,7 +112,7 @@ template GprShiftCl(Opcode: ident, Wide: expr, Extension: expr, Mnemonic: expr, 
             src1: GPR64,
         };
         implicit = {
-            clobbers: [EFLAGS],
+            clobbers: [CF, PF, ZF, SF, OF, AF],
         };
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(count, 8)] }]
@@ -149,7 +152,7 @@ template GprShiftImm(Opcode: ident, Wide: expr, Extension: expr, Mnemonic: expr,
             src: GPR64,
         };
         implicit = {
-            clobbers: [EFLAGS],
+            clobbers: [CF, PF, ZF, SF, OF, AF],
         };
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), imm(imm)] }]
@@ -178,7 +181,7 @@ template Divide32(Opcode: ident, Extension: expr, Mnemonic: expr) {
         implicit = {
             reads: [EAX, EDX],
             writes: [EAX, EDX],
-            clobbers: [EFLAGS],
+            clobbers: [CF, PF, ZF, SF, OF, AF],
         };
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(src, 32)] }]
@@ -201,7 +204,7 @@ template Divide64(Opcode: ident, Extension: expr, Mnemonic: expr) {
         implicit = {
             reads: [RAX, RDX],
             writes: [RAX, RDX],
-            clobbers: [EFLAGS],
+            clobbers: [CF, PF, ZF, SF, OF, AF],
         };
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(src, 64)] }]

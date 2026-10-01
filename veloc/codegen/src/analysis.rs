@@ -550,11 +550,6 @@ fn compute_liveness(mfunc: &MachineFunction, cfg: &CfgInfo) -> LivenessInfo {
     for block in mfunc.blocks() {
         let mut uses = empty.clone();
         let mut defs = empty.clone();
-        if block == mfunc.entry_block() {
-            for &reg in mfunc.params() {
-                defs.insert(reg);
-            }
-        }
         for &reg in mfunc.block_params(block).unwrap() {
             defs.insert(reg);
         }
@@ -660,7 +655,7 @@ mod tests {
 
     #[test]
     fn selected_control_distinguishes_branch_fallthrough_and_terminal_transfer() {
-        use crate::target::x86_64::inst::TargetInst;
+        use crate::target::x86_64::inst::{REG_ZF, TargetInst};
         use veloc_lir::{FieldValue, MachineOpcode};
         let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut f = MachineFunction::new("selected".into());
@@ -676,7 +671,11 @@ mod tests {
                 let id = f.editor().at_end(Block::from_u32(block)).writer().write(
                     MachineOpcode::Target(op.as_u32()),
                     &[],
-                    &[],
+                    if op == TargetInst::X86Je {
+                        &[REG_ZF]
+                    } else {
+                        &[]
+                    },
                     fields,
                 );
 

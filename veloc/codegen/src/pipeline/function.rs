@@ -130,6 +130,12 @@ impl<'a> FunctionPipeline<'a> {
         self.profile
             .measure("post_isel", 0, || self.post_isel.run(&mut mfunc, &mut ctx))?;
 
+        run_function_pass(
+            &crate::passes::state::ResolveStatePass,
+            &mut mfunc,
+            &mut ctx,
+        )?;
+
         // Allocation owns its exact input until its plan is materialized.
         let mut mfunc = self.profile.measure("regalloc", 0, || {
             let allocation = crate::regalloc::RegisterAllocator::new(self.target)

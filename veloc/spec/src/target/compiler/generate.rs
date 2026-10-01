@@ -157,14 +157,6 @@ fn format_reg_metadata_slice(
     format_slice(entries)
 }
 
-fn format_clobber_slice(clobbers: &[String]) -> String {
-    let entries = clobbers
-        .iter()
-        .map(|clobber| format!("\"{}\"", clobber))
-        .collect();
-    format_slice(entries)
-}
-
 pub(crate) fn generate_target_inst_metadata(
     output: &mut String,
     module: &crate::target::ast::Module,
@@ -196,11 +188,7 @@ pub(crate) fn generate_target_inst_metadata(
             sanitize_ident(name).to_ascii_uppercase()
         );
         let schedule = match &inst_def.schedule_class {
-            Some(class) => format!(
-                "Some(crate::target::ScheduleInfo {{ class: {:?}, writes_flags: {} }})",
-                class,
-                inst_def.clobbers.iter().any(|r| r == "EFLAGS")
-            ),
+            Some(class) => format!("Some(crate::target::ScheduleInfo {{ class: {:?} }})", class,),
             None => "None".into(),
         };
         writeln!(
@@ -209,6 +197,12 @@ pub(crate) fn generate_target_inst_metadata(
         )
         .unwrap();
         writeln!(output, "    schedule: {schedule},").unwrap();
+        writeln!(
+            output,
+            "    rematerializable: {},",
+            inst_def.rematerializable
+        )
+        .unwrap();
         let constraints = inst_def.operands.iter().filter_map(|op| match op {
             OperandConstraint::Def(n) => Some((n, true)),
             OperandConstraint::Use(n) | OperandConstraint::FixedUse { src: n, .. } => {
@@ -235,7 +229,9 @@ pub(crate) fn generate_target_inst_metadata(
                 .find(|(name, _)| name == operand)
                 .expect("checked register constraint")
                 .1;
-            let placement = if let [register] = registers.as_slice() {
+            let placement = if inst_def.state_operands.contains(operand) {
+                format!("Placement::State({})", reg_const_name(&registers[0]))
+            } else if let [register] = registers.as_slice() {
                 format!("Placement::Fixed({})", reg_const_name(register))
             } else {
                 format!(
@@ -283,13 +279,17 @@ pub(crate) fn generate_target_inst_metadata(
         writeln!(
             output,
             "    implicit_defs: {},",
-            format_reg_metadata_slice(&inst_def.implicit_defs, &reg_names, name, "implicit-def")
-        )
-        .unwrap();
-        writeln!(
-            output,
-            "    clobbers: {},",
-            format_clobber_slice(&inst_def.clobbers)
+            format_reg_metadata_slice(
+                &inst_def
+                    .implicit_defs
+                    .iter()
+                    .chain(&inst_def.clobbers)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                &reg_names,
+                name,
+                "implicit-def"
+            )
         )
         .unwrap();
         writeln!(output, "}};").unwrap();

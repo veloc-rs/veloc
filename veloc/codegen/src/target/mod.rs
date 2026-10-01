@@ -148,11 +148,9 @@ pub trait TargetMachine: TargetRegalloc + TargetSchedule {
     fn emitter(&self) -> &dyn crate::target::TargetEmitter;
 }
 
-/// A movable, nontrapping operation. It must not access memory, read flags, or
-/// change control flow. The scheduler preserves the region's final flag writer.
+/// A movable, nontrapping operation without memory or control effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScheduleInfo {
-    pub writes_flags: bool,
     pub class: &'static str,
 }
 
@@ -261,9 +259,11 @@ pub struct TargetInstMetadata {
     pub memory: Option<(veloc_lir::MemoryKind, u32)>,
     pub flow: veloc_lir::ControlFlow,
     pub schedule: Option<ScheduleInfo>,
+    /// Reexecuting this producer with the same inputs is safe. Data results
+    /// receive fresh identities when hardware state must be recomputed.
+    pub rematerializable: bool,
     pub implicit_uses: &'static [Reg],
     pub implicit_defs: &'static [Reg],
-    pub clobbers: &'static [&'static str],
 }
 
 impl TargetInstMetadata {
@@ -272,9 +272,9 @@ impl TargetInstMetadata {
         memory: None,
         flow: veloc_lir::ControlFlow::Next,
         schedule: None,
+        rematerializable: false,
         implicit_uses: &[],
         implicit_defs: &[],
-        clobbers: &[],
     };
 }
 

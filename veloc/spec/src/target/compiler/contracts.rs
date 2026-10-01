@@ -86,6 +86,10 @@ pub(super) fn registers(declarations: &[crate::syntax::Decl]) -> Result<Vec<Def>
                         reserved,
                         roles,
                         alias: None,
+                        state_type: properties
+                            .remove("state_type")
+                            .map(|node| name(&node).map(str::to_owned))
+                            .transpose()?,
                     },
                 );
             }
@@ -164,6 +168,7 @@ pub(super) fn registers(declarations: &[crate::syntax::Decl]) -> Result<Vec<Def>
             reserved: base.reserved,
             roles: Vec::new(),
             alias: Some(alias),
+            state_type: None,
         });
     }
     let register_names: BTreeSet<_> = roots
@@ -260,6 +265,40 @@ pub(super) fn compile(
         }
     }
     let mut result = HashMap::new();
+    // Preserve the declared category identity: different state categories may
+    // share the same logical representation (for example, boolean flags).
+    let mut state_types = BTreeMap::new();
+    for def in &module.defs {
+        let Def::Reg(reg) = def else { continue };
+        let Some(category) = &reg.state_type else {
+            continue;
+        };
+        let ty = types
+            .exact
+            .get(category)
+            .ok_or_else(|| format!("{}: unknown state type `{category}`", reg.name))?;
+        if !reg.reserved
+            || reg.alias.is_some()
+            || !ty.is_singleton()
+            || !ty.0.iter().all(|(primitive, shapes)| {
+                *shapes == 1 && primitive.element_bits() == Some(reg.size)
+            })
+        {
+            return Err(format!(
+                "{}: state type requires a reserved root with matching scalar width",
+                reg.name
+            ));
+        }
+        let category = category.strip_prefix("Type::").unwrap_or(category);
+        if state_types
+            .insert(category.to_owned(), reg.name.clone())
+            .is_some()
+        {
+            return Err(format!(
+                "state type `{category}` has multiple storage roots"
+            ));
+        }
+    }
     for contract in contracts {
         let op = contract.name.clone();
         let build = || -> Result<FinalInstDef, String> {
@@ -304,9 +343,15 @@ pub(super) fn compile(
                 .unwrap()
                 .iter()
                 .chain(contract.signature.results.patterns().unwrap());
+            let mut state_locations = BTreeMap::new();
             let value_types = names
                 .zip(patterns)
                 .map(|(name, pattern)| {
+                    if let crate::model::Pattern::Exact(ty) = pattern
+                        && let Some(reg) = state_types.get(ty.strip_prefix("Type::").unwrap_or(ty))
+                    {
+                        state_locations.insert(name.clone(), reg.clone());
+                    }
                     let set = match pattern {
                         crate::model::Pattern::Set(set) => set.clone(),
                         crate::model::Pattern::Exact(ty) => types.exact[ty].clone(),
@@ -348,6 +393,7 @@ pub(super) fn compile(
                 .transpose()?
                 .unwrap_or_default();
             let mut reg_classes = Vec::new();
+            let mut state_operands = Vec::new();
             let mut ties = Vec::new();
             for index in 0..operands.len() {
                 let (operand, is_result) = match &operands[index] {
@@ -355,6 +401,16 @@ pub(super) fn compile(
                     OperandConstraint::Use(n) => (n.clone(), false),
                     _ => continue,
                 };
+                if let Some(reg) = state_locations.get(&operand) {
+                    if locations.contains_key(&operand) {
+                        return Err(format!(
+                            "`{operand}` already has a placement from its state type"
+                        ));
+                    }
+                    state_operands.push(operand.clone());
+                    reg_classes.push((operand, vec![reg.clone()]));
+                    continue;
+                }
                 let node = locations
                     .remove(&operand)
                     .ok_or_else(|| format!("missing register constraint for `{operand}`"))?;
@@ -418,9 +474,28 @@ pub(super) fn compile(
             let implicit_defs = list(implicit.remove("writes"))?;
             let clobbers = list(implicit.remove("clobbers"))?;
             finish(&implicit)?;
-            for reg in implicit_uses.iter().chain(&implicit_defs) {
+            for reg in implicit_uses.iter().chain(&implicit_defs).chain(&clobbers) {
                 if !regs.contains(reg) {
                     return Err(format!("unknown implicit register `{reg}`"));
+                }
+            }
+            // A result installs a new value; an implicit write only destroys the
+            // old contents. A storage root must not have both descriptions.
+            let mut state_results = BTreeSet::new();
+            for operand in &operands {
+                let OperandConstraint::Def(name) = operand else {
+                    continue;
+                };
+                let Some(reg) = state_locations.get(name) else {
+                    continue;
+                };
+                if !state_results.insert(reg) {
+                    return Err(format!("multiple results occupy state register `{reg}`"));
+                }
+                if implicit_defs.contains(reg) || clobbers.contains(reg) {
+                    return Err(format!(
+                        "state result `{name}` already describes the write to `{reg}`"
+                    ));
                 }
             }
             let schedule_class = fields
@@ -462,6 +537,20 @@ pub(super) fn compile(
                 Some(node) if name(&node)? == "true" => true,
                 _ => return Err("pseudo must be true when specified".into()),
             };
+            let rematerializable = match fields.remove("rematerializable") {
+                None => false,
+                Some(node) if name(&node)? == "true" => true,
+                _ => return Err("rematerializable must be true when specified".into()),
+            };
+            if rematerializable
+                && (memory.is_some()
+                    || flow != "Next"
+                    || is_pseudo
+                    || !implicit_uses.is_empty()
+                    || !implicit_defs.is_empty())
+            {
+                return Err("state rematerialization requires a pure producer".into());
+            }
             // Checked by the shared expression compiler after operand resolution.
             fields.remove("encoding");
             let assembly = fields.remove("assembly");
@@ -469,6 +558,8 @@ pub(super) fn compile(
             let mut inst = FinalInstDef {
                 operands,
                 reg_classes,
+                state_operands,
+                rematerializable,
                 value_types,
                 ties,
                 implicit_uses,

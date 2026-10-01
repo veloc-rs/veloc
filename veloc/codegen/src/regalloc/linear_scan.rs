@@ -101,20 +101,18 @@ impl<'a> RegisterAllocator<'a> {
         let mut fixed = Vec::<Vec<Reservation>>::new();
         let mut preferences = SecondaryMap::<VReg, Vec<Reg>>::with_capacity(f.vregs().len());
         let mut local_fixed = Vec::<Option<(u32, u32)>>::new();
-        if f.params().len() != f.param_locations().len() {
-            return Err(Error::codegen("function parameters require ABI locations"));
-        }
-        for (&value, &reg) in f.params().iter().zip(f.param_locations()) {
-            extend_range(&mut ranges, &mut local_fixed, value, 0);
-            reserve(&mut fixed, reg.into(), 0, Some(value));
-            preferences[value.as_vreg().unwrap()].push(reg.into());
+        crate::verify::verify_entry_bindings(f)?;
+        for binding in f.entry_bindings() {
+            reserve(&mut fixed, binding.location.into(), 0, Some(binding.value));
+            preferences[binding.value.as_vreg().unwrap()].push(binding.location.into());
         }
         let mut pos = 1u32;
         for block in f.blocks() {
             let start = pos * 2;
             local_fixed.fill(None);
             for &param in f.block_params(block).unwrap() {
-                extend_range(&mut ranges, &mut local_fixed, param, start);
+                let definition = if block == f.entry_block() { 0 } else { start };
+                extend_range(&mut ranges, &mut local_fixed, param, definition);
             }
             for id in f.block_insts(block) {
                 let inst = &f.inst(id);
@@ -132,7 +130,7 @@ impl<'a> RegisterAllocator<'a> {
                             veloc_lir::OperandRef::Result(_)
                         ));
                     match constraint.placement {
-                        veloc_lir::Placement::Fixed(reg) => {
+                        veloc_lir::Placement::Fixed(reg) | veloc_lir::Placement::State(reg) => {
                             reserve(&mut fixed, reg, at, value.as_vreg().map(|_| value));
                             if let Some(v) = value.as_vreg() {
                                 preferences[v].push(reg);
@@ -293,14 +291,13 @@ impl<'a> RegisterAllocator<'a> {
         }
         let instructions = self.plan(&source, &mut frame, &physical)?;
         let incoming = source
-            .params()
+            .entry_bindings()
             .iter()
-            .zip(source.param_locations())
-            .map(|(&value, &reg)| {
+            .map(|binding| {
                 Ok(super::moves::Move {
-                    dst: self.location(value)?,
-                    src: super::moves::Location::Reg(reg.into()),
-                    ty: source.vreg_data(value).ty,
+                    dst: self.location(binding.value)?,
+                    src: super::moves::Location::Reg(binding.location.into()),
+                    ty: source.vreg_data(binding.value).ty,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -352,7 +349,9 @@ mod tests {
     use crate::target::TargetInfo;
     use crate::target::x86_64::{
         X86_64TargetMachine,
-        inst::{REG_RAX, REG_RCX, REG_RDX, TargetInst},
+        inst::{
+            REG_AF, REG_CF, REG_OF, REG_PF, REG_RAX, REG_RCX, REG_RDX, REG_SF, REG_ZF, TargetInst,
+        },
     };
     use veloc_lir::Type;
 
@@ -443,7 +442,7 @@ mod tests {
             let dst = f.editor().alloc_vreg(Type::I64);
             let id = TargetInst::X86Sub64.write(
                 f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
-                &[dst],
+                &[dst, REG_CF, REG_PF, REG_ZF, REG_SF, REG_OF],
                 &[rhs, lhs],
                 [],
             );
@@ -472,7 +471,10 @@ mod tests {
             if mode == 2 {
                 assert_eq!((plan.before.len(), plan.after.len()), (2, 1));
             }
-            assert_eq!(f.inst(id).defs().collect::<Vec<_>>(), [dst]);
+            assert_eq!(
+                f.inst(id).defs().collect::<Vec<_>>(),
+                [dst, REG_CF, REG_PF, REG_ZF, REG_SF, REG_OF, REG_AF]
+            );
             assert_eq!(f.inst(id).uses().collect::<Vec<_>>(), [rhs, lhs]);
             f.check_refs().unwrap();
             let physical = Allocation {

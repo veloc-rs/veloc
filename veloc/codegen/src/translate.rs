@@ -163,19 +163,13 @@ impl<'a> FuncTranslator<'a> {
                 .editor()
                 .create_edge(self.block_map[entry].unwrap(), &args);
             self.mfunc.editor().at_end(incoming).br(edge);
-        } else {
-            for &value in func.params() {
-                self.mfunc.editor().append_param(self.value_map[value]);
-            }
         }
         for block_id in order() {
             let mblock = self.block_map[block_id].unwrap();
-            if block_id != entry || incoming.is_some() {
-                for &value in func.dfg().block_params(block_id) {
-                    self.mfunc
-                        .editor()
-                        .append_block_param(mblock, self.value_map[value]);
-                }
+            for &value in func.dfg().block_params(block_id) {
+                self.mfunc
+                    .editor()
+                    .append_block_param(mblock, self.value_map[value]);
             }
             for inst in func.layout().block_insts(block_id) {
                 for &value in func.dfg().operands(inst) {

@@ -14,6 +14,8 @@ use std::collections::HashMap;
 pub(crate) struct FinalInstDef {
     operands: Vec<OperandConstraint>,
     reg_classes: Vec<(String, Vec<String>)>,
+    state_operands: Vec<String>,
+    rematerializable: bool,
     value_types: Vec<(String, crate::types::TypeSet)>,
     ties: Vec<(usize, usize)>,
     implicit_uses: Vec<String>,
@@ -117,8 +119,9 @@ impl Plan {
         let types = crate::types::Types::compile(source.declarations(), source.text())
             .map_err(|e| source.locate(e))?;
         let mut final_inst_defs = contracts::compile(contracts, &module, &types).map_err(&error)?;
-        for def in &module.defs {
+        for def in &mut module.defs {
             if let Def::SelectRule(rule) = def {
+                select::complete_state_results(rule, &final_inst_defs, &types).map_err(&error)?;
                 select::check_construction(rule, &final_inst_defs, &types).map_err(&error)?;
             }
         }
@@ -128,9 +131,6 @@ impl Plan {
                 && (inst.memory.is_some()
                     || inst.flow != "Next"
                     || inst.is_pseudo
-                    || !inst.implicit_uses.is_empty()
-                    || !inst.implicit_defs.is_empty()
-                    || inst.clobbers.iter().any(|reg| reg != "EFLAGS")
                     || inst.operands.iter().any(|op| {
                         matches!(
                             op,
@@ -142,7 +142,7 @@ impl Plan {
                     }))
             {
                 return Err(error(format!(
-                    "{name}: scheduled instructions must have explicit register dependencies and no control/stack operands; only EFLAGS clobbers are supported"
+                    "{name}: scheduled instructions must not have memory, control or stack effects"
                 )));
             }
         }

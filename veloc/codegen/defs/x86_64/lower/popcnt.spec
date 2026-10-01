@@ -1,7 +1,7 @@
 import "../common.spec";
 
 template Popcount(Opcode: ident, Wide: expr, Mnemonic: expr, Bits: expr) {
-    op Opcode(src: Value<GprValue>) -> (dst: Value<GprValue>) {
+    op Opcode(src: Value<GprValue>) -> (dst: Value<GprValue>, cf: Value<CARRY>, pf: Value<PARITY>, zf: Value<ZERO>, sf: Value<SIGN>, of: Value<OVERFLOW>, af: Value<AUXILIARY_CARRY>) {
         requires = ["POPCNT"];
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0xB8, wide: Wide },
@@ -9,7 +9,7 @@ template Popcount(Opcode: ident, Wide: expr, Mnemonic: expr, Bits: expr) {
             Immediate::None,
         );
         registers = { dst: GPR64, src: GPR64 };
-        implicit = { clobbers: [EFLAGS] };
+        rematerializable = true;
         schedule = "IntPopcnt";
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src, Bits)] }]
