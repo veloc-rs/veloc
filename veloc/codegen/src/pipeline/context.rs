@@ -1,29 +1,28 @@
-use crate::analysis::{FunctionAnalysisCtx, ModuleAnalysisCtx};
+use super::FunctionStage;
+use crate::analysis::FunctionAnalysisCtx;
 use crate::driver::CodegenOptions;
+use crate::target::TargetMachine;
 use veloc_profile::Profile;
 
-use crate::target::TargetMachine;
-
-pub struct FunctionPassContext<'a> {
-    pub target: &'a dyn TargetMachine,
-    pub func_sig: &'a veloc_mir::Signature,
-    /// Shared symbol identities, including runtime calls introduced by lowering.
-    pub symbols: &'a mut veloc_lir::SymbolTable,
-    pub options: &'a CodegenOptions,
-    pub profile: &'a Profile,
-    pub function_analyses: &'a mut FunctionAnalysisCtx,
-    pub module_analyses: &'a mut ModuleAnalysisCtx,
+/// Execution resources owned by the function pipeline. Passes receive a FunctionSession.
+pub(crate) struct FunctionPassContext<'a> {
+    pub(crate) target: &'a dyn TargetMachine,
+    pub(crate) func_sig: &'a veloc_mir::Signature,
+    pub(crate) symbols: &'a mut veloc_lir::SymbolTable,
+    pub(crate) options: &'a CodegenOptions,
+    pub(crate) profile: &'a Profile,
+    pub(crate) function_analyses: &'a mut FunctionAnalysisCtx,
+    pub(crate) stage: FunctionStage,
+    pub(crate) next_run: u32,
 }
-
 impl<'a> FunctionPassContext<'a> {
-    pub fn new(
+    pub(crate) fn new(
         target: &'a dyn TargetMachine,
         func_sig: &'a veloc_mir::Signature,
         symbols: &'a mut veloc_lir::SymbolTable,
         options: &'a CodegenOptions,
         profile: &'a Profile,
         function_analyses: &'a mut FunctionAnalysisCtx,
-        module_analyses: &'a mut ModuleAnalysisCtx,
     ) -> Self {
         Self {
             target,
@@ -32,30 +31,33 @@ impl<'a> FunctionPassContext<'a> {
             options,
             profile,
             function_analyses,
-            module_analyses,
+            stage: FunctionStage::Generic,
+            next_run: 0,
         }
     }
 }
 
+/// Module passes have no unrestricted access to function-analysis caches.
 pub struct ModulePassContext<'a> {
     pub target: &'a dyn TargetMachine,
     pub options: &'a CodegenOptions,
     pub profile: &'a Profile,
-    pub module_analyses: &'a mut ModuleAnalysisCtx,
+    pub(crate) name: String,
+    pub(crate) next_run: u32,
 }
-
 impl<'a> ModulePassContext<'a> {
     pub fn new(
         target: &'a dyn TargetMachine,
         options: &'a CodegenOptions,
         profile: &'a Profile,
-        module_analyses: &'a mut ModuleAnalysisCtx,
+        name: &str,
     ) -> Self {
         Self {
             target,
             options,
             profile,
-            module_analyses,
+            name: name.into(),
+            next_run: 0,
         }
     }
 }

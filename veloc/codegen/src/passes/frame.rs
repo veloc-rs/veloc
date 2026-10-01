@@ -1,6 +1,4 @@
-use crate::analysis::{ChangeSet, PassEffect};
-use crate::error::Result;
-use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
 use crate::target::{CallConv, TargetFrameLowering};
 
 pub struct FrameFinalizePass<'a> {
@@ -18,19 +16,19 @@ impl<'a> FunctionPass for FrameFinalizePass<'a> {
         "frame-finalized"
     }
 
-    fn run(
-        &self,
-        mfunc: &mut veloc_lir::MachineFunction,
-        ctx: &mut FunctionPassContext<'_>,
-    ) -> Result<PassEffect> {
-        // Unsupported frame lifetimes must fail even when optional pass-boundary
-        // verification is disabled, before committing a physical layout.
-        crate::verify::verify_call_frames(mfunc, ctx.target)?;
+    fn input_stage(&self) -> FunctionStage {
+        FunctionStage::Allocated
+    }
+    fn output_stage(&self) -> FunctionStage {
+        FunctionStage::Framed
+    }
+    fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
+        crate::verify::verify_call_frames(cx.function(), cx.target)?;
+        let convention = CallConv::from(cx.signature.call_conv);
+        let mut function = cx.edit();
         self.frame_lowering
-            .finalize_stack_frame(mfunc, CallConv::from(ctx.func_sig.call_conv))?;
-        self.frame_lowering.insert_prologue_epilogue(mfunc);
-        Ok(PassEffect::new(
-            ChangeSet::INST_LAYOUT | ChangeSet::STACK_FRAME,
-        ))
+            .finalize_stack_frame(&mut function, convention)?;
+        self.frame_lowering.insert_prologue_epilogue(&mut function);
+        Ok(())
     }
 }

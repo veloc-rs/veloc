@@ -57,7 +57,7 @@ fn production_target_contracts_generate_all_consumers() {
     assert!(output.contains("GetDef {"));
     assert!(!output.contains("match candidate"));
     assert!(!output.contains("SelectorHost"));
-    assert!(output.contains("matching::Field::Input("));
+    assert!(output.contains("operand: Input("));
     assert!(output.contains("fn build_x86call("));
     assert!(output.contains("abi_args: &[Reg]"));
     assert!(output.contains("fn construct_x86callreg_from_callind("));

@@ -19,6 +19,95 @@ counts (translated, legalized, selected, final) and emitted code/data bytes.
 Timings exclude IR printing. They are not total compilation time: frontend work,
 translation, object packaging and loading must also be measured separately.
 
+## Final code layout
+
+The pipeline keeps emission symbolic until all module passes have finished:
+
+```text
+selection -> allocation -> frame finalization -> pre_emit module passes
+          -> symbolic emission -> post_emit module passes
+          -> section layout / relaxation -> object serialization
+```
+
+`Emitter` records bytes, block labels and encoding alternatives (`CodeForm`).
+Targets supply the bytes, relative-field patchers, unresolved-symbol relocations
+and any alignment requirement. The shared layout engine owns addresses and
+encoding selection for both x86 and RISC-V. Labels refer to fragment boundaries;
+they never need repair when an instruction changes size.
+
+Layout starts with preferred forms, computes section-wide addresses, and promotes
+forms whose displacements cannot be encoded. It repeats until every selected form
+is valid. Choices only move towards fallbacks, so changing alignment cannot cause
+oscillation; no iteration budget is needed. Alignment can make an earlier promotion
+unnecessary later, so this guarantees valid layout, not globally minimum size.
+Padding is recomputed from final positions and is specific to each encoding form.
+
+The object writer lays out all defined functions together with its section
+alignment. References to definitions in that section bind directly; unresolved
+symbols keep relocations. Object serialization must preserve those positions.
+Byte-changing module passes therefore run before layout, not after it.
+`compile_functions` instead finalizes each standalone function separately and
+continues to reject symbol relocations; its independent byte arrays do not imply
+any relative placement between functions.
+
+These are mandatory emission steps, not instruction-selection optimizations.
+Neither `pre_isel` nor `post_isel` has the final addresses needed to choose forms.
+
+## Pass execution and analysis ownership
+
+Function passes implement `run(&mut FunctionSession) -> Result<()>` and declare
+their input/output `FunctionStage`. The shared runner checks the input stage even
+when IR verification is disabled; with verification enabled it checks the output
+invariants after every pass. The context assigns execution positions, including
+repeated occurrences. Target extension passes use the same runner and contracts.
+`FunctionPipeline` owns the entire function compilation sequence, its target
+extension sequences, and per-run analysis caches. The driver invokes it once per
+function and then handles module passes and emission. The register allocator is
+an ownership-consuming transition inside this pipeline, outside the ordinary
+function-pass interface; the pipeline invalidates analyses at that boundary.
+
+`FunctionSession` owns access to the current function and its analysis cache.
+Queries borrow the session, and edits exclusively borrow it, so a borrowed
+analysis cannot survive into a mutation. An owned analysis snapshot or plan may
+be retained deliberately, but it is not a query for the updated function.
+Extension passes can intern function symbols through the edit guard, without
+obtaining mutable access to the shared symbol table.
+
+- `edit()` adapts existing algorithms that require `&mut MachineFunction`.
+  First mutable access conservatively invalidates all function analyses before
+  modification. Subsequent queries become possible only after releasing the
+  guard. This remains correct on early return or unwinding and requires no
+  pass-authored change report. It may invalidate analyses even if the algorithm
+  ultimately makes no change.
+- Constrained operations such as `erase_block` and `reorder_block` record their
+  own change categories. New precise edit APIs should expose only the mutations
+  whose effects they can describe; arbitrary mutable access stays conservative.
+- Scheduling first computes an owned plan from a read-only function and current
+  liveness, then applies its orders through the session.
+
+CFG and liveness track their direct IR inputs. Dominators, post-dominators, loop
+information and register pressure validate prerequisite analysis revisions rather
+than duplicating their prerequisites' change masks. Instruction ordering is an
+input to CFG/liveness because unrestricted reorder operations can move control
+flow or change use-before-definition relationships.
+
+`CompiledModule` contains machine functions only. Emission consumes it and
+produces `EmissionModule`, which contains symbolic code only. Module pipelines
+are parameterized by that representation; pre-emit and post-emit passes cannot
+be interchanged. Function passes have no mutable module-analysis context.
+
+Instrumentation times execution separately from output verification and IR
+formatting. A profile `Observation` retains the original scope identity after its
+timer ends, so success/failure remarks and IR artifacts remain associated with
+that execution. Errors abort the current compilation and may leave partial edits;
+neither pass execution nor editing implies rollback. Detailed artifacts remain
+opt-in and include the available function state on failure.
+
+Execution order is explicit. This infrastructure does not infer optimization
+ordering from analysis dependencies, automatically repeat passes, or schedule
+parallel mutations. Incremental analysis updaters can be added when measurements
+justify them; cache validity does not depend on their availability.
+
 ## E-graph experiments
 
 Equality exploration lives in the MIR optimizer's `ExpressionPass`, not codegen.

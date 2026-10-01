@@ -2,8 +2,10 @@
 //!
 //! Only operations explicitly declared movable by the target enter a region.
 //! Memory, traps and control effects remain barriers; this needs no alias guesses.
-use crate::analysis::{ChangeSet, FunctionAnalysisCtx, PassEffect, RegSet};
-use crate::pipeline::{FunctionPass, FunctionPassContext};
+#[cfg(test)]
+use crate::analysis::FunctionAnalysisCtx;
+use crate::analysis::{LivenessInfo, RegSet};
+use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
 use crate::target::{RegClass, ScheduleInfo, TargetDescription, TargetSchedule};
 use hashbrown::HashMap;
 use smallvec::SmallVec;
@@ -22,32 +24,47 @@ impl FunctionPass for SchedulePass {
         "schedule"
     }
 
-    fn run(
-        &self,
-        f: &mut MachineFunction,
-        ctx: &mut FunctionPassContext<'_>,
-    ) -> crate::Result<PassEffect> {
-        if !ctx.options.optimize {
-            return Ok(PassEffect::NONE);
+    fn input_stage(&self) -> FunctionStage {
+        FunctionStage::Selected
+    }
+    fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
+        if !cx.options.optimize {
+            return Ok(());
         }
-        let changed = schedule(f, ctx.target, ctx.function_analyses);
-        ctx.profile.count("scheduled_regions", changed as u64);
-        Ok(if changed == 0 {
-            PassEffect::NONE
-        } else {
-            PassEffect::new(ChangeSet::INST_LAYOUT)
-        })
+        let target = cx.target;
+        let plan = cx.with_liveness(|function, liveness| plan_schedule(function, target, liveness));
+        cx.profile.count("scheduled_regions", plan.regions as u64);
+        for (block, order) in plan.orders {
+            cx.reorder_block(block, &order);
+        }
+        Ok(())
     }
 }
 
+#[cfg(test)]
 pub(crate) fn schedule(
     f: &mut MachineFunction,
     target: &dyn TargetSchedule,
     analyses: &mut FunctionAnalysisCtx,
 ) -> usize {
-    // Bound scheduler work even for pathological generated basic blocks.
+    let plan = plan_schedule(f, target, analyses.liveness(f, target));
+    for (block, order) in plan.orders {
+        f.editor().reorder_block(block, &order);
+    }
+    plan.regions
+}
+
+struct SchedulePlan {
+    orders: Vec<(veloc_lir::BlockId, Vec<InstId>)>,
+    regions: usize,
+}
+fn plan_schedule(
+    f: &MachineFunction,
+    target: &dyn TargetSchedule,
+    liveness: &LivenessInfo,
+) -> SchedulePlan {
     const WINDOW: usize = 256;
-    let liveness = analyses.liveness(f, target);
+    let mut orders = Vec::new();
     let mut changed = 0;
     let mut ids = Vec::new();
     let mut output = Vec::new();
@@ -113,11 +130,14 @@ pub(crate) fn schedule(
         }
         output.reverse();
         if output != ids {
-            f.editor().reorder_block(b, &output);
+            orders.push((b, core::mem::take(&mut output)));
         }
         block = next_block;
     }
-    changed
+    SchedulePlan {
+        orders,
+        regions: changed,
+    }
 }
 
 fn before(f: &MachineFunction, id: InstId, live: &mut RegSet) {

@@ -1,6 +1,4 @@
-use crate::analysis::{ChangeSet, PassEffect};
-use crate::error::Result;
-use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
 use crate::target::TargetPostIsel;
 
 pub struct PostIselOptimizePass<'a> {
@@ -18,17 +16,13 @@ impl<'a> FunctionPass for PostIselOptimizePass<'a> {
         "post-isel-optimized"
     }
 
-    fn run(
-        &self,
-        mfunc: &mut veloc_lir::MachineFunction,
-        ctx: &mut FunctionPassContext<'_>,
-    ) -> Result<PassEffect> {
-        if !ctx.options.optimize {
-            return Ok(PassEffect::NONE);
+    fn input_stage(&self) -> FunctionStage {
+        FunctionStage::Selected
+    }
+    fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
+        if cx.options.optimize {
+            self.post_isel.combine_instructions(&mut cx.edit());
         }
-        self.post_isel.combine_instructions(mfunc);
-        Ok(PassEffect::new(
-            ChangeSet::INST_SEMANTICS | ChangeSet::INST_OPERANDS,
-        ))
+        Ok(())
     }
 }

@@ -4,12 +4,6 @@ use super::*;
 use crate::bytecode::intern;
 use veloc_bytecode::{Lebs, Reader, selection::Instruction as Op};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Access {
-    Reg,
-    Attribute,
-}
-
 pub(in super::super) struct Adapters<'a> {
     layouts: &'a BTreeMap<String, crate::storage::operands::Projection>,
     predicates: Vec<String>,
@@ -175,34 +169,36 @@ impl<'a> Adapters<'a> {
         self.builders.insert(adapter.clone(), body);
         adapter
     }
-    fn field(&self, opcode: &str, field: &str, access: Access) -> String {
-        use crate::storage::operands::{Domain, Shape};
+    fn member(&self, opcode: &str, field: &str) -> &crate::storage::operands::Member {
         let member = self.layouts[opcode]
             .members
             .iter()
-            .find(|m| m.field.name == field)
+            .find(|member| member.field.name == field)
             .expect("checked storage field");
         assert!(
-            member.field.shape != Shape::Sequence,
+            member.field.shape != crate::storage::operands::Shape::Sequence,
             "scalar selector access cannot read sequence {opcode}.{field}"
         );
-        assert_eq!(
-            member.field.codec.is_none(),
-            access == Access::Reg,
-            "selector field domain mismatch"
-        );
-        if member.binding.is_none() {
-            return "None".into();
+        member
+    }
+    fn operand(&self, opcode: &str, field: &str) -> veloc_bytecode::OperandRef {
+        use crate::storage::operands::Domain;
+        use veloc_bytecode::OperandRef;
+        let member = self.member(opcode, field);
+        assert!(member.field.codec.is_none(), "expected register field");
+        match member.domain {
+            Domain::Input => OperandRef::Input(member.index),
+            Domain::Result => OperandRef::Result(member.index),
+            Domain::Attribute => panic!("attribute used as a register"),
         }
-        let domain = match member.domain {
-            Domain::Input => "Input",
-            Domain::Result => "Result",
-            Domain::Attribute => "Attribute",
-        };
-        format!(
-            "Some(crate::isel::matching::Field::{domain}({}))",
-            member.index
-        )
+    }
+    fn attribute(&self, opcode: &str, field: &str) -> usize {
+        let member = self.member(opcode, field);
+        assert!(
+            matches!(member.domain, crate::storage::operands::Domain::Attribute),
+            "expected attribute field"
+        );
+        member.index
     }
     pub(in super::super) fn emit(
         &self,
@@ -224,30 +220,36 @@ impl<'a> Adapters<'a> {
     }
 }
 
+/// One independently compiled matching graph in the shared bytecode program.
+struct Entry {
+    opcode: String,
+    label: usize,
+    insts: usize,
+    values: usize,
+    fields: usize,
+}
+
+/// Rust evaluates symbolic constants after the assembler resolves byte offsets.
+/// Fixed-width operands keep those offsets stable during initialization.
+struct InlineConstant {
+    instruction: usize,
+    offset: usize,
+    expression: String,
+    width: usize,
+}
+
 #[derive(Default)]
 struct Code {
     asm: crate::bytecode::Assembler,
     types: Vec<Vec<String>>,
-    integers: Vec<String>,
-    opcodes: Vec<String>,
+    constants: Vec<InlineConstant>,
     targets: Vec<String>,
     registers: Vec<u32>,
-    accesses: Vec<(String, String, Access)>,
     features: Vec<Vec<String>>,
     values: usize,
     fields: usize,
 }
 impl Code {
-    fn field(
-        &mut self,
-        adapters: &Adapters<'_>,
-        opcode: &str,
-        field: &str,
-        access: Access,
-    ) -> usize {
-        let _ = adapters.field(opcode, field, access);
-        intern(&mut self.accesses, (opcode.into(), field.into(), access))
-    }
     fn op(&mut self, op: Op<'_>) {
         self.asm.emit(op);
     }
@@ -268,8 +270,8 @@ impl Code {
         dst: usize,
     ) {
         let (node, schema, field) = resolve_field(plan, root, path);
-        let field = self.field(adapters, schema, field, Access::Reg);
-        self.op(Op::ReadReg { dst, node, field });
+        let operand = adapters.operand(schema, field);
+        self.op(Op::ReadReg { dst, node, operand });
         self.values = self.values.max(dst + 1);
     }
     fn test(
@@ -292,15 +294,18 @@ impl Code {
                     },
                     failure,
                 );
-                let opcode = intern(&mut self.opcodes, def.opcode.clone());
-                self.branch(
-                    Op::CheckOpcode {
-                        node: slot + 1,
-                        opcode,
-                        failure: 0,
-                    },
-                    failure,
-                );
+                let op = Op::CheckOpcode {
+                    node: slot + 1,
+                    opcode: 0,
+                    failure: 0,
+                };
+                self.constants.push(InlineConstant {
+                    instruction: self.asm.instructions.len(),
+                    offset: op.field_offset("opcode").expect("opcode operand"),
+                    expression: format!("veloc_lir::GenericOpcode::{} as u32", def.opcode),
+                    width: 4,
+                });
+                self.branch(op, failure);
             }
             Test::Field {
                 field,
@@ -333,11 +338,11 @@ impl Code {
                 }
                 Guard::IntRange { bits, signed } => {
                     let (node, schema, field) = resolve_field(plan, root, field);
-                    let field = self.field(adapters, schema, field, Access::Attribute);
+                    let index = adapters.attribute(schema, field);
                     self.branch(
                         Op::CheckIntRange {
                             node,
-                            field,
+                            index,
                             bits: usize::from(*bits),
                             signed: usize::from(*signed),
                             failure: 0,
@@ -346,29 +351,31 @@ impl Code {
                     );
                 }
                 Guard::Integer(_) | Guard::Condition(_) => {
-                    let (access, constant) = match guard {
-                        Guard::Integer(value) => (Access::Attribute, value.to_string()),
-                        Guard::Condition(cc) => (
-                            Access::Attribute,
-                            format!(
+                    let constant = match guard {
+                        Guard::Integer(value) => *value,
+                        Guard::Condition(_) => 0, // Patched by Rust during static initialization.
+                        _ => unreachable!(),
+                    };
+                    let (node, opcode, field) = resolve_field(plan, root, field);
+                    let index = adapters.attribute(opcode, field);
+                    let op = Op::CheckInt {
+                        node,
+                        index,
+                        constant,
+                        failure: 0,
+                    };
+                    if let Guard::Condition(cc) = guard {
+                        self.constants.push(InlineConstant {
+                            instruction: self.asm.instructions.len(),
+                            offset: op.field_offset("constant").expect("integer operand"),
+                            width: 8,
+                            expression: format!(
                                 "{} as i64",
                                 render_cond_code_match(schema, *cc).expect("checked condition")
                             ),
-                        ),
-                        _ => unreachable!(),
-                    };
-                    let (node, schema, field) = resolve_field(plan, root, field);
-                    let field = self.field(adapters, schema, field, access);
-                    let constant = intern(&mut self.integers, constant);
-                    self.branch(
-                        Op::CheckInt {
-                            node,
-                            field,
-                            constant,
-                            failure: 0,
-                        },
-                        failure,
-                    );
+                        });
+                    }
+                    self.branch(op, failure);
                 }
             },
             Test::Features(features) => {
@@ -460,15 +467,13 @@ impl Code {
                     payloads += 1;
                     match arg {
                         Constructor::Imm(value) => {
-                            let imm = intern(&mut self.integers, value.to_string());
-                            self.op(Op::ConstImm { dst, imm });
+                            self.op(Op::ConstImm { dst, imm: *value });
                         }
                         Constructor::Variable(name) => {
                             let (node, schema, field) =
                                 resolve_field(plan, &rule.opcode, &fields[name]);
-                            let access = Access::Attribute;
-                            let field = self.field(adapters, schema, field, access);
-                            self.op(Op::ReadField { dst, node, field });
+                            let index = adapters.attribute(schema, field);
+                            self.op(Op::ReadField { dst, node, index });
                         }
                         _ => panic!("invalid target payload"),
                     }
@@ -495,42 +500,29 @@ impl Code {
     }
     fn describe(&self, inst: &[u8], adapters: &Adapters) -> String {
         let op = Op::read(&mut Reader { bytes: inst, pc: 0 });
-        let field = |id: usize| {
-            let (schema, name, _) = &self.accesses[id];
-            format!("{schema}.{name}")
-        };
         match op {
-            Op::ReadReg {
-                dst,
-                node,
-                field: f,
-            } => format!("v{dst} <- n{node} {}", field(f)),
-            Op::ReadField {
-                dst,
-                node,
-                field: f,
-            } => format!("f{dst} <- n{node} {}", field(f)),
+            Op::ReadReg { dst, node, operand } => format!("v{dst} <- n{node} {operand:?}"),
+            Op::ReadField { dst, node, index } => format!("f{dst} <- n{node} attribute {index:?}"),
             Op::GetDef { dst, value, .. } => format!("n{dst} <- def(v{value})"),
-            Op::CheckOpcode { node, opcode, .. } => format!("n{node} == {}", self.opcodes[opcode]),
+            Op::CheckOpcode { node, opcode, .. } => format!("n{node} opcode == {opcode}"),
             Op::CheckType { value, set, .. } => {
                 format!("v{value} in [{}]", self.types[set].join(", "))
             }
             Op::CheckInt {
                 node,
-                field: f,
+                index,
                 constant,
                 ..
-            } => format!("n{node} {} == {}", field(f), self.integers[constant]),
+            } => format!("n{node} attribute {index:?} == {constant}"),
             Op::CheckIntRange {
                 node,
-                field: f,
+                index,
                 bits,
                 signed,
                 ..
             } => {
                 format!(
-                    "n{node} {} fits {}{bits}",
-                    field(f),
+                    "n{node} attribute {index:?} fits {}{bits}",
                     if signed != 0 { "i" } else { "u" }
                 )
             }
@@ -544,7 +536,7 @@ impl Code {
             Op::MakeTemp { dst, ty } => format!("v{dst}: {}", self.types[ty].join(", ")),
             Op::ReadResult { dst, index } => format!("v{dst} <- root.results[{index}]"),
             Op::ConstReg { dst, reg } => format!("v{dst} <- preg{}", self.registers[reg]),
-            Op::ConstImm { dst, imm } => format!("f{dst} <- {}", self.integers[imm]),
+            Op::ConstImm { dst, imm } => format!("f{dst} <- {imm}"),
             Op::BuildInst {
                 target,
                 results,
@@ -572,15 +564,26 @@ impl Code {
         }
     }
 
-    fn emit(&self, out: &mut String, name: &str, entry: usize, insts: usize, adapters: &Adapters) {
+    fn emit(&self, out: &mut String, entries: &[Entry], adapters: &Adapters) {
         let encoded = self.asm.finish();
         writeln!(
             out,
-            "// {name}: entry @{:04x}; n0 = root; v = value slot; f = payload slot.",
-            encoded.labels[entry]
+            "// Selection bytecode: n0 = root; v = value slot; f = payload slot."
         )
         .unwrap();
-        writeln!(out, "#[rustfmt::skip]\nconst {name}_CODE: &[u8] = &[").unwrap();
+        for entry in entries {
+            writeln!(
+                out,
+                "// {}: entry @{:04x}; insts = {}, values = {}, fields = {}.",
+                entry.opcode, encoded.labels[entry.label], entry.insts, entry.values, entry.fields
+            )
+            .unwrap();
+        }
+        writeln!(
+            out,
+            "#[rustfmt::skip]\nconst SELECTION_CODE: &[u8] = &{{ let mut code = ["
+        )
+        .unwrap();
         for (index, bytes) in encoded.instructions.iter().enumerate() {
             let op = Op::read(&mut Reader { bytes, pc: 0 });
             writeln!(
@@ -596,12 +599,32 @@ impl Code {
             }
             writeln!(out).unwrap();
         }
+        writeln!(out, "];").unwrap();
+        for constant in &self.constants {
+            let offset = encoded.offsets[constant.instruction] + constant.offset;
+            writeln!(
+                out,
+                "// Inline constant at @{offset:04x}: {}",
+                constant.expression
+            )
+            .unwrap();
+            writeln!(out, "let bytes = ({}).to_le_bytes();", constant.expression).unwrap();
+            for byte in 0..constant.width {
+                writeln!(out, "code[{}] = bytes[{byte}];", offset + byte).unwrap();
+            }
+        }
+        writeln!(out, "code }};\npub static SELECTION_PROGRAM: crate::isel::matching::Program = crate::isel::matching::Program {{ code: SELECTION_CODE,").unwrap();
         writeln!(
             out,
-            "    ];\npub(super) const {name}: &Program = &Program {{ code: {name}_CODE, entry: 0x{:04x}, insts: {insts}, values: {}, fields: {},",
-            encoded.labels[entry], self.values, self.fields
+            "entries: {{ let mut entries = [None; veloc_lir::GenericOpcode::COUNT];"
         )
         .unwrap();
+        for entry in entries {
+            writeln!(out,
+                "entries[veloc_lir::GenericOpcode::{} as usize] = Some(crate::isel::matching::Entry {{ offset: {}, insts: {}, values: {}, fields: {} }});",
+                entry.opcode, encoded.labels[entry.label], entry.insts, entry.values, entry.fields).unwrap();
+        }
+        writeln!(out, "entries }},").unwrap();
         writeln!(
             out,
             "types: &[{}],",
@@ -612,31 +635,10 @@ impl Code {
                 .join(",")
         )
         .unwrap();
-        writeln!(out, "integers: &[{}],", self.integers.join(",")).unwrap();
-        writeln!(
-            out,
-            "opcodes: &[{}],",
-            self.opcodes
-                .iter()
-                .map(|op| format!("veloc_lir::GenericOpcode::{op}"))
-                .collect::<Vec<_>>()
-                .join(",")
-        )
-        .unwrap();
         writeln!(
             out,
             "targets: &[{}],",
             self.targets.iter().cloned().collect::<Vec<_>>().join(",")
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "accesses: &[{}],",
-            self.accesses
-                .iter()
-                .map(|(opcode, field, access)| adapters.field(opcode, field, *access))
-                .collect::<Vec<_>>()
-                .join(",")
         )
         .unwrap();
         writeln!(
@@ -685,30 +687,51 @@ fn resolve_field<'a>(plan: &'a Plan, root: &'a str, path: &'a str) -> (usize, &'
 
 pub(in super::super) fn emit(
     out: &mut String,
-    rules: &[&SelectRuleDef],
+    groups: &[&[&SelectRuleDef]],
     extractors: &HashMap<String, ExtractorDef>,
     instructions: &HashMap<String, FinalInstDef>,
     regs: &HashMap<String, u32>,
     adapters: &mut Adapters,
 ) {
-    let plan = Plan::prepare(rules, extractors, instructions);
-    let mut graph = Graph::default();
-    let entry = graph.compile(plan.candidates.clone());
-    graph.validate(entry, &plan);
     let mut code = Code::default();
-    for node in &graph.nodes {
-        code.asm.label();
-        match node {
-            Node::Reject => code.op(Op::Reject {}),
-            Node::Accept(rule) => {
-                code.recipe(&plan, &plan.rules[*rule], adapters, instructions, regs)
-            }
-            Node::Check { test, yes, no } => {
-                code.test(&plan, adapters, &rules[0].opcode, &plan.tests[*test], *no);
-                code.branch(Op::Jump { target: 0 }, *yes);
+    let mut entries = Vec::new();
+    let mut label_base = 0;
+    for rules in groups {
+        let plan = Plan::prepare(rules, extractors, instructions);
+        let mut graph = Graph::default();
+        let entry = graph.compile(plan.candidates.clone());
+        graph.validate(entry, &plan);
+        // Pools and bytecode are shared; scratch slots are local to this entry.
+        code.values = 0;
+        code.fields = 0;
+        for (index, node) in graph.nodes.iter().enumerate() {
+            let label = code.asm.label();
+            assert_eq!(label, label_base + index);
+            match node {
+                Node::Reject => code.op(Op::Reject {}),
+                Node::Accept(rule) => {
+                    code.recipe(&plan, &plan.rules[*rule], adapters, instructions, regs)
+                }
+                Node::Check { test, yes, no } => {
+                    code.test(
+                        &plan,
+                        adapters,
+                        &rules[0].opcode,
+                        &plan.tests[*test],
+                        label_base + *no,
+                    );
+                    code.branch(Op::Jump { target: 0 }, label_base + *yes);
+                }
             }
         }
+        entries.push(Entry {
+            opcode: rules[0].opcode.clone(),
+            label: label_base + entry,
+            insts: plan.definitions.len() + 1,
+            values: code.values,
+            fields: code.fields,
+        });
+        label_base += graph.nodes.len();
     }
-    let name = sanitize_ident(&rules[0].opcode).to_ascii_uppercase();
-    code.emit(out, &name, entry, plan.definitions.len() + 1, adapters);
+    code.emit(out, &entries, adapters);
 }

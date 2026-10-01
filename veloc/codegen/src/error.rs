@@ -21,9 +21,6 @@ pub enum CodegenError {
     TargetMachineUnavailable {
         arch: TargetArch,
     },
-    MissingEmittedCode {
-        function: String,
-    },
     UnexpectedRelocation {
         symbol: String,
     },
@@ -70,12 +67,6 @@ impl Error {
 
     pub fn target_machine_unavailable(arch: TargetArch) -> Self {
         Self::Codegen(CodegenError::TargetMachineUnavailable { arch })
-    }
-
-    pub fn missing_emitted_code(function: impl Into<String>) -> Self {
-        Self::Codegen(CodegenError::MissingEmittedCode {
-            function: function.into(),
-        })
     }
 
     pub fn unexpected_relocation(symbol: impl Into<String>) -> Self {
@@ -146,13 +137,6 @@ impl fmt::Display for CodegenError {
                 "failed to create target machine for requested architecture `{}`",
                 arch.name()
             ),
-            CodegenError::MissingEmittedCode { function } => {
-                write!(
-                    f,
-                    "missing emitted code for compiled function `{}`",
-                    function
-                )
-            }
             CodegenError::UnexpectedRelocation { symbol } => write!(
                 f,
                 "raw code emission cannot resolve external symbol relocation to `{}`",

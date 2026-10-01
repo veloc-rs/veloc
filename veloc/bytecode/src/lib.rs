@@ -17,8 +17,8 @@ pub trait Encode {
 }
 
 /// Describe a bytecode once for its compiler, interpreter and disassembler.
-/// Fields choose fixed little-endian u32 or ULEB128 encoding. Lists use the
-/// same encoding for their length prefix and elements. `(codec C)` binds a
+/// Scalar fields choose fixed little-endian u32/i64 or ULEB128 encoding. Lists
+/// use u32 or ULEB128 for both their length and elements. `(codec C)` binds a
 /// semantic field type and its encoding through `FieldCodec`.
 /// Optional generic parameters bind host codecs without duplicating the schema.
 #[macro_export]
@@ -97,16 +97,19 @@ macro_rules! bytecode {
         }
     };
     (@ty u32, $lt:lifetime) => { usize };
+    (@ty i64, $lt:lifetime) => { i64 };
     (@ty uleb, $lt:lifetime) => { usize };
     (@ty [uleb], $lt:lifetime) => { $crate::Lebs<$lt> };
     (@ty [u32], $lt:lifetime) => { $crate::Words<$lt> };
     (@ty (codec $codec:ty), $lt:lifetime) => { <$codec as $crate::codec::FieldCodec<$lt>>::Value };
     (@read $r:ident, u32) => { $r.u32() };
+    (@read $r:ident, i64) => { $r.i64() };
     (@read $r:ident, uleb) => { $r.uleb() };
     (@read $r:ident, [uleb]) => { $r.lebs() };
     (@read $r:ident, [u32]) => { $r.words() };
     (@read $r:ident, (codec $codec:ty)) => { <$codec as $crate::codec::FieldCodec<'_>>::read($r) };
     (@encode $out:ident, $v:ident, u32) => { $out.extend($crate::encode_u32(*$v)) };
+    (@encode $out:ident, $v:ident, i64) => { $out.extend($v.to_le_bytes()) };
     (@encode $out:ident, $v:ident, uleb) => { $out.extend($crate::encode_uleb(*$v)) };
     (@encode $out:ident, $v:ident, (codec $codec:ty)) => {
         <$codec as $crate::codec::FieldCodec<'_>>::write(*$v, $out)
@@ -120,6 +123,7 @@ macro_rules! bytecode {
         for value in $v.iter() { $out.extend($crate::encode_u32(value)); }
     };
     (@size $v:ident, u32) => { 4 };
+    (@size $v:ident, i64) => { 8 };
     (@size $v:ident, uleb) => { $crate::encode_uleb(*$v).len() };
     (@size $v:ident, [uleb]) => {
         $crate::encode_uleb($v.len()).len()
@@ -185,6 +189,13 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    #[inline]
+    pub fn i64(&mut self) -> i64 {
+        let value = i64::from_le_bytes(self.bytes[self.pc..self.pc + 8].try_into().unwrap());
+        self.pc += 8;
+        value
+    }
+
     #[inline]
     pub fn lebs(&mut self) -> Lebs<'a> {
         let len = self.uleb();

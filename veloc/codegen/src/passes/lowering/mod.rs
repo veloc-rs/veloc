@@ -2,11 +2,8 @@ pub mod abi;
 pub(crate) mod control;
 pub mod legalize;
 
-use crate::analysis::{ChangeSet, PassEffect};
-use crate::error::Result;
-use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
 use legalize::LegalizePolicy;
-use veloc_lir::MachineFunction;
 
 pub use abi::AbiLoweringPass;
 pub use legalize::{Legalizer, RewriteContext};
@@ -26,22 +23,17 @@ impl<'a> FunctionPass for LegalizePass<'a> {
         "legalize"
     }
 
-    fn run(
-        &self,
-        mfunc: &mut MachineFunction,
-        ctx: &mut FunctionPassContext<'_>,
-    ) -> Result<PassEffect> {
-        let legalizer = Legalizer::new(self.legalizer);
-        let changed = legalizer.legalize(mfunc, ctx.target, ctx.symbols)?;
-        Ok(if changed {
-            PassEffect::new(
-                ChangeSet::INST_SEMANTICS
-                    | ChangeSet::CFG
-                    | ChangeSet::STACK_FRAME
-                    | ChangeSet::PHYSICAL_REGS,
-            )
-        } else {
-            PassEffect::NONE
-        })
+    fn input_stage(&self) -> FunctionStage {
+        FunctionStage::Generic
+    }
+    fn output_stage(&self) -> FunctionStage {
+        FunctionStage::Legal
+    }
+    fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
+        let target = cx.target;
+        let mut edit = cx.edit();
+        let (function, symbols) = edit.with_symbols();
+        Legalizer::new(self.legalizer).legalize(function, target, symbols)?;
+        Ok(())
     }
 }

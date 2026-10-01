@@ -364,7 +364,12 @@ pub(super) fn check_storage(
     rule: &SelectRuleDef,
     layouts: &BTreeMap<String, crate::storage::operands::Projection>,
 ) -> Result<(), String> {
-    for (path, _) in named_args(&rule.fields) {
+    let paths = named_args(&rule.fields).map(|(path, _)| path).chain(
+        rule.definitions
+            .iter()
+            .map(|definition| definition.input.as_str()),
+    );
+    for path in paths {
         let (opcode, field) = if let Some((owner, field)) = path.split_once('.') {
             let def = rule
                 .definitions
@@ -379,6 +384,11 @@ pub(super) fn check_storage(
             .get(opcode)
             .and_then(|layout| layout.members.iter().find(|m| m.field.name == field))
             .ok_or_else(|| format!("{opcode}.{field} has no operand storage projection"))?;
+        if member.binding.is_none() {
+            return Err(format!(
+                "{opcode}.{field}: field is fixed to none and has no readable storage position"
+            ));
+        }
         if member.field.shape == crate::storage::operands::Shape::Sequence {
             return Err(format!(
                 "{opcode}.{field}: sequence fields require a sequence selection operation, not a scalar access"
@@ -403,45 +413,17 @@ pub(crate) fn generate_select_instruction(
     let mut adapters = matcher::Adapters::new(layouts);
     let mut opcodes: Vec<_> = rules.keys().collect();
     opcodes.sort();
-    writeln!(
+    let groups: Vec<_> = opcodes
+        .iter()
+        .map(|opcode| rules[*opcode].as_slice())
+        .collect();
+    matcher::emit(
         output,
-        "// Instruction selection programs: byte offsets and decoded operands accompany each row."
-    )
-    .unwrap();
-    writeln!(
-        output,
-        "mod selection_programs {{ use super::*; use crate::isel::matching::Program;"
-    )
-    .unwrap();
-    for opcode in &opcodes {
-        matcher::emit(
-            output,
-            &rules[*opcode],
-            extractors,
-            final_inst_defs,
-            &regs,
-            &mut adapters,
-        );
-    }
-    writeln!(output, "}}").unwrap();
-    writeln!(
-        output,
-        "// Static opcode dispatch; programs and host adapters are defined separately."
-    )
-    .unwrap();
-    writeln!(output, "pub static SELECTION_PROGRAMS: crate::isel::matching::SelectionPrograms = {{\nlet mut entries = [None; veloc_lir::GenericOpcode::COUNT];").unwrap();
-    for opcode in opcodes {
-        let name = sanitize_ident(opcode).to_ascii_uppercase();
-        writeln!(
-            output,
-            "entries[veloc_lir::GenericOpcode::{opcode} as usize] = Some(selection_programs::{name});"
-        )
-        .unwrap();
-    }
-    writeln!(
-        output,
-        "crate::isel::matching::SelectionPrograms {{ entries }}\n}};"
-    )
-    .unwrap();
+        &groups,
+        extractors,
+        final_inst_defs,
+        &regs,
+        &mut adapters,
+    );
     adapters.emit(output, context, extractors, &decls);
 }

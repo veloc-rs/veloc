@@ -126,24 +126,9 @@ impl BitOrAssign for ChangeSet {
     }
 }
 
-/// pass 执行效果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PassEffect {
-    pub change_set: ChangeSet,
-}
-
-impl PassEffect {
-    pub const NONE: Self = Self {
-        change_set: ChangeSet::NONE,
-    };
-
-    pub const fn new(change_set: ChangeSet) -> Self {
-        Self { change_set }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct AnalysisCache<T> {
+    // Input revision: direct IR version or the prerequisite analysis version.
     built_revision: u64,
     value: T,
 }
@@ -346,6 +331,7 @@ impl FunctionAnalysisCtx {
 
     pub fn cfg(&mut self, mfunc: &MachineFunction, target: &dyn TargetInstructions) -> &CfgInfo {
         let deps = ChangeSet::CFG
+            | ChangeSet::INST_LAYOUT
             | ChangeSet::BLOCK_LAYOUT
             | ChangeSet::INST_OPERANDS
             | ChangeSet::INST_SEMANTICS
@@ -372,21 +358,17 @@ impl FunctionAnalysisCtx {
         mfunc: &MachineFunction,
         target: &dyn TargetInstructions,
     ) -> &DominatorTree {
-        let deps = ChangeSet::CFG
-            | ChangeSet::BLOCK_LAYOUT
-            | ChangeSet::INST_OPERANDS
-            | ChangeSet::INST_SEMANTICS
-            | ChangeSet::SELECTED_OPCODES;
+        self.cfg(mfunc, target);
+        let revision = self.cfg.as_ref().unwrap().built_revision;
         let stale = self
             .dominators
             .as_ref()
-            .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
+            .is_none_or(|cache| cache.built_revision != revision);
         if stale {
             let scope = self.profile.scope("analysis.dominators", 0);
-            self.cfg(mfunc, target);
             let value =
                 DominatorTree::compute(&self.cfg.as_ref().unwrap().value, mfunc.entry_block());
-            self.dominators = Some(AnalysisCache::new(self.revision, value));
+            self.dominators = Some(AnalysisCache::new(revision, value));
             scope.success();
         } else {
             self.profile.count("analysis.dominators.cache_hits", 1);
@@ -399,20 +381,16 @@ impl FunctionAnalysisCtx {
         mfunc: &MachineFunction,
         target: &dyn TargetInstructions,
     ) -> &PostDominatorTree {
-        let deps = ChangeSet::CFG
-            | ChangeSet::BLOCK_LAYOUT
-            | ChangeSet::INST_OPERANDS
-            | ChangeSet::INST_SEMANTICS
-            | ChangeSet::SELECTED_OPCODES;
+        self.cfg(mfunc, target);
+        let revision = self.cfg.as_ref().unwrap().built_revision;
         let stale = self
             .post_dominators
             .as_ref()
-            .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
+            .is_none_or(|cache| cache.built_revision != revision);
         if stale {
             let scope = self.profile.scope("analysis.post_dominators", 0);
-            self.cfg(mfunc, target);
             let value = PostDominatorTree::compute(&self.cfg.as_ref().unwrap().value);
-            self.post_dominators = Some(AnalysisCache::new(self.revision, value));
+            self.post_dominators = Some(AnalysisCache::new(revision, value));
             scope.success();
         } else {
             self.profile.count("analysis.post_dominators.cache_hits", 1);
@@ -426,6 +404,8 @@ impl FunctionAnalysisCtx {
         target: &dyn TargetInstructions,
     ) -> &LivenessInfo {
         let deps = ChangeSet::CFG
+            | ChangeSet::INST_LAYOUT
+            | ChangeSet::PHYSICAL_REGS
             | ChangeSet::BLOCK_LAYOUT
             | ChangeSet::INST_OPERANDS
             | ChangeSet::INST_SEMANTICS
@@ -452,24 +432,19 @@ impl FunctionAnalysisCtx {
         mfunc: &MachineFunction,
         target: &dyn TargetInstructions,
     ) -> &LoopInfo {
-        let deps = ChangeSet::CFG
-            | ChangeSet::BLOCK_LAYOUT
-            | ChangeSet::INST_OPERANDS
-            | ChangeSet::INST_SEMANTICS
-            | ChangeSet::SELECTED_OPCODES;
+        self.dominators(mfunc, target);
+        let revision = self.dominators.as_ref().unwrap().built_revision;
         let stale = self
             .loop_info
             .as_ref()
-            .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
+            .is_none_or(|cache| cache.built_revision != revision);
         if stale {
             let scope = self.profile.scope("analysis.loop_info", 0);
-            self.cfg(mfunc, target);
-            self.dominators(mfunc, target);
             let value = LoopInfo::compute(
                 &self.cfg.as_ref().unwrap().value,
                 &self.dominators.as_ref().unwrap().value,
             );
-            self.loop_info = Some(AnalysisCache::new(self.revision, value));
+            self.loop_info = Some(AnalysisCache::new(revision, value));
             scope.success();
         } else {
             self.profile.count("analysis.loop_info.cache_hits", 1);
@@ -482,21 +457,16 @@ impl FunctionAnalysisCtx {
         mfunc: &MachineFunction,
         target: &dyn TargetInstructions,
     ) -> &RegisterPressure {
-        let deps = ChangeSet::CFG
-            | ChangeSet::REGALLOC
-            | ChangeSet::INST_OPERANDS
-            | ChangeSet::INST_SEMANTICS
-            | ChangeSet::SELECTED_OPCODES
-            | ChangeSet::BLOCK_LAYOUT;
+        self.liveness(mfunc, target);
+        let revision = self.liveness.as_ref().unwrap().built_revision;
         let stale = self
             .register_pressure
             .as_ref()
-            .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
+            .is_none_or(|cache| cache.built_revision != revision);
         if stale {
             let scope = self.profile.scope("analysis.register_pressure", 0);
-            self.liveness(mfunc, target);
             let value = compute_register_pressure(mfunc, &self.liveness.as_ref().unwrap().value);
-            self.register_pressure = Some(AnalysisCache::new(self.revision, value));
+            self.register_pressure = Some(AnalysisCache::new(revision, value));
             scope.success();
         } else {
             self.profile
@@ -531,24 +501,6 @@ impl FunctionAnalysisCtx {
                 .count("analysis.stack_frame_summary.cache_hits", 1);
         }
         &self.stack_frame_summary.as_ref().unwrap().value
-    }
-}
-
-/// 模块级分析上下文。
-#[derive(Debug, Clone, Default)]
-pub struct ModuleAnalysisCtx {
-    revision: u64,
-}
-
-impl ModuleAnalysisCtx {
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    pub fn apply(&mut self, change_set: ChangeSet) {
-        if !change_set.is_empty() {
-            self.revision += 1;
-        }
     }
 }
 

@@ -1,9 +1,8 @@
 //! Explicit control-flow lowering, independent of instruction legalization.
-use crate::analysis::{ChangeSet, PassEffect};
-use crate::error::{Error, Result};
-use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::error::Error;
+use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
 use std::vec::Vec;
-use veloc_lir::{GenericOpcode, InstBuild, InstRead, InstView, MachineFunction, Successor};
+use veloc_lir::{GenericOpcode, InstBuild, InstRead, InstView, Successor};
 use veloc_mir::{IntCC, Type};
 
 /// A target opts into comparison-chain lowering. Keeping this outside legality
@@ -15,13 +14,20 @@ impl FunctionPass for BranchTableLowering {
         "lower-branch-tables"
     }
 
-    fn run(&self, f: &mut MachineFunction, _: &mut FunctionPassContext<'_>) -> Result<PassEffect> {
+    fn input_stage(&self) -> FunctionStage {
+        FunctionStage::Generic
+    }
+    fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
+        let f = cx.function();
         let tables: Vec<_> = f
             .blocks()
             .flat_map(|b| f.block_insts(b))
             .filter(|&id| f.inst(id).generic_opcode() == Some(GenericOpcode::Brjt))
             .collect();
-        let changed = !tables.is_empty();
+        if tables.is_empty() {
+            return Ok(());
+        }
+        let mut f = cx.edit();
         for id in tables {
             let InstView::BranchTable(table) = f.inst(id).view() else {
                 unreachable!()
@@ -70,10 +76,6 @@ impl FunctionPass for BranchTableLowering {
                 current = next;
             }
         }
-        Ok(if changed {
-            PassEffect::new(ChangeSet::CFG | ChangeSet::INST_SEMANTICS)
-        } else {
-            PassEffect::NONE
-        })
+        Ok(())
     }
 }

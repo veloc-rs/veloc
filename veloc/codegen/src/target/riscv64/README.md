@@ -1,7 +1,7 @@
 # RV64 backend
 
-The baseline is RV64GC with the Linux LP64D ABI. `generic` and `c908` currently
-select the same instruction set. SIMD is not implemented.
+The backend uses I/M/F/D with the Linux LP64D ABI. `c908` additionally enables
+Zba/Zbb selection. Compressed encoding and SIMD are not implemented.
 
 - `defs/riscv64`: registers, ABI, legalization, selection and instruction expansions.
 - `veloc-encoder`: generated encoding types and RV instruction field packing.
@@ -11,7 +11,9 @@ select the same instruction set. SIMD is not implemented.
 32-bit integers use the ABI's sign-extended XLEN representation. Integer and
 floating-point argument registers are allocated independently. Absolute 64-bit
 call literals avoid imposing a 2 GiB distance limit between JIT code and host
-functions. Linux `riscv_flush_icache` publishes relocated code before execution.
+functions. Calls within the emitted section and local branches use the shortest
+valid candidate selected by shared final layout, subject to conservative promotion
+when alignment changes. Linux `riscv_flush_icache` publishes relocated code before execution.
 
 ## Build on the Mac, run on the board
 

@@ -9,27 +9,25 @@ use veloc_mir::Type;
 use veloc_bytecode::{Reader, selection::Instruction as Op};
 
 pub struct Program {
+    pub entries: [Option<Entry>; GenericOpcode::COUNT],
     pub code: &'static [u8],
-    pub entry: u32,
-    pub insts: usize,
-    pub values: usize,
-    pub fields: usize,
     pub types: &'static [&'static [Type]],
-    pub integers: &'static [i64],
-    pub opcodes: &'static [GenericOpcode],
     pub targets: &'static [Target],
-    pub accesses: &'static [Option<Field>],
     pub required_features: &'static [FeatureSetRef<'static>],
     pub registers: &'static [Reg],
 }
 
-/// Static target programs indexed by the input opcode's definition order.
-pub struct SelectionPrograms {
-    pub entries: [Option<&'static Program>; GenericOpcode::COUNT],
+/// An opcode's entry point and its local scratch requirements.
+#[derive(Clone, Copy)]
+pub struct Entry {
+    pub offset: u32,
+    pub insts: usize,
+    pub values: usize,
+    pub fields: usize,
 }
 
-impl SelectionPrograms {
-    pub fn get(&self, opcode: GenericOpcode) -> Option<&'static Program> {
+impl Program {
+    pub fn entry(&self, opcode: GenericOpcode) -> Option<Entry> {
         self.entries[opcode as usize]
     }
 }
@@ -41,32 +39,12 @@ enum FieldSource {
     Attribute(InstId, usize),
     Imm(i64),
 }
-/// Physical field positions come from the same checked storage projections as
-/// InstView. Optional fields bound to none occupy no slot; sequences are not
-/// scalar accesses and are rejected by the selection compiler.
-pub enum Field {
-    Input(usize),
-    Result(usize),
-    Attribute(usize),
-}
-impl Field {
-    fn reg(&self, inst: InstRef<'_>) -> Reg {
-        match *self {
-            Self::Input(index) => inst.inputs()[index],
-            Self::Result(index) => inst.results()[index],
-            Self::Attribute(_) => panic!("attribute used as a register"),
-        }
-    }
-    fn integer(&self, inst: InstRef<'_>) -> i64 {
-        let Self::Attribute(index) = *self else {
-            panic!("register used as an attribute")
-        };
-        match inst.fields().read(index) {
-            veloc_lir::FieldValueRef::Imm(value) => *value,
-            veloc_lir::FieldValueRef::IntCC(value) => *value as i64,
-            veloc_lir::FieldValueRef::FloatCC(value) => *value as i64,
-            _ => panic!("non-integer selection field"),
-        }
+fn integer(inst: InstRef<'_>, index: usize) -> i64 {
+    match inst.fields().read(index) {
+        veloc_lir::FieldValueRef::Imm(value) => *value,
+        veloc_lir::FieldValueRef::IntCC(value) => *value as i64,
+        veloc_lir::FieldValueRef::FloatCC(value) => *value as i64,
+        _ => panic!("non-integer selection field"),
     }
 }
 
@@ -93,6 +71,7 @@ pub fn disassemble(program: &Program, out: &mut dyn core::fmt::Write) -> core::f
 #[inline(never)]
 pub(super) fn execute(
     program: &Program,
+    entry: Entry,
     features: FeatureSetRef<'_>,
     predicate: &dyn Fn(u32, Reg) -> bool,
     store: &mut InstInserter<'_>,
@@ -102,11 +81,11 @@ pub(super) fn execute(
 ) -> Option<()> {
     let mut reader = Reader {
         bytes: program.code,
-        pc: program.entry as usize,
+        pc: entry.offset as usize,
     };
-    let mut insts = SmallVec::<[Option<InstId>; 4]>::from_elem(None, program.insts);
-    let mut values = SmallVec::<[Option<Reg>; 16]>::from_elem(None, program.values);
-    let mut fields = SmallVec::<[Option<FieldSource>; 8]>::from_elem(None, program.fields);
+    let mut insts = SmallVec::<[Option<InstId>; 4]>::from_elem(None, entry.insts);
+    let mut values = SmallVec::<[Option<Reg>; 16]>::from_elem(None, entry.values);
+    let mut fields = SmallVec::<[Option<FieldSource>; 8]>::from_elem(None, entry.fields);
     insts[0] = Some(source);
     let mut accepted = false;
     loop {
@@ -119,10 +98,13 @@ pub(super) fn execute(
             Op::Jump { target } => {
                 reader.pc = target;
             }
-            Op::ReadReg { dst, node, field } => {
-                values[dst] = program.accesses[field].as_ref().map(|field| {
-                    field.reg(store.inst(insts[node].expect("dominating definition")))
-                });
+            Op::ReadReg { dst, node, operand } => {
+                let inst = store.inst(insts[node].expect("dominating definition"));
+                values[dst] = Some(
+                    *operand
+                        .get(inst.inputs(), inst.results())
+                        .expect("checked operand position"),
+                );
             }
             Op::GetDef {
                 dst,
@@ -143,8 +125,11 @@ pub(super) fn execute(
                 failure,
             } => {
                 assert!(!accepted);
-                if !(store.inst(insts[node].unwrap()).generic_opcode()
-                    == Some(program.opcodes[opcode]))
+                if !(store
+                    .inst(insts[node].unwrap())
+                    .generic_opcode()
+                    .map(|opcode| opcode as usize)
+                    == Some(opcode))
                 {
                     reader.pc = failure;
                 }
@@ -164,35 +149,29 @@ pub(super) fn execute(
             }
             Op::CheckInt {
                 node,
-                field,
+                index,
                 constant,
                 failure,
             } => {
                 assert!(!accepted);
-                if !(program.accesses[field]
-                    .as_ref()
-                    .map(|field| field.integer(store.inst(insts[node].unwrap())))
-                    == Some(program.integers[constant]))
-                {
+                if integer(store.inst(insts[node].unwrap()), index) != constant {
                     reader.pc = failure;
                 }
             }
             Op::CheckIntRange {
                 node,
-                field,
+                index,
                 bits,
                 signed,
                 failure,
             } => {
                 assert!(!accepted);
-                let fits = program.accesses[field].as_ref().is_some_and(|field| {
-                    let value = field.integer(store.inst(insts[node].unwrap()));
-                    if signed != 0 {
-                        bits == 64 || value == (value << (64 - bits)) >> (64 - bits)
-                    } else {
-                        value >= 0 && (bits == 64 || (value as u64) >> bits == 0)
-                    }
-                });
+                let value = integer(store.inst(insts[node].unwrap()), index);
+                let fits = if signed != 0 {
+                    bits == 64 || value == (value << (64 - bits)) >> (64 - bits)
+                } else {
+                    value >= 0 && (bits == 64 || (value as u64) >> bits == 0)
+                };
                 if !fits {
                     reader.pc = failure;
                 }
@@ -244,18 +223,13 @@ pub(super) fn execute(
                 assert!(accepted);
                 values[dst] = Some(program.registers[reg]);
             }
-            Op::ReadField { dst, node, field } => {
+            Op::ReadField { dst, node, index } => {
                 assert!(accepted);
-                fields[dst] = program.accesses[field].as_ref().map(|field| {
-                    let Field::Attribute(index) = *field else {
-                        panic!("register used as an attribute")
-                    };
-                    FieldSource::Attribute(insts[node].unwrap(), index)
-                });
+                fields[dst] = Some(FieldSource::Attribute(insts[node].unwrap(), index));
             }
             Op::ConstImm { dst, imm } => {
                 assert!(accepted);
-                fields[dst] = Some(FieldSource::Imm(program.integers[imm]));
+                fields[dst] = Some(FieldSource::Imm(imm));
             }
             Op::BuildInst {
                 target,

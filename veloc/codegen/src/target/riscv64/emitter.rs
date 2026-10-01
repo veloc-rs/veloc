@@ -42,35 +42,70 @@ fn instruction(e: &mut crate::Emitter, op: Instruction) -> crate::Result<()> {
     let encoded = rv::encode(op).map_err(|e| crate::Error::codegen(format!("{e:?}")))?;
     e.instruction(&encoded, None)
 }
-fn jump(e: &mut crate::Emitter, block: veloc_lir::BlockId) {
-    let mut bytes = [0; 8];
-    bytes[..4].copy_from_slice(&(0x17u32 | 31 << 7).to_le_bytes());
-    bytes[4..].copy_from_slice(&rv::i(0x67, 0, 0, 31, 0).to_le_bytes());
-    e.local_fixup(block, &bytes, rv::patch_jump);
+fn jump_pair(link: R) -> Vec<u8> {
+    let mut bytes = (0x17u32 | 31 << 7).to_le_bytes().to_vec();
+    bytes.extend_from_slice(&rv::i(0x67, link.hardware(), 0, 31, 0).to_le_bytes());
+    bytes
 }
+
 pub(crate) fn encode_instruction(e: &mut crate::Emitter, emission: Emission) -> crate::Result<()> {
+    use crate::emitter::{CodeForm, ExternalRelocation, RelocationKind, Target};
     match emission {
         Emission::Instructions(code) => {
             for op in code {
                 instruction(e, op)?;
             }
         }
-        Emission::Jump(block) => jump(e, block),
+        Emission::Jump(block) => e.alternatives(
+            Target::Block(block),
+            vec![
+                CodeForm::relative(&rv::j(0, 0).to_le_bytes(), rv::patch_jal),
+                CodeForm::relative(&jump_pair(R::X0), rv::patch_jump),
+            ],
+        ),
         Emission::Branch(funct3, lhs, rhs, target) => {
-            // Invert the condition to skip the long-range jump.
-            instruction(e, Instruction::B(funct3 ^ 1, lhs, rhs, 12))?;
-            jump(e, target);
+            let branch = |condition, distance| {
+                rv::b(condition, lhs.hardware(), rhs.hardware(), distance).to_le_bytes()
+            };
+            let mut medium = branch(funct3 ^ 1, 8).to_vec();
+            medium.extend_from_slice(&rv::j(0, 0).to_le_bytes());
+            let mut far = branch(funct3 ^ 1, 12).to_vec();
+            far.extend_from_slice(&jump_pair(R::X0));
+            e.alternatives(
+                Target::Block(target),
+                vec![
+                    CodeForm::relative(&branch(funct3, 0), rv::patch_branch),
+                    CodeForm::relative(&medium, rv::patch_far_branch),
+                    CodeForm::relative(&far, rv::patch_far_branch),
+                ],
+            );
         }
         Emission::Call(symbol) => {
-            // An aligned absolute pointer permits host calls across arbitrary mappings.
-            if e.position() % 8 != 0 {
-                instruction(e, Instruction::I(0x13, R::X0, 0, R::X0, 0))?;
-            }
-            e.bytes(&(0x17u32 | 31 << 7).to_le_bytes());
-            instruction(e, Instruction::I(0x03, R::X31, 3, R::X31, 16))?;
-            instruction(e, Instruction::I(0x67, R::X1, 0, R::X31, 0))?;
-            instruction(e, Instruction::J(R::X0, 12))?;
-            e.absolute64(symbol);
+            // Unknown external addresses use an aligned inline pointer. Alignment
+            // belongs to this fallback form, not to direct calls or emission time.
+            let mut far = (0x17u32 | 31 << 7).to_le_bytes().to_vec();
+            far.extend_from_slice(&rv::i(0x03, 31, 3, 31, 16).to_le_bytes());
+            far.extend_from_slice(&rv::i(0x67, 1, 0, 31, 0).to_le_bytes());
+            far.extend_from_slice(&rv::j(0, 12).to_le_bytes());
+            far.extend_from_slice(&[0; 8]);
+            let absolute = CodeForm::relocated(
+                &far,
+                ExternalRelocation {
+                    kind: RelocationKind::Absolute64,
+                    offset: 16,
+                    symbol,
+                    addend: 0,
+                },
+            )
+            .aligned(8, &rv::i(0x13, 0, 0, 0, 0).to_le_bytes());
+            e.alternatives(
+                Target::Symbol(symbol),
+                vec![
+                    CodeForm::relative(&rv::j(1, 0).to_le_bytes(), rv::patch_jal),
+                    CodeForm::relative(&jump_pair(R::X1), rv::patch_jump),
+                    absolute,
+                ],
+            );
         }
     }
     Ok(())

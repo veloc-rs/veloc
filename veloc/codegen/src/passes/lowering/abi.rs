@@ -1,11 +1,8 @@
-use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::{Error, Result};
-use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
 use crate::target::{AbiLocation, AbiPlan, CallConv, TargetMachine};
 use smallvec::SmallVec;
-use veloc_lir::{
-    GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackObject, StackSlot, Type,
-};
+use veloc_lir::{GenericOpcode, InstId, MachineOpcode, Reg, StackObject, StackSlot, Type};
 use veloc_lir::{InstBuild, InstRead, OperandConstraint, OperandRef};
 use veloc_lir::{MemoryAccess, MemoryKind};
 
@@ -253,21 +250,19 @@ impl FunctionPass for AbiLoweringPass {
         "abi-lowered"
     }
 
-    fn run(
-        &self,
-        mfunc: &mut MachineFunction,
-        ctx: &mut FunctionPassContext<'_>,
-    ) -> Result<PassEffect> {
-        let plan = plan_signature(ctx.target, ctx.func_sig)?;
-
-        lower_formal_arguments(ctx.target, &mut mfunc.editor(), &plan);
-        // The cursor saves the next original instruction before each rewrite.
-        // Planning errors abort compilation without rolling back earlier edits.
-        let mut cursor = veloc_lir::InstCursor::new(mfunc);
-        while let Some(id) = cursor.next(mfunc) {
+    fn input_stage(&self) -> FunctionStage {
+        FunctionStage::Generic
+    }
+    fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
+        let target = cx.target;
+        let plan = plan_signature(target, cx.signature)?;
+        let mut mfunc = cx.edit();
+        lower_formal_arguments(target, &mut mfunc.editor(), &plan);
+        let mut cursor = veloc_lir::InstCursor::new(&mfunc);
+        while let Some(id) = cursor.next(&mfunc) {
             match mfunc.inst(id).opcode() {
                 MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind) => {
-                    lower_call(ctx.target, &mut mfunc.editor(), id)?;
+                    lower_call(target, &mut mfunc.editor(), id)?;
                 }
                 MachineOpcode::Generic(GenericOpcode::Ret) => {
                     lower_return(&mut mfunc.editor(), id, &plan);
@@ -275,9 +270,6 @@ impl FunctionPass for AbiLoweringPass {
                 _ => {}
             }
         }
-
-        Ok(PassEffect::new(
-            ChangeSet::INST_SEMANTICS | ChangeSet::PHYSICAL_REGS | ChangeSet::STACK_FRAME,
-        ))
+        Ok(())
     }
 }

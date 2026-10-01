@@ -297,12 +297,17 @@ pub trait TargetPassConfig: Send + Sync {
     }
 
     /// 在函数发射前追加 target 自定义模块级 late codegen passes。
-    fn pre_emit_module_passes(&self) -> Vec<Box<dyn ModuleCodegenPass>> {
+    fn pre_emit_module_passes(
+        &self,
+    ) -> Vec<Box<dyn ModuleCodegenPass<crate::pipeline::CompiledModule>>> {
         Vec::new()
     }
 
-    /// 在函数发射后追加 target 自定义模块级 late codegen passes。
-    fn post_emit_module_passes(&self) -> Vec<Box<dyn ModuleCodegenPass>> {
+    /// 在符号化发射后、最终布局和重定位之前运行模块级 passes。
+    /// 此时仍可修改编码片段；最终布局之后不能再改变代码大小或顺序。
+    fn post_emit_module_passes(
+        &self,
+    ) -> Vec<Box<dyn ModuleCodegenPass<crate::pipeline::EmissionModule>>> {
         Vec::new()
     }
 }

@@ -233,7 +233,7 @@ impl TargetMachine for Riscv64TargetMachine {
     }
     fn selector(&self) -> crate::isel::SelectPolicy<'_> {
         crate::isel::SelectPolicy {
-            programs: &inst::SELECTION_PROGRAMS,
+            program: &inst::SELECTION_PROGRAM,
             features: crate::target::FeatureSetRef::new(self.features.as_words()),
             metadata,
             predicate: &self.features,

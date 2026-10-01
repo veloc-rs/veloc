@@ -346,34 +346,12 @@ impl Profile {
             return;
         };
         let mut s = state.borrow_mut();
-        if s.config.mode != Mode::Trace || !s.config.details || s.active.is_empty() {
+        let Some(active) = s.active.last() else {
             return;
-        }
-        if s.events.len() >= s.config.max_events || s.detail_bytes >= s.config.max_detail_bytes {
-            s.dropped += 1;
-            return;
-        }
-        let mut text = text();
-        let mut available = s.config.max_detail_bytes - s.detail_bytes;
-        if text.len() > available {
-            while !text.is_char_boundary(available) {
-                available -= 1;
-            }
-            text.truncate(available);
-            s.dropped += 1;
-        }
-        s.detail_bytes += text.len();
-        let active = s.active.last().unwrap();
-        let event = Event {
-            stage: active.stage,
-            start: s.origin.elapsed(),
-            duration: Duration::ZERO,
-            track: s.track,
-            outcome: Outcome::Success,
-            entity: active.entity.clone(),
-            detail: Some((kind, text)),
         };
-        s.events.push(event);
+        let stage = active.stage;
+        let entity = active.entity.clone();
+        record_detail(&mut s, stage, entity, kind, text);
     }
 
     /// Snapshot after scopes finish. Reporting is not on the compilation hot path.
@@ -402,6 +380,62 @@ impl Profile {
     }
 }
 
+/// Associates diagnostics with their original scope after its timer has ended.
+/// Retaining this handle does not keep the scope active or extend its duration.
+#[derive(Default)]
+pub struct Observation {
+    profile: Profile,
+    identity: Option<(usize, Option<String>)>,
+}
+impl Observation {
+    pub fn artifact(&self, text: impl FnOnce() -> String) {
+        self.detail("artifact", text);
+    }
+    pub fn remark(&self, text: impl FnOnce() -> String) {
+        self.detail("remark", text);
+    }
+    fn detail(&self, kind: &'static str, text: impl FnOnce() -> String) {
+        if let (Some(state), Some((stage, entity))) = (&self.profile.0, &self.identity) {
+            record_detail(&mut state.borrow_mut(), *stage, entity.clone(), kind, text);
+        }
+    }
+}
+fn record_detail(
+    s: &mut State,
+    stage: usize,
+    entity: Option<String>,
+    kind: &'static str,
+    text: impl FnOnce() -> String,
+) {
+    if s.config.mode != Mode::Trace || !s.config.details {
+        return;
+    }
+    if s.events.len() >= s.config.max_events || s.detail_bytes >= s.config.max_detail_bytes {
+        s.dropped += 1;
+        return;
+    }
+    let mut text = text();
+    let mut available = s.config.max_detail_bytes - s.detail_bytes;
+    if text.len() > available {
+        while !text.is_char_boundary(available) {
+            available -= 1;
+        }
+        text.truncate(available);
+        s.dropped += 1;
+    }
+    s.detail_bytes += text.len();
+    let event = Event {
+        stage,
+        start: s.origin.elapsed(),
+        duration: Duration::ZERO,
+        track: s.track,
+        outcome: Outcome::Success,
+        entity,
+        detail: Some((kind, text)),
+    };
+    s.events.push(event);
+}
+
 pub struct Worker {
     config: Config,
     origin: Instant,
@@ -428,6 +462,20 @@ impl Default for Outcome {
 }
 
 impl Scope {
+    pub fn observation(&self) -> Observation {
+        let Some(state) = &self.profile.0 else {
+            return Observation::default();
+        };
+        let s = state.borrow();
+        if s.config.mode != Mode::Trace || !s.config.details {
+            return Observation::default();
+        }
+        let active = &s.active[self.depth];
+        Observation {
+            profile: self.profile.clone(),
+            identity: Some((active.stage, active.entity.clone())),
+        }
+    }
     pub fn success(mut self) {
         self.outcome = Outcome::Success;
     }

@@ -6,9 +6,10 @@ use veloc_mir::FuncId;
 #[derive(Debug, Clone)]
 pub struct CompiledFunction {
     pub func_id: FuncId,
+    /// Definition identity used by section layout and symbolic calls.
+    pub symbol: veloc_lir::SymbolId,
     pub name: String,
     pub machine_function: MachineFunction,
-    pub emitted: Option<crate::EmittedCode>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,4 +27,19 @@ impl CompiledModule {
             functions,
         }
     }
+}
+
+/// Symbolic code is the sole mutable representation after emission.
+#[derive(Debug, Clone)]
+pub struct EmittedFunction {
+    pub func_id: FuncId,
+    pub symbol: veloc_lir::SymbolId,
+    pub name: String,
+    pub emission: crate::Emitter,
+}
+#[derive(Debug, Clone)]
+pub struct EmissionModule {
+    pub name: String,
+    pub symbols: SymbolTable,
+    pub functions: Vec<EmittedFunction>,
 }

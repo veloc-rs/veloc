@@ -35,8 +35,28 @@ XLEN, including `addiw` and word shifts.
 
 Comparison/branch rules fold i32/i64/pointer comparisons into BEQ/BNE/BLT/BGE/
 BLTU/BGEU. Signed and unsigned i32 comparisons both rely on that sign-extension
-invariant. Branch emission inverts the condition around the existing long-range
-jump. A matched comparison with other users remains available to those users.
+invariant. A matched comparison with other users remains available to those users.
+
+## Final layout
+
+The shared section layout engine selects the encoding after all module passes:
+
+| Operation | Preferred form | Fallbacks |
+| --- | --- | --- |
+| Conditional branch | B-type branch (4 bytes) | Inverted branch + JAL (8), inverted branch + AUIPC/JALR (12) |
+| Jump | JAL x0 (4 bytes) | AUIPC/JALR (8) |
+| Call to a definition in the same section | JAL ra (4 bytes) | AUIPC/JALR (8), absolute-pointer call (24 plus alignment) |
+| Call to an unresolved symbol | Absolute-pointer call | 8-byte-aligned embedded pointer with R_RISCV_64 relocation |
+
+B-type and JAL displacements are checked relative to the actual instruction PC;
+an inverted-branch sequence accounts for the jump starting four bytes later.
+Only the absolute-pointer call requires 8-byte alignment. Layout recomputes its
+padding after branch and call forms change. Internal calls are resolved in the
+same layout as blocks, including recursive and forward calls. External calls
+retain support for arbitrary host addresses without a new loader relocation.
+
+The historical measurements below predate this layout change; its runtime benefit
+has not yet been measured on K230.
 
 ## Running on K230
 

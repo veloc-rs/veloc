@@ -4,7 +4,7 @@
 //!
 //! 目标提供静态规则和扩展，通用 VM 负责匹配与构建。
 
-use super::matching::{self, SelectionPrograms};
+use super::matching::{self, Program};
 use crate::analysis::CfgInfo;
 use crate::target::FeatureSetRef;
 use std::vec::Vec;
@@ -13,7 +13,7 @@ use veloc_lir::{GenericOpcode, InstCursor, InstId, MachineFunction, Reg};
 /// Target data and the explicit host extension used by the selection VM.
 #[derive(Clone, Copy)]
 pub struct SelectPolicy<'a> {
-    pub programs: &'static SelectionPrograms,
+    pub program: &'static Program,
     pub features: FeatureSetRef<'a>,
     pub metadata: fn(u32) -> &'static crate::target::TargetInstMetadata,
     pub predicate: &'a dyn SelectHooks,
@@ -103,16 +103,16 @@ impl<'a> InstructionSelector<'a> {
     ) -> Result<(), crate::error::Error> {
         debug_assert!(scratch.selected.is_empty() && scratch.edge_transfers.is_empty());
         let opcode = mfunc.inst(inst_id).opcode();
-        let program = self
-            .target
-            .programs
-            .get(generic)
-            .ok_or_else(|| crate::error::Error::select(opcode, "No selection program"))?;
+        let program = self.target.program;
+        let entry = program
+            .entry(generic)
+            .ok_or_else(|| crate::error::Error::select(opcode, "No selection entry"))?;
         let memory = mfunc.inst(inst_id).memory();
         let mut edit = mfunc.editor();
         let mut insert = edit.before(inst_id);
         matching::execute(
             program,
+            entry,
             self.target.features,
             &|id, reg| self.target.predicate.predicate(id, reg),
             &mut insert,
@@ -206,7 +206,14 @@ impl<'a> InstructionSelector<'a> {
         mfunc: &mut MachineFunction,
         cfg: &CfgInfo,
     ) -> Result<(), crate::error::Error> {
-        let blocks = cfg.compute_post_order(mfunc.entry_block());
+        self.select_in_order(mfunc, cfg.compute_post_order(mfunc.entry_block()))
+    }
+
+    pub(crate) fn select_in_order(
+        &self,
+        mfunc: &mut MachineFunction,
+        blocks: Vec<veloc_lir::BlockId>,
+    ) -> Result<(), crate::error::Error> {
         assert_eq!(
             blocks.len(),
             mfunc.num_blocks(),

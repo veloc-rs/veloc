@@ -16,13 +16,22 @@ use veloc_mir::{FunctionRef, Linkage};
 
 const TEXT_ALIGN: u64 = 16;
 
-pub(crate) struct ObjectFileBuilder {
+struct FunctionCode<'a> {
+    symbol: SymbolId,
+    label: veloc_lir::SymbolId,
+    name: String,
+    emission: &'a crate::Emitter,
+}
+
+pub(crate) struct ObjectFileBuilder<'a> {
     object: Object<'static>,
     text_section: object::write::SectionId,
     symbols: HashMap<String, SymbolId>,
+    relocation_symbols: HashMap<veloc_lir::SymbolId, (String, SymbolId)>,
+    functions: std::vec::Vec<FunctionCode<'a>>,
 }
 
-impl ObjectFileBuilder {
+impl<'a> ObjectFileBuilder<'a> {
     pub(crate) fn new(target: &dyn TargetMachine) -> Result<Self> {
         let (format, architecture, endian) = object_format_for_target(target.desc().arch)?;
         let mut object = Object::new(format, architecture, endian);
@@ -39,61 +48,99 @@ impl ObjectFileBuilder {
             object,
             text_section,
             symbols: HashMap::new(),
+            relocation_symbols: HashMap::new(),
+            functions: std::vec::Vec::new(),
         })
     }
 
     pub(crate) fn add_defined_function(
         &mut self,
         func: &FunctionRef,
-        emitted: &crate::EmittedCode,
+        label: veloc_lir::SymbolId,
+        emission: &'a crate::Emitter,
         symbols: &veloc_lir::SymbolTable,
-    ) -> Result<()> {
-        let symbol_id = self.ensure_function_symbol(func);
-        let base_offset =
-            self.object
-                .add_symbol_data(symbol_id, self.text_section, &emitted.data, TEXT_ALIGN);
-
-        for relocation in &emitted.relocations {
-            let sym_name = &symbols.get(relocation.symbol).name;
-            let target_symbol = self.ensure_text_symbol_name(sym_name);
-            self.object
-                .add_relocation(
-                    self.text_section,
-                    Relocation {
-                        offset: base_offset + relocation.offset,
-                        symbol: target_symbol,
-                        addend: relocation.addend,
-                        flags: RelocationFlags::Generic {
-                            kind: match relocation.kind {
-                                crate::RelocationKind::RelativeBranch32 => RelocationKind::Relative,
-                                crate::RelocationKind::Absolute64 => RelocationKind::Absolute,
-                            },
-                            encoding: match relocation.kind {
-                                crate::RelocationKind::RelativeBranch32 => {
-                                    RelocationEncoding::X86Branch
-                                }
-                                crate::RelocationKind::Absolute64 => RelocationEncoding::Generic,
-                            },
-                            size: match relocation.kind {
-                                crate::RelocationKind::RelativeBranch32 => 32,
-                                crate::RelocationKind::Absolute64 => 64,
-                            },
-                        },
-                    },
-                )
-                .map_err(|err| {
-                    Error::object_file_relocation_error(
-                        func.decl.name.clone(),
-                        sym_name.clone(),
-                        format!("{err}"),
-                    )
-                })?;
+    ) {
+        let symbol = self.ensure_function_symbol(func);
+        for id in emission.symbols() {
+            let name = &symbols.get(id).name;
+            let symbol = self.ensure_text_symbol_name(name);
+            self.relocation_symbols.insert(id, (name.clone(), symbol));
         }
-
-        Ok(())
+        self.functions.push(FunctionCode {
+            symbol,
+            label,
+            name: func.decl.name.clone(),
+            emission,
+        });
     }
 
-    pub(crate) fn finish(self) -> Result<std::vec::Vec<u8>> {
+    pub(crate) fn finish(mut self, profile: &veloc_profile::Profile) -> Result<std::vec::Vec<u8>> {
+        // Run after module post-emission passes, immediately before writing the
+        // section. Every function and block participates in the same layout.
+        let units = self
+            .functions
+            .iter()
+            .map(|f| (Some(f.label), f.emission))
+            .collect::<std::vec::Vec<_>>();
+        let placed = profile.measure("layout", 0, || {
+            crate::emitter::layout(&units, TEXT_ALIGN as usize)
+        })?;
+        for (function, placed) in self.functions.iter().zip(placed) {
+            let emitted = placed.code;
+            let base_offset = self.object.add_symbol_data(
+                function.symbol,
+                self.text_section,
+                &emitted.data,
+                TEXT_ALIGN,
+            );
+            if base_offset != placed.offset as u64 {
+                return Err(Error::codegen(
+                    "object section placement disagrees with code layout",
+                ));
+            }
+            profile.record_lazy(veloc_profile::Metric::bytes("code"), || {
+                emitted.data.len() as u64
+            });
+            for relocation in emitted.relocations {
+                let (sym_name, target_symbol) = &self.relocation_symbols[&relocation.symbol];
+                self.object
+                    .add_relocation(
+                        self.text_section,
+                        Relocation {
+                            offset: base_offset + relocation.offset,
+                            symbol: *target_symbol,
+                            addend: relocation.addend,
+                            flags: RelocationFlags::Generic {
+                                kind: match relocation.kind {
+                                    crate::RelocationKind::RelativeBranch32 => {
+                                        RelocationKind::Relative
+                                    }
+                                    crate::RelocationKind::Absolute64 => RelocationKind::Absolute,
+                                },
+                                encoding: match relocation.kind {
+                                    crate::RelocationKind::RelativeBranch32 => {
+                                        RelocationEncoding::X86Branch
+                                    }
+                                    crate::RelocationKind::Absolute64 => {
+                                        RelocationEncoding::Generic
+                                    }
+                                },
+                                size: match relocation.kind {
+                                    crate::RelocationKind::RelativeBranch32 => 32,
+                                    crate::RelocationKind::Absolute64 => 64,
+                                },
+                            },
+                        },
+                    )
+                    .map_err(|err| {
+                        Error::object_file_relocation_error(
+                            function.name.clone(),
+                            sym_name.clone(),
+                            format!("{err}"),
+                        )
+                    })?;
+            }
+        }
         self.object
             .write()
             .map_err(|err| Error::object_file_write_error(format!("{err}")))

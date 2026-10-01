@@ -6,7 +6,8 @@ pub mod driver;
 mod emitter;
 pub mod error;
 pub use emitter::{
-    EmittedCode, Emitter, ExternalRelocation, RelocationKind, Target as FixupTarget,
+    CodeForm, EmittedCode, Emitter, ExternalRelocation, PatchRelative, RelocationKind,
+    Target as FixupTarget,
 };
 // Exported macros use the dependency's canonical name for hygienic paths.
 #[doc(hidden)]

@@ -60,6 +60,44 @@ pub fn patch_jump(bytes: &mut [u8], offset: i64) -> Result<(), Error> {
     Ok(())
 }
 
+/// Patch a B-format displacement, preserving the condition and registers.
+pub fn patch_branch(bytes: &mut [u8], offset: i64) -> Result<(), Error> {
+    if bytes.len() != 4 || offset % 2 != 0 || !(-4096..4096).contains(&offset) {
+        return Err(Error::Immediate);
+    }
+    let word = u32::from_le_bytes(bytes.try_into().unwrap());
+    bytes.copy_from_slice(
+        &b(
+            (word >> 12) & 7,
+            (word >> 15) & 31,
+            (word >> 20) & 31,
+            offset as i32,
+        )
+        .to_le_bytes(),
+    );
+    Ok(())
+}
+
+/// Patch a J-format displacement, preserving the link register.
+pub fn patch_jal(bytes: &mut [u8], offset: i64) -> Result<(), Error> {
+    if bytes.len() != 4 || offset % 2 != 0 || !(-1048576..1048576).contains(&offset) {
+        return Err(Error::Immediate);
+    }
+    let word = u32::from_le_bytes(bytes.try_into().unwrap());
+    bytes.copy_from_slice(&j((word >> 7) & 31, offset as i32).to_le_bytes());
+    Ok(())
+}
+
+/// An inverted condition skips either JAL or an AUIPC/JALR pair.
+pub fn patch_far_branch(bytes: &mut [u8], offset: i64) -> Result<(), Error> {
+    let offset = offset.checked_sub(4).ok_or(Error::Immediate)?;
+    match bytes.len() {
+        8 => patch_jal(&mut bytes[4..], offset),
+        12 => patch_jump(&mut bytes[4..], offset),
+        _ => Err(Error::Encoding),
+    }
+}
+
 include!(concat!(env!("OUT_DIR"), "/riscv64.rs"));
 impl Reg {
     pub fn hardware(self) -> u32 {

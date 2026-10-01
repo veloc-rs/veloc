@@ -1,10 +1,8 @@
 //! Remove blocks outside the entry's reachable CFG before instruction selection.
-use crate::analysis::{ChangeSet, PassEffect};
-use crate::error::Result;
-use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
 use cranelift_entity::SecondaryMap;
 use std::vec::Vec;
-use veloc_lir::{BlockId, MachineFunction};
+use veloc_lir::BlockId;
 
 pub struct RemoveUnreachablePass;
 
@@ -13,32 +11,23 @@ impl FunctionPass for RemoveUnreachablePass {
         "remove-unreachable"
     }
 
-    fn run(
-        &self,
-        mfunc: &mut MachineFunction,
-        ctx: &mut FunctionPassContext<'_>,
-    ) -> Result<PassEffect> {
-        let cfg = ctx.function_analyses.cfg(mfunc, ctx.target);
-        let order = cfg.compute_post_order(mfunc.entry_block());
-        if order.len() == mfunc.num_blocks() {
-            return Ok(PassEffect::NONE);
+    fn input_stage(&self) -> FunctionStage {
+        FunctionStage::Legal
+    }
+    fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
+        let entry = cx.function().entry_block();
+        let order = cx.cfg().compute_post_order(entry);
+        if order.len() == cx.function().num_blocks() {
+            return Ok(());
         }
         let mut reachable = SecondaryMap::<BlockId, bool>::new();
         for block in order {
             reachable[block] = true;
         }
-        let dead: Vec<_> = mfunc.blocks().filter(|&block| !reachable[block]).collect();
-        let mut edit = mfunc.editor();
-        // No live block enters this set. Erasing the whole set also removes
-        // internal edges (including cycles) and outgoing edge argument uses.
+        let dead: Vec<_> = cx.function().blocks().filter(|&b| !reachable[b]).collect();
         for block in dead {
-            edit.erase_block(block);
+            cx.erase_block(block);
         }
-        Ok(PassEffect::new(
-            ChangeSet::CFG
-                | ChangeSet::INST_LAYOUT
-                | ChangeSet::INST_SEMANTICS
-                | ChangeSet::INST_OPERANDS,
-        ))
+        Ok(())
     }
 }

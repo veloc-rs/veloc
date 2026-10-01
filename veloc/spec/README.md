@@ -1569,6 +1569,22 @@ families by ISA extension, while x86_64 groups them by operation family and
 optional extensions. `lower.spec` controls family import order; rule order within
 each input opcode determines matching priority.
 
+Instruction selection emits one `Program` per target. Its opcode-indexed entries
+hold bytecode offsets and per-entry scratch sizes; bytecode and constant tables
+are shared across entries. Matching graphs are still compiled independently for
+each input opcode, preserving rule priority within that opcode.
+
+Integer comparisons and constructed immediates carry signed, little-endian
+64-bit operands directly in selection bytecode. Opcode checks similarly carry
+32-bit opcode numbers. Symbolic Rust constants, such as condition codes and
+opcode variants, fill fixed-width placeholders during constant initialization;
+their values do not affect instruction sizes or branch offsets.
+
+Selection bytecode also carries operand positions directly: `ReadReg` uses an
+`OperandRef`, while attribute reads and checks use plain indices. Both use
+ULEB128 without an absence tag. A rule that reads a field fixed to `none` is
+rejected during Spec compilation, before bytecode generation.
+
 Assembly is an `op` property alongside `encoding` and `registers`:
 
 ```text

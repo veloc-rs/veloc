@@ -1,136 +1,127 @@
 pub mod compiled;
 pub mod context;
+mod function;
+mod instrumentation;
 pub mod pass;
+mod session;
 
-pub use compiled::{CompiledFunction, CompiledModule};
-pub use context::{FunctionPassContext, ModulePassContext};
-pub use pass::{FunctionPass, ModuleCodegenPass};
-
-use crate::analysis::{ChangeSet, PassEffect};
-use crate::error::Result;
-use std::boxed::Box;
-use std::vec::Vec;
+use crate::{Error, Result};
+pub use compiled::{CompiledFunction, CompiledModule, EmissionModule, EmittedFunction};
+pub(crate) use context::FunctionPassContext;
+pub use context::ModulePassContext;
+pub use function::FunctionPipeline;
+pub(crate) use instrumentation::dump_after;
+pub use pass::{FunctionPass, FunctionStage, ModuleCodegenPass};
+pub use session::{FunctionEdit, FunctionSession};
 use veloc_lir::MachineFunction;
 
-/// Shared execution for built-in and target passes.
+/// Every function pass, including target extensions, uses this execution path.
 pub(crate) fn run_function_pass(
     pass: &dyn FunctionPass,
-    position: u32,
     function: &mut MachineFunction,
     ctx: &mut FunctionPassContext<'_>,
-) -> crate::Result<PassEffect> {
-    let scope = ctx.profile.scope(pass.name(), position);
-    let result = pass
-        .run(function, ctx)
-        .map_err(|e| crate::Error::codegen(std::format!("{}: {e}", pass.name())));
+) -> Result<()> {
+    let position = ctx.next_run;
+    ctx.next_run += 1;
+    let profile = ctx.profile;
+    let name = function.name.clone();
+    let (mut result, observation) =
+        instrumentation::execute(profile, pass.name(), position, &name, || {
+            if ctx.stage != pass.input_stage() {
+                return Err(Error::codegen(format!(
+                    "requires {:?}, received {:?}",
+                    pass.input_stage(),
+                    ctx.stage
+                )));
+            }
+            pass.run(&mut FunctionSession::new(function, ctx))
+        });
     if result.is_ok() {
-        ctx.profile
-            .artifact(|| function.format_for_dump().to_string());
+        if ctx.options.verify {
+            result = profile
+                .measure("verify-pass", position, || {
+                    pass.output_stage().verify(function, ctx.target)
+                })
+                .map_err(|e| {
+                    Error::codegen(format!(
+                        "{name}/{}#{position}: invalid {:?} output: {e}",
+                        pass.name(),
+                        pass.output_stage()
+                    ))
+                });
+        }
+        if result.is_ok() {
+            ctx.stage = pass.output_stage();
+        } else if let Err(error) = &result {
+            observation.remark(|| error.to_string());
+        }
     }
-    scope.result(&result);
-    let effect = result?;
-    ctx.function_analyses.apply(effect.change_set);
+    // Keep a failed pass's partially modified IR for diagnosis. An error aborts
+    // this compilation; neither the runner nor an edit guard performs rollback.
+    observation.artifact(|| function.format_for_dump().to_string());
     dump_after(pass.name(), function, ctx.options);
-    Ok(effect)
+    result
 }
 
-pub(crate) fn dump_after(name: &str, function: &MachineFunction, options: &crate::CodegenOptions) {
-    if options.dump_after.iter().any(|p| p == "*" || p == name)
-        && options
-            .dump_function
-            .as_deref()
-            .is_none_or(|filter| filter == function.name)
-    {
-        std::eprintln!(
-            "===== LIR after {name}: {} =====\n{}",
-            function.name,
-            function.format_for_dump()
-        );
-    }
-}
-
-pub struct FunctionPassPipeline {
+pub(crate) struct PassSequence {
     passes: Vec<Box<dyn FunctionPass>>,
 }
-
-impl FunctionPassPipeline {
-    pub fn new() -> Self {
-        Self { passes: Vec::new() }
-    }
-
-    pub fn add_pass<P: FunctionPass + 'static>(&mut self, pass: P) {
-        self.passes.push(Box::new(pass));
-    }
-
-    pub fn add_boxed_pass(&mut self, pass: Box<dyn FunctionPass>) {
-        self.passes.push(pass);
-    }
-
+impl PassSequence {
     pub fn from_passes(passes: Vec<Box<dyn FunctionPass>>) -> Self {
         Self { passes }
     }
-
     pub fn run(
         &self,
-        mfunc: &mut MachineFunction,
+        function: &mut MachineFunction,
         ctx: &mut FunctionPassContext<'_>,
-    ) -> Result<PassEffect> {
-        let mut combined = PassEffect::NONE;
-        for (position, pass) in self.passes.iter().enumerate() {
-            let effect = run_function_pass(&**pass, position as u32, mfunc, ctx)?;
-            if !effect.change_set.is_empty() {
-                combined.change_set |= effect.change_set;
-            }
+    ) -> Result<()> {
+        for pass in &self.passes {
+            run_function_pass(&**pass, function, ctx)?;
         }
-        Ok(combined)
+        Ok(())
     }
 }
 
-impl Default for FunctionPassPipeline {
+fn run_module_pass<M: core::fmt::Debug>(
+    pass: &dyn ModuleCodegenPass<M>,
+    module: &mut M,
+    ctx: &mut ModulePassContext<'_>,
+) -> Result<()> {
+    let position = ctx.next_run;
+    ctx.next_run += 1;
+    let name = ctx.name.clone();
+    let (result, observation) =
+        instrumentation::execute(ctx.profile, pass.name(), position, &name, || {
+            pass.run(module, ctx)
+        });
+    observation.artifact(|| format!("{module:#?}"));
+    result
+}
+
+/// The module representation is part of the pass type, so a pre-emission pass
+/// cannot accidentally be registered in the post-emission pipeline.
+pub struct ModulePassPipeline<M> {
+    passes: Vec<Box<dyn ModuleCodegenPass<M>>>,
+}
+impl<M> Default for ModulePassPipeline<M> {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub struct ModulePassPipeline {
-    passes: Vec<Box<dyn ModuleCodegenPass>>,
-}
-
-impl ModulePassPipeline {
-    pub fn new() -> Self {
         Self { passes: Vec::new() }
     }
-
-    pub fn add_pass<P: ModuleCodegenPass + 'static>(&mut self, pass: P) {
+}
+impl<M: core::fmt::Debug> ModulePassPipeline<M> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn add_pass<P: ModuleCodegenPass<M> + 'static>(&mut self, pass: P) {
         self.passes.push(Box::new(pass));
     }
-
-    pub fn add_boxed_pass(&mut self, pass: Box<dyn ModuleCodegenPass>) {
+    pub fn add_boxed_pass(&mut self, pass: Box<dyn ModuleCodegenPass<M>>) {
         self.passes.push(pass);
     }
-
-    pub fn run(
-        &self,
-        module: &mut CompiledModule,
-        ctx: &mut ModulePassContext<'_>,
-    ) -> Result<PassEffect> {
-        let mut combined = PassEffect::new(ChangeSet::NONE);
-        for (position, pass) in self.passes.iter().enumerate() {
-            let scope = ctx.profile.scope(pass.name(), position as u32);
-            let result = pass.run(module, ctx);
-            scope.result(&result);
-            let effect = result?;
-            if !effect.change_set.is_empty() {
-                ctx.module_analyses.apply(effect.change_set);
-                combined.change_set |= effect.change_set;
-            }
+    pub fn run(&self, module: &mut M, ctx: &mut ModulePassContext<'_>) -> Result<()> {
+        for pass in &self.passes {
+            run_module_pass(&**pass, module, ctx)?;
         }
-        Ok(combined)
-    }
-}
-
-impl Default for ModulePassPipeline {
-    fn default() -> Self {
-        Self::new()
+        Ok(())
     }
 }

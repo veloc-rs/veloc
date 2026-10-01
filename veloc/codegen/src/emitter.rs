@@ -1,30 +1,18 @@
-//! Code layout and symbolic fixups. Architecture encoders only supply bytes
-//! and relative-field descriptions; they never own labels or linker symbols.
+//! Symbolic code fragments and final layout, shared by all targets.
+//!
+//! Emission records alternatives; layout chooses encodings only after block and
+//! function positions are known. Alignment is part of layout, never a guessed
+//! byte count computed by an architecture emitter.
 use crate::{Error, Result};
 use hashbrown::HashMap;
 use std::{format, vec, vec::Vec};
 use veloc_encoder::{Encoded, Fixup};
-use veloc_lir::BlockId as Block;
-use veloc_lir::SymbolId;
+use veloc_lir::{BlockId as Block, SymbolId};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Target {
     Block(Block),
     Symbol(SymbolId),
-}
-
-struct Pending {
-    start: usize,
-    field: Fixup,
-    target: Target,
-}
-struct Branch {
-    start: usize,
-    long_len: usize,
-    short: Vec<u8>,
-    short_field: Fixup,
-    long_field: Fixup,
-    target: Block,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,247 +33,347 @@ pub struct EmittedCode {
     pub relocations: Vec<ExternalRelocation>,
 }
 
-struct LocalFixup {
-    start: usize,
-    len: usize,
-    target: Block,
-    patch: fn(&mut [u8], i64) -> core::result::Result<(), veloc_encoder::Error>,
+/// A target patches only its encoding, using a displacement from its start.
+/// Out-of-range displacements must return an error, without panicking.
+pub type PatchRelative = fn(&mut [u8], i64) -> core::result::Result<(), veloc_encoder::Error>;
+
+#[derive(Debug, Clone, Copy)]
+enum Relative {
+    Field(Fixup),
+    Instruction(PatchRelative),
 }
-#[derive(Default)]
+impl Relative {
+    fn patch(self, bytes: &mut [u8], displacement: i64) -> Result<()> {
+        match self {
+            Self::Instruction(patch) => patch(bytes, displacement)
+                .map_err(|e| Error::codegen(format!("relative encoding: {e}"))),
+            Self::Field(field) => {
+                let value =
+                    i128::from(displacement) + i128::from(field.addend) - i128::from(field.base);
+                let start = usize::from(field.offset);
+                let bytes = bytes
+                    .get_mut(start..start + usize::from(field.bytes))
+                    .ok_or_else(|| Error::codegen("fixup outside instruction bytes"))?;
+                let fail =
+                    || Error::codegen(format!("relative displacement out of range: {value}"));
+                match field.bytes {
+                    1 => bytes
+                        .copy_from_slice(&i8::try_from(value).map_err(|_| fail())?.to_le_bytes()),
+                    4 => bytes
+                        .copy_from_slice(&i32::try_from(value).map_err(|_| fail())?.to_le_bytes()),
+                    _ => return Err(Error::codegen("unsupported relative field width")),
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// One encoding alternative, ordered from preferred to fallback by the target.
+#[derive(Debug, Clone)]
+pub struct CodeForm {
+    bytes: Vec<u8>,
+    relative: Option<Relative>,
+    relocations: Vec<ExternalRelocation>,
+    alignment: usize,
+    padding: Vec<u8>,
+}
+impl CodeForm {
+    pub fn bytes(bytes: &[u8]) -> Self {
+        Self {
+            bytes: bytes.to_vec(),
+            relative: None,
+            relocations: Vec::new(),
+            alignment: 1,
+            padding: Vec::new(),
+        }
+    }
+    pub fn relative(bytes: &[u8], patch: PatchRelative) -> Self {
+        Self {
+            relative: Some(Relative::Instruction(patch)),
+            ..Self::bytes(bytes)
+        }
+    }
+    pub fn relocated(bytes: &[u8], relocation: ExternalRelocation) -> Self {
+        Self {
+            relocations: vec![relocation],
+            ..Self::bytes(bytes)
+        }
+    }
+    pub fn aligned(mut self, alignment: usize, padding: &[u8]) -> Self {
+        assert!(alignment.is_power_of_two());
+        assert!(!padding.is_empty() && alignment % padding.len() == 0);
+        self.alignment = alignment;
+        self.padding = padding.to_vec();
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Fragment {
+    target: Option<Target>,
+    forms: Vec<CodeForm>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct Emitter {
-    local_fixups: Vec<LocalFixup>,
-    absolute_relocations: Vec<ExternalRelocation>,
-    data: Vec<u8>,
+    fragments: Vec<Fragment>,
+    /// Labels name fragment boundaries, independent of selected encoding sizes.
     labels: HashMap<Block, usize>,
-    fixups: Vec<Pending>,
-    branches: Vec<Branch>,
 }
+
 impl Emitter {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Provisional position, before branch relaxation.
-    pub fn position(&self) -> usize {
-        self.data.len()
+    pub(crate) fn symbols(&self) -> impl Iterator<Item = SymbolId> + '_ {
+        self.fragments
+            .iter()
+            .flat_map(|fragment| fragment.forms.iter())
+            .flat_map(|form| form.relocations.iter().map(|relocation| relocation.symbol))
     }
     pub fn mark_block(&mut self, block: Block) {
         assert!(
-            self.labels.insert(block, self.position()).is_none(),
+            self.labels.insert(block, self.fragments.len()).is_none(),
             "duplicate block label"
         );
+        // Start a new byte run so coalescing never moves an existing label.
+        self.fragments.push(Fragment {
+            target: None,
+            forms: vec![CodeForm::bytes(&[])],
+        });
     }
-    /// Fixed-size bytes used by architectures without branch relaxation.
     pub fn bytes(&mut self, bytes: &[u8]) {
-        self.data.extend_from_slice(bytes);
-    }
-    /// A target encoder patches the instruction fields; layout owns labels.
-    pub fn local_fixup(
-        &mut self,
-        target: Block,
-        bytes: &[u8],
-        patch: fn(&mut [u8], i64) -> core::result::Result<(), veloc_encoder::Error>,
-    ) {
-        self.local_fixups.push(LocalFixup {
-            start: self.position(),
-            len: bytes.len(),
-            target,
-            patch,
+        if let Some(fragment) = self.fragments.last_mut()
+            && fragment.target.is_none()
+        {
+            // Only this method and mark_block create target-free fragments.
+            fragment.forms[0].bytes.extend_from_slice(bytes);
+            return;
+        }
+        self.fragments.push(Fragment {
+            target: None,
+            forms: vec![CodeForm::bytes(bytes)],
         });
-        self.bytes(bytes);
     }
-    pub fn absolute64(&mut self, symbol: SymbolId) {
-        self.absolute_relocations.push(ExternalRelocation {
-            offset: self.position() as u64,
-            symbol,
-            addend: 0,
-            kind: RelocationKind::Absolute64,
+    /// Alternatives may grow in size or relax a distance restriction. Layout
+    /// promotes them monotonically, so alignment cannot cause oscillation.
+    pub fn alternatives(&mut self, target: Target, forms: Vec<CodeForm>) {
+        assert!(!forms.is_empty());
+        self.fragments.push(Fragment {
+            target: Some(target),
+            forms,
         });
-        self.bytes(&[0; 8]);
     }
     pub fn instruction<const N: usize>(
         &mut self,
         instruction: &Encoded<N>,
         target: Option<Target>,
     ) -> Result<()> {
+        if instruction.fixup.is_none() && target.is_none() {
+            self.bytes(instruction.bytes());
+            return Ok(());
+        }
+        let mut form = CodeForm::bytes(instruction.bytes());
         match (instruction.fixup, target) {
-            (Some(field), Some(target)) => self.fixups.push(Pending {
-                start: self.position(),
-                field,
-                target,
-            }),
-            (None, None) => {}
+            (Some(field), Some(target)) => {
+                form.relative = Some(Relative::Field(field));
+                if let Target::Symbol(symbol) = target {
+                    if field.bytes != 4 {
+                        return Err(Error::codegen(
+                            "external relocation requires a signed 32-bit field",
+                        ));
+                    }
+                    form.relocations.push(ExternalRelocation {
+                        kind: RelocationKind::RelativeBranch32,
+                        offset: u64::from(field.offset),
+                        symbol,
+                        addend: field
+                            .addend
+                            .checked_add(i64::from(field.offset) - i64::from(field.base))
+                            .ok_or_else(|| Error::codegen("relocation addend overflow"))?,
+                    });
+                }
+            }
             _ => return Err(Error::codegen("encoding and symbolic target disagree")),
         }
-        self.data.extend_from_slice(instruction.bytes());
+        self.fragments.push(Fragment {
+            target,
+            forms: vec![form],
+        });
         Ok(())
     }
+    /// Adapter for encoders exposing contiguous relative fields (currently x86).
     pub fn branch<const N: usize>(
         &mut self,
         target: Block,
         short: &Encoded<N>,
         long: &Encoded<N>,
     ) -> Result<()> {
-        let (Some(short_field), Some(long_field)) = (short.fixup, long.fixup) else {
-            return Err(Error::codegen("branch forms must have relative fixups"));
-        };
-        if short.bytes().len() >= long.bytes().len()
-            || short_field.bytes != 1
-            || long_field.bytes != 4
-        {
-            return Err(Error::codegen("invalid branch relaxation forms"));
-        }
-        self.branches.push(Branch {
-            start: self.position(),
-            long_len: long.bytes().len(),
-            short: short.bytes().to_vec(),
-            short_field,
-            long_field,
-            target,
-        });
-        self.data.extend_from_slice(long.bytes());
+        let forms = [short, long]
+            .into_iter()
+            .map(|encoding| {
+                let field = encoding
+                    .fixup
+                    .ok_or_else(|| Error::codegen("branch form needs a relative fixup"))?;
+                Ok(CodeForm {
+                    relative: Some(Relative::Field(field)),
+                    ..CodeForm::bytes(encoding.bytes())
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.alternatives(Target::Block(target), forms);
         Ok(())
     }
+    /// Standalone functions cannot bind calls to other independently placed code.
     pub fn finish(self) -> Result<EmittedCode> {
-        // Start with short branches and only widen. With fixed-size nonbranch
-        // fragments (no alignment fragments), distances grow monotonically.
-        let mut short = vec![true; self.branches.len()];
-        let positions = loop {
-            let positions = Positions::new(&self.branches, &short);
-            let mut changed = false;
-            for (index, branch) in self.branches.iter().enumerate() {
-                if !short[index] {
-                    continue;
-                }
-                let target = *self
-                    .labels
-                    .get(&branch.target)
-                    .ok_or_else(|| Error::codegen("missing branch label"))?;
-                let displacement = positions.at(target) as i128
-                    + i128::from(branch.short_field.addend)
-                    - (positions.at(branch.start) + usize::from(branch.short_field.base)) as i128;
-                if i8::try_from(displacement).is_err() {
-                    short[index] = false;
-                    changed = true;
-                }
-            }
-            if !changed {
-                break positions;
-            }
-        };
-        let mut result = EmittedCode {
-            data: Vec::with_capacity(positions.at(self.data.len())),
-            relocations: Vec::new(),
-        };
-        let mut cursor = 0;
-        for (branch, &short) in self.branches.iter().zip(&short) {
-            result
-                .data
-                .extend_from_slice(&self.data[cursor..branch.start]);
-            let start = result.data.len();
-            if short {
-                result.data.extend_from_slice(&branch.short);
-            } else {
-                result
-                    .data
-                    .extend_from_slice(&self.data[branch.start..branch.start + branch.long_len]);
-            }
-            cursor = branch.start + branch.long_len;
-            let field = if short {
-                branch.short_field
-            } else {
-                branch.long_field
-            };
-            let target = positions.at(self.labels[&branch.target]);
-            patch(&mut result.data, start, field, target)?;
-        }
-        result.data.extend_from_slice(&self.data[cursor..]);
-        for fixup in self.fixups {
-            let start = positions.at(fixup.start);
-            match fixup.target {
-                Target::Block(block) => {
-                    let target = *self
-                        .labels
-                        .get(&block)
-                        .ok_or_else(|| Error::codegen("missing fixup label"))?;
-                    patch(&mut result.data, start, fixup.field, positions.at(target))?;
-                }
-                Target::Symbol(symbol) => {
-                    if fixup.field.bytes != 4 {
-                        return Err(Error::codegen(
-                            "external relocation requires a signed 32-bit field",
-                        ));
-                    }
-                    let addend = fixup
-                        .field
-                        .addend
-                        .checked_add(i64::from(fixup.field.offset) - i64::from(fixup.field.base))
-                        .ok_or_else(|| Error::codegen("relocation addend overflow"))?;
-                    result.relocations.push(ExternalRelocation {
-                        kind: RelocationKind::RelativeBranch32,
-                        offset: (start + usize::from(fixup.field.offset)) as u64,
-                        symbol,
-                        addend,
-                    });
-                }
-            }
-        }
-        for fixup in self.local_fixups {
-            let start = positions.at(fixup.start);
-            let target = *self
-                .labels
-                .get(&fixup.target)
-                .ok_or_else(|| Error::codegen("missing local fixup label"))?;
-            let offset = positions.at(target) as i64 - start as i64;
-            (fixup.patch)(&mut result.data[start..start + fixup.len], offset)
-                .map_err(|e| Error::codegen(format!("local fixup: {e}")))?;
-        }
-        for mut relocation in self.absolute_relocations {
-            relocation.offset = positions.at(relocation.offset as usize) as u64;
-            result.relocations.push(relocation);
-        }
-        Ok(result)
+        Ok(layout(&[(None, &self)], 1)?.remove(0).code)
     }
 }
 
-// Prefix savings map provisional positions to final positions in O(log B).
+pub(crate) struct PlacedCode {
+    pub offset: usize,
+    pub code: EmittedCode,
+}
 struct Positions {
-    ends: Vec<usize>,
-    savings: Vec<usize>,
+    base: usize,
+    starts: Vec<usize>,
+    end: usize,
 }
-impl Positions {
-    fn new(branches: &[Branch], short: &[bool]) -> Self {
-        let mut ends = Vec::with_capacity(branches.len());
-        let mut savings = Vec::with_capacity(branches.len() + 1);
-        savings.push(0);
-        for (b, short) in branches.iter().zip(short) {
-            ends.push(b.start + b.long_len);
-            savings.push(
-                savings.last().copied().unwrap()
-                    + if *short {
-                        b.long_len - b.short.len()
-                    } else {
-                        0
-                    },
-            );
+fn align(position: usize, alignment: usize) -> Result<usize> {
+    position
+        .checked_add(alignment - 1)
+        .map(|p| p & !(alignment - 1))
+        .ok_or_else(|| Error::codegen("code layout overflow"))
+}
+
+/// Final section layout. Symbols in these units bind within this section;
+/// unresolved symbols retain relocations. No byte-changing pass may follow it.
+pub(crate) fn layout(
+    units: &[(Option<SymbolId>, &Emitter)],
+    alignment: usize,
+) -> Result<Vec<PlacedCode>> {
+    assert!(alignment.is_power_of_two());
+    let mut choices: Vec<Vec<usize>> = units
+        .iter()
+        .map(|(_, e)| vec![0; e.fragments.len()])
+        .collect();
+    let (positions, symbols) = loop {
+        let mut cursor = 0usize;
+        let mut positions = Vec::with_capacity(units.len());
+        let mut symbols = HashMap::new();
+        for ((symbol, emitter), choices) in units.iter().zip(&choices) {
+            cursor = align(cursor, alignment)?;
+            let base = cursor;
+            if let Some(symbol) = symbol {
+                if symbols.insert(*symbol, base).is_some() {
+                    return Err(Error::codegen("duplicate code symbol"));
+                }
+            }
+            let mut starts = Vec::with_capacity(emitter.fragments.len() + 1);
+            for (fragment, &choice) in emitter.fragments.iter().zip(choices) {
+                let form = &fragment.forms[choice];
+                cursor = align(cursor, form.alignment)?;
+                starts.push(cursor);
+                cursor = cursor
+                    .checked_add(form.bytes.len())
+                    .ok_or_else(|| Error::codegen("code layout overflow"))?;
+            }
+            starts.push(cursor);
+            positions.push(Positions {
+                base,
+                starts,
+                end: cursor,
+            });
         }
-        Self { ends, savings }
-    }
-    fn at(&self, position: usize) -> usize {
-        position - self.savings[self.ends.partition_point(|end| *end <= position)]
-    }
+        let mut changed = false;
+        for (unit, ((_, emitter), choices)) in units.iter().zip(&mut choices).enumerate() {
+            for (index, (fragment, choice)) in emitter.fragments.iter().zip(choices).enumerate() {
+                let form = &fragment.forms[*choice];
+                let target = resolve(fragment.target, emitter, &positions[unit], &symbols)?;
+                let valid = match (form.relative, target) {
+                    (Some(relative), Some(target)) => {
+                        let displacement = displacement(positions[unit].starts[index], target)?;
+                        relative
+                            .patch(&mut form.bytes.clone(), displacement)
+                            .is_ok()
+                    }
+                    (Some(_), None) => !form.relocations.is_empty(),
+                    (None, _) => true,
+                };
+                if !valid {
+                    if *choice + 1 == fragment.forms.len() {
+                        return Err(Error::codegen("no valid encoding for symbolic target"));
+                    }
+                    *choice += 1;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break (positions, symbols);
+        }
+    };
+    units
+        .iter()
+        .zip(choices)
+        .zip(positions)
+        .map(|(((_, emitter), choices), positions)| {
+            let mut code = EmittedCode {
+                data: Vec::with_capacity(positions.end - positions.base),
+                relocations: Vec::new(),
+            };
+            for (index, (fragment, choice)) in emitter.fragments.iter().zip(choices).enumerate() {
+                let form = &fragment.forms[choice];
+                let start = positions.starts[index];
+                let padding = start - positions.base - code.data.len();
+                if padding != 0 {
+                    if form.padding.is_empty() || padding % form.padding.len() != 0 {
+                        return Err(Error::codegen(
+                            "alignment cannot be filled with target padding",
+                        ));
+                    }
+                    for _ in 0..padding / form.padding.len() {
+                        code.data.extend_from_slice(&form.padding);
+                    }
+                }
+                let offset = code.data.len();
+                code.data.extend_from_slice(&form.bytes);
+                let target = resolve(fragment.target, emitter, &positions, &symbols)?;
+                if let (Some(relative), Some(target)) = (form.relative, target) {
+                    relative.patch(&mut code.data[offset..], displacement(start, target)?)?;
+                } else {
+                    for relocation in &form.relocations {
+                        let mut relocation = relocation.clone();
+                        relocation.offset += offset as u64;
+                        code.relocations.push(relocation);
+                    }
+                }
+            }
+            Ok(PlacedCode {
+                offset: positions.base,
+                code,
+            })
+        })
+        .collect()
 }
-fn patch(data: &mut [u8], start: usize, field: Fixup, target: usize) -> Result<()> {
-    let value =
-        target as i128 + i128::from(field.addend) - (start + usize::from(field.base)) as i128;
-    let offset = start + usize::from(field.offset);
-    let fail = || Error::codegen(format!("relative displacement out of range: {value}"));
-    let bytes = data
-        .get_mut(offset..offset + usize::from(field.bytes))
-        .ok_or_else(|| Error::codegen("fixup outside instruction bytes"))?;
-    match field.bytes {
-        1 => bytes.copy_from_slice(&i8::try_from(value).map_err(|_| fail())?.to_le_bytes()),
-        4 => bytes.copy_from_slice(&i32::try_from(value).map_err(|_| fail())?.to_le_bytes()),
-        _ => return Err(Error::codegen("unsupported relative field width")),
+fn displacement(start: usize, target: usize) -> Result<i64> {
+    i64::try_from(target as i128 - start as i128)
+        .map_err(|_| Error::codegen("code displacement overflow"))
+}
+fn resolve(
+    target: Option<Target>,
+    emitter: &Emitter,
+    positions: &Positions,
+    symbols: &HashMap<SymbolId, usize>,
+) -> Result<Option<usize>> {
+    match target {
+        Some(Target::Block(block)) => emitter
+            .labels
+            .get(&block)
+            .map(|&index| Some(positions.starts[index]))
+            .ok_or_else(|| Error::codegen("missing block label")),
+        Some(Target::Symbol(symbol)) => Ok(symbols.get(&symbol).copied()),
+        None => Ok(None),
     }
-    Ok(())
 }
