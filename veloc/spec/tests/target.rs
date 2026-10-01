@@ -14,7 +14,7 @@ fn production_target_contracts_generate_all_consumers() {
                     target: Some(veloc_spec::Target {
                         input: Some(("lir", &lir)),
                         arch: "x86_64",
-                        context: "crate::target::x86_64::lowering::X86LoweringContext",
+                        context: None,
                     }),
                     ..Default::default()
                 },
@@ -136,7 +136,7 @@ fn riscv_selection_generates_immediate_guards_and_extension_fallbacks() {
                 target: Some(veloc_spec::Target {
                     input: Some(("lir", &lir)),
                     arch: "riscv64",
-                    context: "crate::target::riscv64::SelectionContext",
+                    context: None,
                 }),
                 ..Default::default()
             },

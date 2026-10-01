@@ -215,12 +215,6 @@ impl TargetPassConfig for Passes {
         )]
     }
 }
-impl SelectionContext for inst::FeatureSet {}
-impl crate::isel::SelectHooks for inst::FeatureSet {
-    fn predicate(&self, id: u32, reg: Reg) -> bool {
-        inst::selection_predicate(self, id, reg)
-    }
-}
 impl TargetMachine for Riscv64TargetMachine {
     fn config(&self) -> &TargetConfig {
         &self.config
@@ -231,12 +225,12 @@ impl TargetMachine for Riscv64TargetMachine {
             features: crate::target::FeatureSetRef::new(self.features.as_words()),
         }
     }
-    fn selector(&self) -> crate::isel::SelectPolicy<'_> {
-        crate::isel::SelectPolicy {
+    fn selector(&self) -> crate::passes::isel::SelectPolicy<'_> {
+        crate::passes::isel::SelectPolicy {
             program: &inst::SELECTION_PROGRAM,
             features: crate::target::FeatureSetRef::new(self.features.as_words()),
             metadata,
-            predicate: &self.features,
+            predicate: None,
         }
     }
 
@@ -325,5 +319,3 @@ mod tests {
         );
     }
 }
-
-pub trait SelectionContext {}

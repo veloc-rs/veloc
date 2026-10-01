@@ -16,11 +16,8 @@ pub struct SelectPolicy<'a> {
     pub program: &'static Program,
     pub features: FeatureSetRef<'a>,
     pub metadata: fn(u32) -> &'static crate::target::TargetInstMetadata,
-    pub predicate: &'a dyn SelectHooks,
-}
-
-pub trait SelectHooks: Send + Sync {
-    fn predicate(&self, id: u32, reg: Reg) -> bool;
+    /// Optional host extension for programs containing CallPredicate.
+    pub predicate: Option<&'a (dyn Fn(u32, Reg) -> bool + Send + Sync)>,
 }
 
 fn format_select_failure_inst(mfunc: &MachineFunction, inst_id: InstId) -> std::string::String {
@@ -114,7 +111,7 @@ impl<'a> InstructionSelector<'a> {
             program,
             entry,
             self.target.features,
-            &|id, reg| self.target.predicate.predicate(id, reg),
+            self.target.predicate,
             &mut insert,
             inst_id,
             &mut scratch.selected,

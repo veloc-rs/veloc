@@ -243,12 +243,12 @@ impl TargetMachine for X86_64TargetMachine {
         legalize::policy(&self.features)
     }
 
-    fn selector(&self) -> crate::isel::SelectPolicy<'_> {
-        crate::isel::SelectPolicy {
+    fn selector(&self) -> crate::passes::isel::SelectPolicy<'_> {
+        crate::passes::isel::SelectPolicy {
             program: &inst::SELECTION_PROGRAM,
             features: crate::target::FeatureSetRef::new(self.features.as_words()),
             metadata: |op| inst::target_inst_metadata(inst::TargetInst::from_u32(op)),
-            predicate: &self.features,
+            predicate: None,
         }
     }
 

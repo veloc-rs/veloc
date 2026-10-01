@@ -73,7 +73,7 @@ pub(super) fn execute(
     program: &Program,
     entry: Entry,
     features: FeatureSetRef<'_>,
-    predicate: &dyn Fn(u32, Reg) -> bool,
+    predicate: Option<&(dyn Fn(u32, Reg) -> bool + Send + Sync)>,
     store: &mut InstInserter<'_>,
     source: InstId,
     out: &mut Vec<InstId>,
@@ -185,6 +185,7 @@ pub(super) fn execute(
             }
             Op::CallPredicate { value, id, failure } => {
                 assert!(!accepted);
+                let predicate = predicate.expect("selection program requires host predicates");
                 if !(values[value].is_some_and(|reg| predicate(id as u32, reg))) {
                     reader.pc = failure;
                 }

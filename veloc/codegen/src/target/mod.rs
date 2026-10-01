@@ -136,7 +136,7 @@ pub trait TargetMachine: TargetRegalloc + TargetSchedule {
     fn legalizer(&self) -> crate::passes::lowering::legalize::LegalizePolicy<'_>;
 
     /// Immutable selection rules and explicit host extensions.
-    fn selector(&self) -> crate::isel::SelectPolicy<'_>;
+    fn selector(&self) -> crate::passes::isel::SelectPolicy<'_>;
 
     /// 获取 post-isel 组件。
     fn post_isel(&self) -> &dyn TargetPostIsel;

@@ -20,7 +20,6 @@ pub mod target;
 pub mod translate;
 
 pub mod analysis;
-pub mod isel;
 pub mod verify;
 
 pub use backend::Backend;

@@ -143,8 +143,8 @@ pub struct Target<'a> {
     /// Logical input dialect and its operation definitions for selection.
     pub input: Option<(&'a str, &'a Source)>,
     pub arch: &'a str,
-    /// Runtime trait implementing the declared selector predicates.
-    pub context: &'a str,
+    /// Runtime trait for custom selector predicates; unnecessary without extractors.
+    pub context: Option<&'a str>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -251,7 +251,7 @@ impl Source {
                 kind if kind.target() => {
                     if target.is_none() {
                         let config = options.target.as_ref().ok_or_else(|| {
-                            fail("target output requires architecture and selector context")
+                            fail("target output requires architecture")
                         })?;
                         target = Some(crate::target::Plan::prepare(
                             self,

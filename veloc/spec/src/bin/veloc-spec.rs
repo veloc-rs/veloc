@@ -140,7 +140,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .transpose()?,
             arch,
-            context: required(args.context.as_deref(), "context")?,
+            context: args.context.as_deref(),
         })
     } else {
         None

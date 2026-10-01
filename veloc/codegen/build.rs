@@ -53,7 +53,7 @@ impl Generator {
         );
     }
 
-    fn machine(&mut self, arch: &str, lir: &Source, context: &str, host: &str) {
+    fn machine(&mut self, arch: &str, lir: &Source, host: &str) {
         let source = load(format!("defs/{arch}/module.spec"));
         self.emit(
             &source,
@@ -62,7 +62,7 @@ impl Generator {
                 target: Some(Target {
                     input: Some(("lir", lir)),
                     arch,
-                    context,
+                    context: None,
                 }),
                 ..Default::default()
             },
@@ -94,13 +94,11 @@ fn main() {
     generator.machine(
         "x86_64",
         &lir,
-        "crate::target::x86_64::lowering::X86LoweringContext",
         "crate::target::x86_64::emitter::host",
     );
     generator.machine(
         "riscv64",
         &lir,
-        "crate::target::riscv64::SelectionContext",
         "crate::target::riscv64::emitter::host",
     );
     veloc_spec::format_rust(&generator.files, Path::new("../../rustfmt.toml"))

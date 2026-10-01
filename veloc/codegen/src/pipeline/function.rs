@@ -1,8 +1,10 @@
 //! Complete function compilation, including ownership-changing transitions.
 use super::{FunctionPassContext, FunctionStage, PassSequence, run_function_pass};
 use crate::analysis::FunctionAnalysisCtx;
-use crate::isel::InstructionSelectionPass;
-use crate::passes::{FrameFinalizePass, LegalizePass, PostIselOptimizePass, RemoveUnreachablePass};
+use crate::passes::{
+    FrameFinalizePass, InstructionSelectionPass, LegalizePass, PostIselOptimizePass,
+    RemoveUnreachablePass,
+};
 use crate::target::TargetMachine;
 use crate::{CodegenOptions, Error, Result};
 use veloc_lir::MachineFunction;

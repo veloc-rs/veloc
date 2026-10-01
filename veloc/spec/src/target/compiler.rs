@@ -50,7 +50,7 @@ pub(crate) struct Plan {
     extractors: HashMap<String, ExtractorDef>,
     instructions: HashMap<String, FinalInstDef>,
     arch: String,
-    context: String,
+    context: Option<String>,
     cpu: cpu::Plan,
     input_layouts: std::collections::BTreeMap<String, crate::storage::operands::Projection>,
 }
@@ -58,7 +58,7 @@ impl Plan {
     pub(crate) fn prepare(
         source: &crate::Source,
         arch: &str,
-        context: &str,
+        context: Option<&str>,
         input_definitions: Option<(&str, &crate::Source)>,
     ) -> Result<Self, crate::SourceError> {
         let error = |message: String| source.locate(crate::Error::at(source.text(), 0, message));
@@ -67,7 +67,10 @@ impl Plan {
                 "architecture must be a Rust module identifier".into(),
             ));
         }
-        crate::interfaces::rust_path(source.text(), 0, context).map_err(|e| source.locate(e))?;
+        if let Some(context) = context {
+            crate::interfaces::rust_path(source.text(), 0, context)
+                .map_err(|e| source.locate(e))?;
+        }
         source.check_imports()?;
         let contracts = source.contracts()?;
         let mut module = parser::declarations(source.text(), source.declarations())
@@ -106,6 +109,11 @@ impl Plan {
         }
         let extractors = collect_extractors(&module).map_err(&error)?;
         select::check_predicates(&module).map_err(&error)?;
+        if !extractors.is_empty() && context.is_none() {
+            return Err(error(
+                "custom selector predicates require a context trait".into(),
+            ));
+        }
         let types = crate::types::Types::compile(source.declarations(), source.text())
             .map_err(|e| source.locate(e))?;
         let mut final_inst_defs = contracts::compile(contracts, &module, &types).map_err(&error)?;
@@ -146,7 +154,7 @@ impl Plan {
             extractors,
             instructions: final_inst_defs,
             arch: arch.into(),
-            context: context.into(),
+            context: context.map(str::to_owned),
             cpu,
             input_layouts,
         })
@@ -166,7 +174,7 @@ impl Plan {
                 extractors,
                 final_inst_defs,
                 arch,
-                &self.context,
+                self.context.as_deref(),
                 &self.input_layouts,
             ),
             crate::Emit::Target => {}
@@ -197,7 +205,7 @@ impl Plan {
             &extractors,
             &final_inst_defs,
             arch,
-            &self.context,
+            self.context.as_deref(),
             &self.input_layouts,
         );
 

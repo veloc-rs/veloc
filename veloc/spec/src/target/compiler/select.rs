@@ -404,7 +404,7 @@ pub(crate) fn generate_select_instruction(
     extractors: &HashMap<String, ExtractorDef>,
     final_inst_defs: &HashMap<String, FinalInstDef>,
     _arch: &str,
-    context: &str,
+    context: Option<&str>,
     layouts: &BTreeMap<String, crate::storage::operands::Projection>,
 ) {
     let regs = collect_reg_ids(module);

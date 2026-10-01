@@ -1543,9 +1543,12 @@ cargo run -p veloc-spec --features cli -- veloc/mir/defs/module.spec \
   --emit opcodes,builders --out-dir /tmp/mir-generated
 
 cargo run -p veloc-spec --features cli -- veloc/codegen/defs/x86_64/module.spec \
-  --emit target --arch x86_64 --context crate::target::x86_64::lowering::X86LoweringContext \
+  --emit target --arch x86_64 \
   --source-definitions veloc/lir/defs/module.spec --source-dialect lir -o /tmp/machine.rs
 ```
+
+Target generation requires `--context` only when custom selector extractors are declared.
+Targets without custom predicates emit no predicate dispatcher.
 
 `--emit` accepts a comma-separated list or repeated options. `-o -` writes
 one artifact to stdout; `--out-dir` writes standard artifact filenames.

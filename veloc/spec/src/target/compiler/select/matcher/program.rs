@@ -203,13 +203,17 @@ impl<'a> Adapters<'a> {
     pub(in super::super) fn emit(
         &self,
         out: &mut String,
-        context: &str,
+        context: Option<&str>,
         extractors: &HashMap<String, ExtractorDef>,
         decls: &HashMap<String, DeclDef>,
     ) {
         for builder in self.builders.values() {
             out.push_str(builder);
         }
+        if self.predicates.is_empty() {
+            return;
+        }
+        let context = context.expect("custom predicates have a checked context");
         writeln!(out, "pub fn selection_predicate<C: {context}>(_ctx: &C, id: u32, reg: Reg) -> bool {{ let Some(_v) = reg.as_vreg() else {{ return false }}; match id {{").unwrap();
         for (id, name) in self.predicates.iter().enumerate() {
             let condition = generate_pattern_condition(&extractors[name].body, "_v", decls)
@@ -613,7 +617,7 @@ impl Code {
                 writeln!(out, "code[{}] = bytes[{byte}];", offset + byte).unwrap();
             }
         }
-        writeln!(out, "code }};\npub static SELECTION_PROGRAM: crate::isel::matching::Program = crate::isel::matching::Program {{ code: SELECTION_CODE,").unwrap();
+        writeln!(out, "code }};\npub static SELECTION_PROGRAM: crate::passes::isel::matching::Program = crate::passes::isel::matching::Program {{ code: SELECTION_CODE,").unwrap();
         writeln!(
             out,
             "entries: {{ let mut entries = [None; veloc_lir::GenericOpcode::COUNT];"
@@ -621,7 +625,7 @@ impl Code {
         .unwrap();
         for entry in entries {
             writeln!(out,
-                "entries[veloc_lir::GenericOpcode::{} as usize] = Some(crate::isel::matching::Entry {{ offset: {}, insts: {}, values: {}, fields: {} }});",
+                "entries[veloc_lir::GenericOpcode::{} as usize] = Some(crate::passes::isel::matching::Entry {{ offset: {}, insts: {}, values: {}, fields: {} }});",
                 entry.opcode, encoded.labels[entry.label], entry.insts, entry.values, entry.fields).unwrap();
         }
         writeln!(out, "entries }},").unwrap();

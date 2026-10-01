@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 use veloc_codegen::analysis::FunctionAnalysisCtx;
-use veloc_codegen::isel::InstructionSelector;
+use veloc_codegen::passes::isel::InstructionSelector;
 use veloc_codegen::{CodegenOptions, CodegenPipeline, TargetConfig, create_target_machine};
 use veloc_lir::{InstBuild, MachineFunction, MachineOpcode, Type};
 
