@@ -1,16 +1,17 @@
 import "../common.spec";
 
-expand Binary(RvRol32, GprValue, GPR, 59, 1, 48, "rolw", "Zbb");
+expand Binary(RvRol32, GprValue, GPR, 59, 1, 48, "rolw", "Zbb", "IntAlu");
 
-expand Binary(RvRor32, GprValue, GPR, 59, 5, 48, "rorw", "Zbb");
+expand Binary(RvRor32, GprValue, GPR, 59, 5, 48, "rorw", "Zbb", "IntAlu");
 
-expand Binary(RvRol64, GprValue, GPR, 51, 1, 48, "rol", "Zbb");
+expand Binary(RvRol64, GprValue, GPR, 51, 1, 48, "rol", "Zbb", "IntAlu");
 
-expand Binary(RvRor64, GprValue, GPR, 51, 5, 48, "ror", "Zbb");
+expand Binary(RvRor64, GprValue, GPR, 51, 5, 48, "ror", "Zbb", "IntAlu");
 
 op RvSext8Zbb(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,1540)]);
     registers = { dst: GPR, src: GPR };
+    schedule = "IntAlu";
     requires = ["Zbb"];
     assembly = {
         lines: [{ mnemonic: "sext.b", operands: [reg(dst,64),reg(src,64)] }]
@@ -20,6 +21,7 @@ op RvSext8Zbb(src: Value<GprValue>) -> (dst: Value<GprValue>) {
 op RvSext16Zbb(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,1541)]);
     registers = { dst: GPR, src: GPR };
+    schedule = "IntAlu";
     requires = ["Zbb"];
     assembly = {
         lines: [{ mnemonic: "sext.h", operands: [reg(dst,64),reg(src,64)] }]
@@ -29,6 +31,7 @@ op RvSext16Zbb(src: Value<GprValue>) -> (dst: Value<GprValue>) {
 op RvZext16Zbb(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(59,dst,4,src,Reg::X0,4)]);
     registers = { dst: GPR, src: GPR };
+    schedule = "IntAlu";
     requires = ["Zbb"];
     assembly = {
         lines: [{ mnemonic: "zext.h", operands: [reg(dst,64),reg(src,64)] }]

@@ -21,11 +21,12 @@ typeset GprValue = Type::BOOL | ScalarInteger | Type::PTR;
 typeset ScalarValue = GprValue | ScalarFloat;
 
 // All arithmetic families describe actual encoding fields here.
-template Binary(Name: ident, Domain: expr, Class: ident, Major: expr, F3: expr, F7: expr, Mnemonic: expr, Extension: expr) {
+template Binary(Name: ident, Domain: expr, Class: ident, Major: expr, F3: expr, F7: expr, Mnemonic: expr, Extension: expr, Scheduling: expr) {
     op Name(lhs: Value<Domain>, rhs: Value<Domain>) -> (dst: Value<Domain>) {
         encoding = Emission::instructions([Instruction::R(Major,dst,F3,lhs,rhs,F7)]);
         registers = { dst: Class, lhs: Class, rhs: Class };
         requires = [Extension];
+        schedule = Scheduling;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst,64),reg(lhs,64),reg(rhs,64)] }]
         };

@@ -14,7 +14,7 @@ template GprBinary(Opcode: ident, Byte: expr, Wide: expr, Mnemonic: expr, Bits: 
         implicit = {
             clobbers: [EFLAGS],
         };
-        schedule = { latency: 1 };
+        schedule = "IntAlu";
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src2, Bits)] }]
         };
@@ -49,7 +49,7 @@ template GprBinaryImm(Opcode: ident, Wide: expr, Extension: expr, Imm: ident, Mn
         implicit = {
             clobbers: [EFLAGS],
         };
-        schedule = { latency: 1 };
+        schedule = "IntAlu";
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), imm(imm)] }]
         };
@@ -85,7 +85,7 @@ template GprMultiply(Opcode: ident, Wide: expr, Mnemonic: expr, Bits: expr) {
         implicit = {
             clobbers: [EFLAGS],
         };
-        schedule = { latency: 3 };
+        schedule = "IntMul";
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src2, Bits)] }]
         };

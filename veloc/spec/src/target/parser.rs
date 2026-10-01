@@ -15,6 +15,79 @@ struct Reader<'a> {
     bindings: crate::interfaces::Bindings,
 }
 impl Reader<'_> {
+    fn cpu_schedule(&self, node: &Node) -> Result<CpuSchedule, Error> {
+        let positive = |n: &Node| {
+            u32::try_from(self.number(n)?)
+                .ok()
+                .filter(|&v| v > 0)
+                .ok_or_else(|| self.error(n, "scheduling costs must be positive u32 values"))
+        };
+        let mut result = CpuSchedule::default();
+        for (field, value) in self.record(node)? {
+            match field.as_str() {
+                "issue_width" => result.issue_width = positive(value)?,
+                "resources" | "classes" => {
+                    let resource = field == "resources";
+                    let allowed: &[&str] = if resource {
+                        &["name", "units"]
+                    } else {
+                        &["name", "resource", "latency", "occupancy"]
+                    };
+                    let mut names = BTreeSet::new();
+                    for entry in self.list(value)? {
+                        let fields = self.record(entry)?;
+                        for key in fields.keys() {
+                            if !allowed.contains(&key.as_str()) {
+                                return Err(self.error(
+                                    entry,
+                                    &format!("unknown scheduling {field} field {key}"),
+                                ));
+                            }
+                        }
+                        let required = |key| {
+                            fields.get(key).ok_or_else(|| {
+                                self.error(
+                                    entry,
+                                    &format!("missing scheduling {field} field {key}"),
+                                )
+                            })
+                        };
+                        let name = self.name(required("name")?)?;
+                        if !names.insert(name.clone()) {
+                            return Err(self.error(
+                                entry,
+                                &format!("duplicate scheduling {field} name {name}"),
+                            ));
+                        }
+                        if resource {
+                            result.resources.push(ScheduleResource {
+                                name,
+                                units: positive(required("units")?)?,
+                            });
+                        } else {
+                            result.classes.push(ScheduleClass {
+                                name,
+                                resource: self.name(required("resource")?)?,
+                                latency: positive(required("latency")?)?,
+                                occupancy: positive(required("occupancy")?)?,
+                            });
+                        }
+                    }
+                }
+                _ => return Err(self.error(value, "unknown CPU scheduling field")),
+            }
+        }
+        for class in &result.classes {
+            if !result.resources.iter().any(|r| r.name == class.resource) {
+                return Err(self.error(
+                    node,
+                    &format!("unknown scheduling resource {}", class.resource),
+                ));
+            }
+        }
+        Ok(result)
+    }
+
     fn error(&self, node: &Node, message: &str) -> Error {
         Error::at(self.source, node.offset, message)
     }
@@ -295,7 +368,7 @@ impl Reader<'_> {
                 })
             }
             "cpu" => {
-                self.fields(d, &["name", "features"])?;
+                self.fields(d, &["name", "features", "schedule"])?;
                 Def::Cpu(CpuDef {
                     name: d
                         .fields
@@ -304,6 +377,12 @@ impl Reader<'_> {
                         .transpose()?
                         .unwrap_or_else(|| d.name.clone()),
                     features: self.names(self.required(d, "features")?)?,
+                    schedule: d
+                        .fields
+                        .get("schedule")
+                        .map(|n| self.cpu_schedule(n))
+                        .transpose()?
+                        .unwrap_or_default(),
                 })
             }
             "abi" => {

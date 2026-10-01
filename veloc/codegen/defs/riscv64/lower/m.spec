@@ -1,24 +1,24 @@
 import "../common.spec";
 
-expand Binary(RvMul32, GprValue, GPR, 59, 0, 1, "mulw", "M");
+expand Binary(RvMul32, GprValue, GPR, 59, 0, 1, "mulw", "M", "IntMul32");
 
-expand Binary(RvMul64, GprValue, GPR, 51, 0, 1, "mul", "M");
+expand Binary(RvMul64, GprValue, GPR, 51, 0, 1, "mul", "M", "IntMul64");
 
-expand Binary(RvSdiv32, GprValue, GPR, 59, 4, 1, "divw", "M");
+expand Binary(RvSdiv32, GprValue, GPR, 59, 4, 1, "divw", "M", "IntDiv32");
 
-expand Binary(RvSdiv64, GprValue, GPR, 51, 4, 1, "div", "M");
+expand Binary(RvSdiv64, GprValue, GPR, 51, 4, 1, "div", "M", "IntDiv64");
 
-expand Binary(RvUdiv32, GprValue, GPR, 59, 5, 1, "divuw", "M");
+expand Binary(RvUdiv32, GprValue, GPR, 59, 5, 1, "divuw", "M", "IntDiv32");
 
-expand Binary(RvUdiv64, GprValue, GPR, 51, 5, 1, "divu", "M");
+expand Binary(RvUdiv64, GprValue, GPR, 51, 5, 1, "divu", "M", "IntDiv64");
 
-expand Binary(RvSrem32, GprValue, GPR, 59, 6, 1, "remw", "M");
+expand Binary(RvSrem32, GprValue, GPR, 59, 6, 1, "remw", "M", "IntDiv32");
 
-expand Binary(RvSrem64, GprValue, GPR, 51, 6, 1, "rem", "M");
+expand Binary(RvSrem64, GprValue, GPR, 51, 6, 1, "rem", "M", "IntDiv64");
 
-expand Binary(RvUrem32, GprValue, GPR, 59, 7, 1, "remuw", "M");
+expand Binary(RvUrem32, GprValue, GPR, 59, 7, 1, "remuw", "M", "IntDiv32");
 
-expand Binary(RvUrem64, GprValue, GPR, 51, 7, 1, "remu", "M");
+expand Binary(RvUrem64, GprValue, GPR, 51, 7, 1, "remu", "M", "IntDiv64");
 
 select(n: lir::Mul) {
     choose {

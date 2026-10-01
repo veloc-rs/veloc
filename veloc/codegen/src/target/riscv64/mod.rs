@@ -42,6 +42,7 @@ pub struct Riscv64TargetMachine {
     config: TargetConfig,
     desc: TargetDescription,
     features: inst::FeatureSet,
+    schedule: ScheduleModel,
 }
 impl Riscv64TargetMachine {
     pub fn new(config: TargetConfig) -> crate::Result<Self> {
@@ -68,6 +69,7 @@ impl Riscv64TargetMachine {
         Ok(Self {
             config,
             features,
+            schedule: cpu.schedule,
             desc: TargetDescription {
                 arch: TargetArch::Riscv64,
                 data_layout: DATA_LAYOUT,
@@ -102,7 +104,11 @@ impl TargetInfo for Riscv64TargetMachine {
         &self.desc
     }
 }
-impl TargetSchedule for Riscv64TargetMachine {}
+impl TargetSchedule for Riscv64TargetMachine {
+    fn schedule_model(&self) -> &ScheduleModel {
+        &self.schedule
+    }
+}
 impl TargetInstructions for Riscv64TargetMachine {
     fn instruction_metadata(&self, op: u32) -> &'static TargetInstMetadata {
         metadata(op)

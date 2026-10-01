@@ -45,7 +45,7 @@ template IntToFloat(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: exp
             dst: FPR128,
             src: GPR64,
         };
-        schedule = { latency: 4 };
+        schedule = "IntToFloat";
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 128), reg(src, Bits)] }]
         };
@@ -71,7 +71,7 @@ template FloatToInt(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: exp
             dst: GPR64,
             src: FPR128,
         };
-        schedule = { latency: 4 };
+        schedule = "FloatToInt";
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src, 128)] }]
         };
@@ -86,7 +86,7 @@ expand FloatToInt(X86F64ToI32, Prefix::F2, false, Type::F64, Type::I32, "cvttsd2
 
 expand FloatToInt(X86F64ToI64, Prefix::F2, true, Type::F64, Type::I64, "cvttsd2si", 64);
 
-template FloatUnary(Opcode: ident, Prefix: expr, Byte: expr, Src: expr, Dst: expr, Mnemonic: expr) {
+template FloatUnary(Opcode: ident, Prefix: expr, Byte: expr, Src: expr, Dst: expr, Mnemonic: expr, Scheduling: expr) {
     op Opcode(src: Value<Src>) -> (dst: Value<Dst>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: Byte, wide: false },
@@ -97,20 +97,20 @@ template FloatUnary(Opcode: ident, Prefix: expr, Byte: expr, Src: expr, Dst: exp
             dst: FPR128,
             src: FPR128,
         };
-        schedule = { latency: 4 };
+        schedule = Scheduling;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 128), reg(src, 128)] }]
         };
     }
 }
 
-expand FloatUnary(X86F32ToF64, Prefix::F3, 0x5A, Type::F32, Type::F64, "cvtss2sd");
+expand FloatUnary(X86F32ToF64, Prefix::F3, 0x5A, Type::F32, Type::F64, "cvtss2sd", "FloatConvert");
 
-expand FloatUnary(X86F64ToF32, Prefix::F2, 0x5A, Type::F64, Type::F32, "cvtsd2ss");
+expand FloatUnary(X86F64ToF32, Prefix::F2, 0x5A, Type::F64, Type::F32, "cvtsd2ss", "FloatConvert");
 
-expand FloatUnary(X86SqrtF32, Prefix::F3, 0x51, Type::F32, Type::F32, "sqrtss");
+expand FloatUnary(X86SqrtF32, Prefix::F3, 0x51, Type::F32, Type::F32, "sqrtss", "FloatSqrt");
 
-expand FloatUnary(X86SqrtF64, Prefix::F2, 0x51, Type::F64, Type::F64, "sqrtsd");
+expand FloatUnary(X86SqrtF64, Prefix::F2, 0x51, Type::F64, Type::F64, "sqrtsd", "FloatSqrt");
 
 select(n: lir::Fadd) {
     choose {

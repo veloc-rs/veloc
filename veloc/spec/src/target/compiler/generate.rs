@@ -195,9 +195,10 @@ pub(crate) fn generate_target_inst_metadata(
             "TARGET_INST_{}_METADATA",
             sanitize_ident(name).to_ascii_uppercase()
         );
-        let schedule = match inst_def.schedule_latency {
-            Some(latency) => format!(
-                "Some(crate::target::ScheduleInfo {{ latency: {latency}, writes_flags: {} }})",
+        let schedule = match &inst_def.schedule_class {
+            Some(class) => format!(
+                "Some(crate::target::ScheduleInfo {{ class: {:?}, writes_flags: {} }})",
+                class,
                 inst_def.clobbers.iter().any(|r| r == "EFLAGS")
             ),
             None => "None".into(),

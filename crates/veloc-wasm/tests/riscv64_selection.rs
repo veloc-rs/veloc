@@ -3,6 +3,88 @@
 use veloc_wasm::engine::{Config, Strategy};
 use veloc_wasm::{Engine, Linker, Module, Store, Val};
 
+/// Long regions, shared producers and live values exceeding the GPR capacity.
+/// Compare both pipeline levels and CPU models against the interpreter.
+#[test]
+fn scheduled_integer_dags_match_interpreter() {
+    use veloc_wasm::veloc::codegen::{CodegenOptions, OptLevel};
+    let mut wat = String::from("(module");
+    for bits in [32, 64] {
+        let ty = format!("i{bits}");
+        wat.push_str(&format!(
+            "(func (export \"dag{bits}\") (param {ty} {ty}) (result {ty}) (local {} )",
+            vec![ty.clone(); 48].join(" ")
+        ));
+        for i in 0..24 {
+            wat.push_str(&format!(
+                "local.get 0 {ty}.const {} {ty}.add local.set {} ",
+                i * 13 + 3,
+                i + 2
+            ));
+        }
+        for i in 0..24 {
+            wat.push_str(&format!(
+                "local.get {} local.get 1 {ty}.mul local.get {} {ty}.xor local.set {} ",
+                i + 2,
+                (i + 7) % 24 + 2,
+                i + 26
+            ));
+        }
+        wat.push_str(&format!("{ty}.const 0 "));
+        for i in 26..50 {
+            wat.push_str(&format!("local.get {i} {ty}.add "));
+        }
+        wat.push(')');
+    }
+    wat.push(')');
+    let wasm = wat::parse_str(&wat).unwrap();
+    let run = |config| {
+        let engine = Engine::with_config(config);
+        let module = Module::new(&engine, &wasm).unwrap();
+        let mut store = Store::new();
+        let instance = Linker::new().instantiate(&mut store, module).unwrap();
+        let mut results = Vec::new();
+        for bits in [32, 64] {
+            let func = instance.get_func(&store, &format!("dag{bits}")).unwrap();
+            for a in [i64::MIN, i32::MIN as i64, -1, 0, 1, 17, i64::MAX] {
+                for b in [-37, 0, 1, 13, i64::MAX] {
+                    let val = |v| {
+                        if bits == 32 {
+                            Val::I32(v as i32)
+                        } else {
+                            Val::I64(v)
+                        }
+                    };
+                    results.push(func.call(&mut store, &[val(a), val(b)]).unwrap());
+                }
+            }
+        }
+        results
+    };
+    let expected = run(Config {
+        strategy: Strategy::Interpreter,
+        ..Default::default()
+    });
+    for cpu in ["generic", "c908"] {
+        for level in [OptLevel::None, OptLevel::Default] {
+            for mir_level in [0, 1] {
+                let actual = run(Config {
+                    strategy: Strategy::Jit,
+                    cpu: cpu.into(),
+                    opt_level: mir_level,
+                    codegen: CodegenOptions {
+                        opt_level: level,
+                        verify: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+                assert_eq!(actual, expected, "{cpu}, {level:?}, MIR O{mir_level}");
+            }
+        }
+    }
+}
+
 /// Exercise immediate boundaries, RV64's sign-extended i32 representation,
 /// comparison branches, shared producers and optional extension fallbacks.
 #[test]

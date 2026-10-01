@@ -423,19 +423,15 @@ pub(super) fn compile(
                     return Err(format!("unknown implicit register `{reg}`"));
                 }
             }
-            let schedule_latency = fields
+            let schedule_class = fields
                 .remove("schedule")
-                .map(|node| -> Result<u32, String> {
-                    let mut fields = object(node)?;
-                    let latency =
-                        number(&fields.remove("latency").ok_or("missing schedule latency")?)?;
-                    if latency == 0 {
-                        return Err("schedule latency must be positive".into());
-                    }
-                    finish(&fields)?;
-                    Ok(latency)
+                .map(|node| match node.kind {
+                    Kind::Name(name) if name == "None" => Ok(None),
+                    Kind::Text(class) if !class.is_empty() => Ok(Some(class)),
+                    _ => Err("schedule must be a class name string or None".to_owned()),
                 })
-                .transpose()?;
+                .transpose()?
+                .flatten();
             let flow = fields
                 .remove("flow")
                 .map(|n| name(&n).map(str::to_owned))
@@ -478,7 +474,7 @@ pub(super) fn compile(
                 implicit_uses,
                 implicit_defs,
                 clobbers,
-                schedule_latency,
+                schedule_class,
                 flow,
                 memory,
                 encoding: None,

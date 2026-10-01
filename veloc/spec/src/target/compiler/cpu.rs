@@ -38,7 +38,7 @@ fn set(indices: impl IntoIterator<Item = usize>, features: &[FeatureDef]) -> Str
 pub(super) struct Plan {
     features: Vec<FeatureDef>,
     closures: Vec<BTreeSet<usize>>,
-    cpus: Vec<(String, BTreeSet<usize>)>,
+    cpus: Vec<(String, BTreeSet<usize>, crate::target::ast::CpuSchedule)>,
 }
 impl Plan {
     pub(super) fn prepare(module: &Module) -> Result<Self, String> {
@@ -78,7 +78,7 @@ impl Plan {
                 enabled.insert(index);
                 enabled.extend(closures[index].iter().copied());
             }
-            cpus.push((cpu.name.clone(), enabled));
+            cpus.push((cpu.name.clone(), enabled, cpu.schedule.clone()));
         }
         Ok(Self {
             features,
@@ -191,17 +191,31 @@ impl Plan {
 pub struct CpuModel {
     pub name: &'static str,
     pub features: FeatureSet,
+    pub schedule: crate::target::ScheduleModel,
 }
 pub const SUPPORTED_CPUS: &[CpuModel] = &[
 "#);
-        for (name, enabled) in &self.cpus {
+        for (name, enabled, schedule) in &self.cpus {
             writeln!(
                 out,
-                "CpuModel {{ name: {:?}, features: {} }},",
+                "CpuModel {{ name: {:?}, features: {}, schedule: crate::target::ScheduleModel {{ issue_width: {}, resources: &[",
                 name,
-                set(enabled.iter().copied(), features)
+                set(enabled.iter().copied(), features), schedule.issue_width
             )
             .unwrap();
+            for r in &schedule.resources {
+                writeln!(
+                    out,
+                    "crate::target::ScheduleResource {{ name: {:?}, units: {} }},",
+                    r.name, r.units
+                )
+                .unwrap();
+            }
+            out.push_str("], classes: &[");
+            for c in &schedule.classes {
+                writeln!(out, "crate::target::ScheduleCost {{ class: {:?}, resource: {:?}, latency: {}, occupancy: {} }},", c.name, c.resource, c.latency, c.occupancy).unwrap();
+            }
+            out.push_str("] } },\n");
         }
         out.push_str("];\n");
     }

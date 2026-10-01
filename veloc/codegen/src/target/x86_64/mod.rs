@@ -102,6 +102,7 @@ pub struct X86_64TargetMachine {
     config: TargetConfig,
     desc: TargetDescription,
     features: inst::FeatureSet,
+    schedule: crate::target::ScheduleModel,
     post_isel: X86_64PostIsel,
     frame_lowering: X86_64FrameLowering,
     pass_config: X86_64PassConfig,
@@ -130,6 +131,7 @@ impl X86_64TargetMachine {
             config,
             desc,
             features,
+            schedule: cpu.schedule,
             post_isel: X86_64PostIsel,
             frame_lowering: X86_64FrameLowering,
             pass_config: X86_64PassConfig,
@@ -174,7 +176,11 @@ impl TargetInstructions for X86_64TargetMachine {
     }
 }
 
-impl TargetSchedule for X86_64TargetMachine {}
+impl TargetSchedule for X86_64TargetMachine {
+    fn schedule_model(&self) -> &crate::target::ScheduleModel {
+        &self.schedule
+    }
+}
 
 impl TargetRegalloc for X86_64TargetMachine {
     fn spill_scratch(&self, class: RegClass) -> &'static [veloc_lir::Reg] {

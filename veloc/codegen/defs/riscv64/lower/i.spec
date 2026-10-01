@@ -1,36 +1,36 @@
 import "../common.spec";
 
-expand Binary(RvAdd32, GprValue, GPR, 59, 0, 0, "addw", "I");
+expand Binary(RvAdd32, GprValue, GPR, 59, 0, 0, "addw", "I", "IntAlu");
 
-expand Binary(RvAdd64, GprValue, GPR, 51, 0, 0, "add", "I");
+expand Binary(RvAdd64, GprValue, GPR, 51, 0, 0, "add", "I", "IntAlu");
 
-expand Binary(RvSub32, GprValue, GPR, 59, 0, 32, "subw", "I");
+expand Binary(RvSub32, GprValue, GPR, 59, 0, 32, "subw", "I", "IntAlu");
 
-expand Binary(RvSub64, GprValue, GPR, 51, 0, 32, "sub", "I");
+expand Binary(RvSub64, GprValue, GPR, 51, 0, 32, "sub", "I", "IntAlu");
 
-expand Binary(RvShl32, GprValue, GPR, 59, 1, 0, "sllw", "I");
+expand Binary(RvShl32, GprValue, GPR, 59, 1, 0, "sllw", "I", "IntAlu");
 
-expand Binary(RvShl64, GprValue, GPR, 51, 1, 0, "sll", "I");
+expand Binary(RvShl64, GprValue, GPR, 51, 1, 0, "sll", "I", "IntAlu");
 
-expand Binary(RvLshr32, GprValue, GPR, 59, 5, 0, "srlw", "I");
+expand Binary(RvLshr32, GprValue, GPR, 59, 5, 0, "srlw", "I", "IntAlu");
 
-expand Binary(RvLshr64, GprValue, GPR, 51, 5, 0, "srl", "I");
+expand Binary(RvLshr64, GprValue, GPR, 51, 5, 0, "srl", "I", "IntAlu");
 
-expand Binary(RvAshr32, GprValue, GPR, 59, 5, 32, "sraw", "I");
+expand Binary(RvAshr32, GprValue, GPR, 59, 5, 32, "sraw", "I", "IntAlu");
 
-expand Binary(RvAshr64, GprValue, GPR, 51, 5, 32, "sra", "I");
+expand Binary(RvAshr64, GprValue, GPR, 51, 5, 32, "sra", "I", "IntAlu");
 
-expand Binary(RvAnd32, GprValue, GPR, 51, 7, 0, "and", "I");
+expand Binary(RvAnd32, GprValue, GPR, 51, 7, 0, "and", "I", "IntAlu");
 
-expand Binary(RvAnd64, GprValue, GPR, 51, 7, 0, "and", "I");
+expand Binary(RvAnd64, GprValue, GPR, 51, 7, 0, "and", "I", "IntAlu");
 
-expand Binary(RvOr32, GprValue, GPR, 51, 6, 0, "or", "I");
+expand Binary(RvOr32, GprValue, GPR, 51, 6, 0, "or", "I", "IntAlu");
 
-expand Binary(RvOr64, GprValue, GPR, 51, 6, 0, "or", "I");
+expand Binary(RvOr64, GprValue, GPR, 51, 6, 0, "or", "I", "IntAlu");
 
-expand Binary(RvXor32, GprValue, GPR, 51, 4, 0, "xor", "I");
+expand Binary(RvXor32, GprValue, GPR, 51, 4, 0, "xor", "I", "IntAlu");
 
-expand Binary(RvXor64, GprValue, GPR, 51, 4, 0, "xor", "I");
+expand Binary(RvXor64, GprValue, GPR, 51, 4, 0, "xor", "I", "IntAlu");
 
 op RvMove32(src: Value<ScalarValue>) -> (dst: Value<ScalarValue>) {
     encoding = Emission::instructions([Instruction::Move(dst,src,32)]);
@@ -103,6 +103,7 @@ op RvRotr64(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>
 op RvZext1(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,7,src,1)]);
     registers = { dst: GPR, src: GPR };
+    schedule = "IntAlu";
     assembly = {
         lines: [{ mnemonic: "zext1", operands: [] }]
     };
@@ -119,6 +120,7 @@ op RvSext1(src: Value<GprValue>) -> (dst: Value<GprValue>) {
 op RvZext8(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,7,src,255)]);
     registers = { dst: GPR, src: GPR };
+    schedule = "IntAlu";
     assembly = {
         lines: [{ mnemonic: "zext8", operands: [] }]
     };
@@ -159,6 +161,7 @@ op RvZext32(src: Value<GprValue>) -> (dst: Value<GprValue>) {
 op RvSext32(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(27,dst,0,src,0)]);
     registers = { dst: GPR, src: GPR };
+    schedule = "IntAlu";
     assembly = {
         lines: [{ mnemonic: "sext32", operands: [] }]
     };
@@ -487,6 +490,7 @@ template Immediate(Name: ident, Major: expr, F3: expr, Bias: expr, Mnemonic: exp
     op Name(src: Value<GprValue>, imm: i64) -> (dst: Value<GprValue>) {
         encoding = Emission::instructions([Instruction::I(Major,dst,F3,src,imm | Bias)]);
         registers = { dst: GPR, src: GPR };
+        schedule = "IntAlu";
         requires = ["I"];
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst,64),reg(src,64),imm(imm)] }]

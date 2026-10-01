@@ -10,7 +10,7 @@ template GprCompare(Opcode: ident, Byte: expr, Wide: expr, Mnemonic: expr, Bits:
         implicit = {
             clobbers: [EFLAGS],
         };
-        schedule = { latency: 1 };
+        schedule = "IntAlu";
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(lhs, Bits), reg(rhs, Bits)] }]
         };
@@ -31,7 +31,7 @@ op X86Cmp32ri(src: Value<GprValue>, imm: i64) -> () {
     implicit = {
         clobbers: [EFLAGS],
     };
-    schedule = { latency: 1 };
+    schedule = "IntAlu";
     assembly = {
         lines: [{ mnemonic: "cmp", operands: [reg(src, 32), imm(imm)] }]
     };

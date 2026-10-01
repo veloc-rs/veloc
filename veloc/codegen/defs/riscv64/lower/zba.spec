@@ -1,10 +1,10 @@
 import "../common.spec";
 
-expand Binary(RvSh1Add, GprValue, GPR, 51, 2, 16, "sh1add", "Zba");
+expand Binary(RvSh1Add, GprValue, GPR, 51, 2, 16, "sh1add", "Zba", "IntAlu");
 
-expand Binary(RvSh2Add, GprValue, GPR, 51, 4, 16, "sh2add", "Zba");
+expand Binary(RvSh2Add, GprValue, GPR, 51, 4, 16, "sh2add", "Zba", "IntAlu");
 
-expand Binary(RvSh3Add, GprValue, GPR, 51, 6, 16, "sh3add", "Zba");
+expand Binary(RvSh3Add, GprValue, GPR, 51, 6, 16, "sh3add", "Zba", "IntAlu");
 
 op RvZext32Zba(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::R(59,dst,0,src,Reg::X0,4)]);

@@ -2,6 +2,39 @@
 use veloc_spec::target::{Def, parse};
 
 #[test]
+fn cpu_schedule_checks_shared_resources_and_positive_costs() {
+    let parse_model = |fields: &str| {
+        parse(&format!(
+            "cpu test {{ name = \"test\"; features = []; schedule = {{ {fields} }}; }}"
+        ))
+    };
+    let model = parse_model(
+        r#"issue_width: 2, resources: [{ name: "mul", units: 1 }], classes: [
+        { name: "mul32", resource: "mul", latency: 3, occupancy: 1 },
+        { name: "mul64", resource: "mul", latency: 4, occupancy: 2 },
+    ]"#,
+    )
+    .unwrap();
+    let Def::Cpu(cpu) = &model.defs[0] else {
+        panic!("expected CPU")
+    };
+    assert_eq!(cpu.schedule.issue_width, 2);
+    assert_eq!(cpu.schedule.resources[0].units, 1);
+    assert_eq!(cpu.schedule.classes[0].resource, "mul");
+    assert_eq!(cpu.schedule.classes[1].occupancy, 2);
+    for bad in [
+        "issue_width: 0",
+        r#"resources: [{name: "mul", units: 1}], classes: [{name: "IntMul", resource: "mul", latency: 0, occupancy: 1}]"#,
+        r#"resources: [{name: "mul", units: 1}], classes: [{name: "IntMul", resource: "mul", latency: 3, occupancy: 0}]"#,
+        r#"resources: [{name: "mul", units: 0}]"#,
+        r#"resources: [{name: "mul", units: 1}, {name: "mul", units: 2}]"#,
+        r#"classes: [{name: "IntMul", resource: "missing", latency: 3, occupancy: 1}]"#,
+    ] {
+        assert!(parse_model(bad).is_err(), "accepted {bad}");
+    }
+}
+
+#[test]
 fn production_target_contracts_generate_all_consumers() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../codegen/defs/x86_64");
     let input = veloc_spec::Source::load(root.join("module.spec")).unwrap();

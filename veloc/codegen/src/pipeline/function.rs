@@ -33,7 +33,9 @@ impl<'a> FunctionPipeline<'a> {
             OptLevel::None => {}
             OptLevel::Default => {
                 post_isel.push(Box::new(PostIselOptimizePass));
-                post_isel.push(Box::new(crate::passes::schedule::SchedulePass));
+                post_isel.push(Box::new(crate::passes::schedule::SchedulePass::new(
+                    options.verify,
+                )));
             }
         }
         Self {

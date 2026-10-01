@@ -19,7 +19,7 @@ pub(crate) struct FinalInstDef {
     implicit_uses: Vec<String>,
     implicit_defs: Vec<String>,
     clobbers: Vec<String>,
-    schedule_latency: Option<u32>,
+    schedule_class: Option<String>,
     flow: String,
     memory: Option<(String, u32)>,
     encoding: Option<String>,
@@ -124,7 +124,7 @@ impl Plan {
         }
         encoding::compile(source, arch, &mut final_inst_defs).map_err(&error)?;
         for (name, inst) in &final_inst_defs {
-            if inst.schedule_latency.is_some()
+            if inst.schedule_class.is_some()
                 && (inst.memory.is_some()
                     || inst.flow != "Next"
                     || inst.is_pseudo
@@ -147,6 +147,34 @@ impl Plan {
             }
         }
         // Validate fallible target metadata even when only one artifact is requested.
+        // Model all instruction classes, even optional features: users can enable
+        // those features independently of the CPU's default ISA selection.
+        let classes: std::collections::BTreeSet<_> = final_inst_defs
+            .values()
+            .filter_map(|inst| inst.schedule_class.as_deref())
+            .collect();
+        for def in &module.defs {
+            if let Def::Cpu(cpu) = def {
+                let modeled: std::collections::BTreeSet<_> = cpu
+                    .schedule
+                    .classes
+                    .iter()
+                    .map(|class| class.name.as_str())
+                    .collect();
+                for class in classes.difference(&modeled) {
+                    return Err(error(format!(
+                        "CPU {} is missing scheduling class {class}",
+                        cpu.name
+                    )));
+                }
+                for class in modeled.difference(&classes) {
+                    return Err(error(format!(
+                        "CPU {} references unknown scheduling class {class}",
+                        cpu.name
+                    )));
+                }
+            }
+        }
         let cpu = cpu::Plan::prepare(&module).map_err(&error)?;
         generate::check_abi_descriptors(&module).map_err(&error)?;
         Ok(Self {

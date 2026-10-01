@@ -94,11 +94,8 @@ pub trait TargetInstructions {
 
 /// CPU-specific estimates, separate from instruction semantics and pass policy.
 pub trait TargetSchedule: TargetInfo + TargetInstructions {
-    /// CPU latency override; None retains the definition's baseline estimate.
-    /// Providing a cost does not establish that the instruction may be moved.
-    fn schedule_latency(&self, _opcode: u32) -> Option<u32> {
-        None
-    }
+    /// Costs never grant permission to move an instruction.
+    fn schedule_model(&self) -> &ScheduleModel;
 }
 
 /// Required primitives for the allocation algorithm; no late unsupported defaults.
@@ -155,8 +152,45 @@ pub trait TargetMachine: TargetRegalloc + TargetSchedule {
 /// change control flow. The scheduler preserves the region's final flag writer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScheduleInfo {
-    pub latency: u32,
     pub writes_flags: bool,
+    pub class: &'static str,
+}
+
+/// A scheduling class reserves one resource pool. Classes can share a pool.
+/// Occupancy is its initiation interval, not result latency; this coarse model
+/// does not yet describe instructions that reserve multiple execution ports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleCost {
+    pub class: &'static str,
+    pub resource: &'static str,
+    pub latency: u32,
+    pub occupancy: u32,
+}
+
+/// Execution resources belong to the CPU, independently of instruction classes.
+#[derive(Debug, Clone, Copy)]
+pub struct ScheduleResource {
+    pub name: &'static str,
+    pub units: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ScheduleModel {
+    pub issue_width: u32,
+    pub resources: &'static [ScheduleResource],
+    pub classes: &'static [ScheduleCost],
+}
+
+impl ScheduleModel {
+    /// Spec generation checks every instruction class, including optional ISA
+    /// features, so feature overrides cannot introduce an unmodeled operation.
+    pub fn cost(&self, class: &str) -> ScheduleCost {
+        *self
+            .classes
+            .iter()
+            .find(|cost| cost.class == class)
+            .expect("instruction scheduling class missing from CPU model")
+    }
 }
 
 /// 机器码发射器接口

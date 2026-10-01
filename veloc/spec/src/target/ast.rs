@@ -43,6 +43,38 @@ pub struct FeatureDef {
 pub struct CpuDef {
     pub name: String,
     pub features: Vec<String>,
+    pub schedule: CpuSchedule,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CpuSchedule {
+    pub issue_width: u32,
+    pub resources: Vec<ScheduleResource>,
+    pub classes: Vec<ScheduleClass>,
+}
+
+impl Default for CpuSchedule {
+    fn default() -> Self {
+        Self {
+            issue_width: 1,
+            resources: Vec::new(),
+            classes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScheduleResource {
+    pub name: String,
+    pub units: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScheduleClass {
+    pub name: String,
+    pub resource: String,
+    pub latency: u32,
+    pub occupancy: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
