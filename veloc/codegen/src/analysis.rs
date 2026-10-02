@@ -1,5 +1,4 @@
 use crate::target::TargetInstructions;
-pub(crate) mod state;
 use core::ops::{BitOr, BitOrAssign};
 use cranelift_entity::SecondaryMap;
 use hashbrown::HashMap;

@@ -197,7 +197,6 @@ impl FuncEditor<'_> {
         assert_ne!(self.inst(id).opcode(), crate::MachineOpcode::Invalid);
         InstWriter {
             store: &mut self.function.body.store,
-            vregs: &mut self.function.body.vregs,
             layout: &mut self.function.body.layout,
             changes: self.changes.as_deref_mut(),
             position: Position::Replace(id),
@@ -214,16 +213,13 @@ impl FuncEditor<'_> {
     pub fn alloc_vreg_in_bank(&mut self, ty: Type, bank: RegisterBank) -> Reg {
         self.alloc_vreg_data(VRegData {
             ty,
-            kind: crate::VRegKind::Register(Some(bank)),
+            bank: Some(bank),
         })
     }
 
     /// Create a typed virtual register without prescribing a register bank.
     pub fn alloc_vreg(&mut self, ty: Type) -> Reg {
-        self.alloc_vreg_data(VRegData {
-            ty,
-            kind: crate::VRegKind::Register(None),
-        })
+        self.alloc_vreg_data(VRegData { ty, bank: None })
     }
 
     /// Replace instruction-local destruction effects. A call's ABI mask is
@@ -445,7 +441,6 @@ impl InstInserter<'_> {
         let body = &mut self.editor.function.body;
         InstWriter {
             store: &mut body.store,
-            vregs: &mut body.vregs,
             changes: self.editor.changes.as_deref_mut(),
             layout: &mut body.layout,
             position: Position::Insert {
@@ -505,7 +500,6 @@ impl crate::InstBuild for &mut InstInserter<'_> {
 pub struct InstWriter<'a> {
     changes: Option<&'a mut crate::EditChanges>,
     store: &'a mut crate::InstStore,
-    vregs: &'a mut PrimaryMap<VReg, VRegData>,
     layout: &'a mut crate::layout::Layout,
     position: Position,
     clobbers: smallvec::SmallVec<[Reg; 4]>,
@@ -513,29 +507,6 @@ pub struct InstWriter<'a> {
 }
 
 impl<'a> InstWriter<'a> {
-    /// Target builders declare state categories at the defining instruction.
-    /// Consumers validate this information; they never infer or change it.
-    pub fn with_state_results(
-        self,
-        results: &[Reg],
-        state_operands: &[crate::StateOperand],
-    ) -> Self {
-        for &crate::StateOperand { operand, unit } in state_operands {
-            let crate::OperandRef::Result(index) = operand else {
-                continue;
-            };
-            if let Some(value) = results[index].as_vreg() {
-                let data = &mut self.vregs[value];
-                match data.kind {
-                    crate::VRegKind::Register(None) => data.kind = crate::VRegKind::State(unit),
-                    crate::VRegKind::State(old) if old == unit => {}
-                    _ => panic!("incompatible state definition"),
-                }
-            }
-        }
-        self
-    }
-
     pub fn call_fields(
         &mut self,
         target: Option<crate::SymbolId>,

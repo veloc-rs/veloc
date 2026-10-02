@@ -114,46 +114,19 @@ impl core::fmt::Debug for Reg {
 pub struct StackSlot(pub u32);
 entity_impl!(StackSlot, "stackslot");
 
-/// A state category declared by an instruction's operand signature.
-/// Operands absent from this signature use ordinary register values.
+/// A physical hardware-state operand declared by an instruction's signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StateOperand {
     pub operand: crate::OperandRef,
     pub unit: PReg,
 }
 
-/// Ordinary register placement and non-renamable state are mutually exclusive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VRegKind {
-    /// None leaves bank selection to the target and operand constraints.
-    Register(Option<RegisterBank>),
-    /// State category, identified by its target hardware unit. The logical
-    /// value can outlive its residency in this unit; ordinary RA cannot spill it.
-    State(PReg),
-}
-
-/// Typed identity; state categories share storage with ordinary bank metadata.
+/// Typed, allocatable value. Hardware state is represented by physical operands.
 #[derive(Debug, Clone)]
 pub struct VRegData {
     pub ty: Type,
-    pub kind: VRegKind,
-}
-
-impl VRegData {
-    pub fn state_unit(&self) -> Option<PReg> {
-        match self.kind {
-            VRegKind::State(unit) => Some(unit),
-            VRegKind::Register(_) => None,
-        }
-    }
-
-    /// Bank selection is meaningful only for ordinary register values.
-    pub fn bank(&self) -> Option<RegisterBank> {
-        match self.kind {
-            VRegKind::Register(bank) => bank,
-            VRegKind::State(_) => panic!("state values have no register bank"),
-        }
-    }
+    /// None leaves bank selection to the target and operand constraints.
+    pub bank: Option<RegisterBank>,
 }
 
 include!(concat!(env!("OUT_DIR"), "/instructions.rs"));

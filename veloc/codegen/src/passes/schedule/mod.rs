@@ -3,37 +3,49 @@
 //! Only operations explicitly declared movable by the target enter a region.
 //! Memory accesses retain source order. Volatile, unknown and control effects
 //! remain barriers; no alias independence is assumed.
+//! Selection has already resolved hardware state to physical register operands.
 use crate::analysis::{LivenessInfo, RegSet};
 use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
 use crate::target::{ScheduleClass, ScheduleClassId, TargetSchedule};
+use cranelift_entity::{EntityRef, PrimaryMap, entity_impl};
 mod graph;
 mod machine;
 mod pressure;
-mod state;
 mod timing;
 use graph::DependencyGraph;
 use machine::MachineState;
 use pressure::PressureTracker;
-use state::StateOrder;
 use std::vec::Vec;
 use timing::ScheduleTiming;
 use veloc_lir::{BlockId, InstId, InstRef, MachineFunction, MachineOpcode};
+
+/// A node in one scheduling region, numbered in original instruction order.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct NodeId(u32);
+entity_impl!(NodeId, "node");
 
 /// All region analyses borrow the same immutable IR until a plan is committed.
 #[derive(Clone, Copy)]
 struct Region<'a> {
     function: &'a MachineFunction,
     insts: &'a [InstId],
-    has_states: bool,
 }
 
 impl<'a> Region<'a> {
-    fn inst(self, index: usize) -> InstRef<'a> {
-        self.function.inst(self.insts[index])
+    fn nodes(self) -> impl DoubleEndedIterator<Item = NodeId> + ExactSizeIterator {
+        (0..self.insts.len()).map(NodeId::new)
     }
 
-    fn schedule_class(self, index: usize, target: &dyn TargetSchedule) -> ScheduleClassId {
-        movable_class(self.function, target, self.insts[index])
+    fn inst_id(self, node: NodeId) -> InstId {
+        self.insts[node.index()]
+    }
+
+    fn inst(self, node: NodeId) -> InstRef<'a> {
+        self.function.inst(self.inst_id(node))
+    }
+
+    fn schedule_class(self, node: NodeId, target: &dyn TargetSchedule) -> ScheduleClassId {
+        movable_class(self.function, target, self.inst_id(node))
             .expect("scheduling region contains a boundary")
     }
 }
@@ -87,9 +99,8 @@ fn plan_schedule(
 ) -> SchedulePlan {
     let mut orders = Vec::new();
     let mut changed_regions = 0;
-    let has_states = f.vregs().values().any(|data| data.state_unit().is_some());
     for block in f.blocks() {
-        if let Some(result) = schedule_block(f, block, target, liveness, has_states, verify) {
+        if let Some(result) = schedule_block(f, block, target, liveness, verify) {
             changed_regions += result.changed_regions;
             orders.push((block, result.order));
         }
@@ -105,7 +116,6 @@ fn schedule_block(
     block: BlockId,
     target: &dyn TargetSchedule,
     liveness: &LivenessInfo,
-    has_states: bool,
     verify: bool,
 ) -> Option<BlockSchedule> {
     let original: Vec<_> = f.block_insts(block).collect();
@@ -123,7 +133,7 @@ fn schedule_block(
         let start = if start == end { end - 1 } else { start };
         let region = &original[start..end];
         if region.len() > 1 {
-            let scheduled = schedule_region(f, region, target, &live, has_states, verify);
+            let scheduled = schedule_region(f, region, target, &live, verify);
             if scheduled != region {
                 order[start..end].copy_from_slice(&scheduled);
                 changed_regions += 1;
@@ -194,45 +204,17 @@ fn schedule_region(
     ids: &[InstId],
     target: &dyn TargetSchedule,
     live_out: &RegSet,
-    has_states: bool,
     verify: bool,
 ) -> Vec<InstId> {
     let region = Region {
         function: f,
         insts: ids,
-        has_states,
     };
-    let graph = DependencyGraph::build(region, live_out, &RegSet::default());
-    let mut selected = schedule_order(region, target, live_out, &graph, None, verify)
-        .expect("scheduler dependency graph must be acyclic");
-    // Keep the existing scheduling policy as the fallback. Symbolic lifetimes
-    // offer an additional candidate, never a restriction on the accepted IR.
-    if has_states {
-        let mut states = StateOrder::new(region, live_out);
-        let graph = DependencyGraph::build(region, live_out, &states.flexible);
-        if let Some(candidate) =
-            schedule_order(region, target, live_out, &graph, Some(&mut states), verify)
-        {
-            if states.preserves_exit() && candidate.cost <= selected.cost {
-                selected = candidate;
-            }
-        }
-    }
-    selected.order.into_iter().map(|i| ids[i]).collect()
-}
-
-struct ScheduledOrder {
-    order: Vec<usize>,
-    cost: ScheduleScore,
-}
-
-/// Compare candidates using the same priorities as list scheduling. These are
-/// model estimates; they do not promise an execution-time improvement.
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct ScheduleScore {
-    peak_excess: isize,
-    finish: u32,
-    peak_pressure: isize,
+    let graph = DependencyGraph::build(region, live_out);
+    schedule_order(region, target, live_out, &graph, verify)
+        .into_iter()
+        .map(|node| region.inst_id(node))
+        .collect()
 }
 
 fn schedule_order(
@@ -240,60 +222,52 @@ fn schedule_order(
     target: &dyn TargetSchedule,
     live_out: &RegSet,
     graph: &DependencyGraph,
-    mut states: Option<&mut StateOrder<'_>>,
     verify: bool,
-) -> Option<ScheduledOrder> {
+) -> Vec<NodeId> {
     let timing = ScheduleTiming::new(region, graph, target);
     let mut pressure = PressureTracker::new(region, target.desc(), live_out);
     let mut machine = MachineState::new(target.schedule_model());
     let mut indegree = graph.indegree.clone();
-    let mut unlocked: Vec<_> = (0..region.insts.len())
-        .filter(|&i| indegree[i] == 0)
-        .collect();
-    let mut available = vec![0u32; region.insts.len()];
+    let mut unlocked: Vec<_> = region.nodes().filter(|&node| indegree[node] == 0).collect();
+    let mut available: PrimaryMap<NodeId, u32> = region.nodes().map(|_| 0).collect();
     let mut order = Vec::with_capacity(region.insts.len());
-    let (mut peak_excess, mut finish, mut peak_pressure) = (0, 0, 0);
     while !unlocked.is_empty() {
         // Only issue candidates whose dependencies and resources are ready.
         let earliest = unlocked
             .iter()
-            .filter(|&&i| states.as_ref().is_none_or(|s| s.ready(i)))
-            .map(|&i| machine.earliest(available[i], timing.costs[i]))
-            .min()?;
+            .map(|&node| machine.earliest(available[node], timing.costs[node]))
+            .min()
+            .unwrap();
         machine.advance_to(earliest);
-        let best = (0..unlocked.len())
-            .filter(|&k| {
-                let i = unlocked[k];
-                states.as_ref().is_none_or(|s| s.ready(i))
-                    && machine.earliest(available[i], timing.costs[i]) == machine.cycle
+        let best_position = (0..unlocked.len())
+            .filter(|&position| {
+                let node = unlocked[position];
+                machine.earliest(available[node], timing.costs[node]) == machine.cycle
             })
-            .min_by_key(|&k| {
-                let i = unlocked[k];
-                let (excess, total) = pressure.score(i);
-                (excess, core::cmp::Reverse(timing.height[i]), total, i)
+            .min_by_key(|&position| {
+                let node = unlocked[position];
+                let score = pressure.score(node);
+                (
+                    score.excess,
+                    core::cmp::Reverse(timing.height[node]),
+                    score.total,
+                    node,
+                )
             })
             .unwrap();
-        let i = unlocked.swap_remove(best);
-        if region.has_states {
-            let (excess, total) = pressure.score(i);
-            peak_excess = peak_excess.max(excess);
-            peak_pressure = peak_pressure.max(total);
-            finish = finish.max(machine.cycle.saturating_add(timing.costs[i].latency));
-        }
-        pressure.advance(i);
-        if let Some(states) = states.as_mut() {
-            states.advance(i);
-        }
-        order.push(i);
-        for edge in &graph.edges[i] {
-            let j = edge.successor;
-            available[j] = available[j].max(machine.cycle.saturating_add(timing.latency(i, edge)));
-            indegree[j] -= 1;
-            if indegree[j] == 0 {
-                unlocked.push(j);
+        let node = unlocked.swap_remove(best_position);
+        pressure.advance(node);
+        order.push(node);
+        for edge in &graph.edges[node] {
+            let successor = edge.successor;
+            available[successor] =
+                available[successor].max(machine.cycle.saturating_add(timing.latency(node, edge)));
+            indegree[successor] -= 1;
+            if indegree[successor] == 0 {
+                unlocked.push(successor);
             }
         }
-        machine.issue(timing.costs[i]);
+        machine.issue(timing.costs[node]);
     }
     assert_eq!(
         order.len(),
@@ -306,12 +280,5 @@ fn schedule_order(
             "invalid scheduling permutation"
         );
     }
-    Some(ScheduledOrder {
-        order,
-        cost: ScheduleScore {
-            peak_excess,
-            finish,
-            peak_pressure,
-        },
-    })
+    order
 }

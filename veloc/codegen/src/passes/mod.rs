@@ -8,4 +8,3 @@ pub use isel::InstructionSelectionPass;
 pub use lowering::LegalizePass;
 pub use unreachable::RemoveUnreachablePass;
 pub mod schedule;
-pub(crate) mod state;

@@ -1,42 +1,56 @@
 //! Approximate live-register pressure using the allocator's register classes.
-use super::{Region, before};
+use super::{NodeId, Region, before};
 use crate::{
     analysis::RegSet,
     target::{RegClassInfo, TargetDescription},
 };
+use cranelift_entity::{PrimaryMap, SecondaryMap, entity_impl};
 use hashbrown::HashMap;
 use veloc_lir::{Reg, RegisterAccess};
+
+/// A local pressure-set index, independent of the target's register-class enum.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PressureSetId(u32);
+entity_impl!(PressureSetId, "pressure_set");
+
+#[derive(Default)]
+pub(super) struct PressureScore {
+    pub excess: isize,
+    pub total: isize,
+}
 
 pub(super) struct PressureTracker<'a> {
     region: Region<'a>,
     target: &'a TargetDescription,
-    sets: &'a [RegClassInfo],
+    sets: PrimaryMap<PressureSetId, &'a RegClassInfo>,
     live: RegSet,
     live_out: &'a RegSet,
     remaining: HashMap<Reg, usize>,
-    pressure: Vec<isize>,
-    capacity: Vec<isize>,
+    pressure: SecondaryMap<PressureSetId, isize>,
+    capacity: SecondaryMap<PressureSetId, isize>,
 }
 
 impl<'a> PressureTracker<'a> {
     pub fn new(region: Region<'a>, target: &'a TargetDescription, live_out: &'a RegSet) -> Self {
         let mut live = live_out.clone();
         let mut remaining = HashMap::new();
-        for i in (0..region.insts.len()).rev() {
-            let inst = region.inst(i);
+        for node in region.nodes().rev() {
+            let inst = region.inst(node);
             before(inst, &mut live);
             for r in inst.register_access().reads() {
                 *remaining.entry(r).or_default() += 1;
             }
         }
-        let sets = target.registers.reg_classes;
+        let sets: PrimaryMap<PressureSetId, _> = target.registers.reg_classes.iter().collect();
         let capacity = sets
             .iter()
-            .map(|set| {
-                set.allocatable
+            .map(|(id, set)| {
+                let capacity = set
+                    .allocatable
                     .iter()
                     .filter(|r| !target.registers.reserved_regs.contains(r))
-                    .count() as isize
+                    .count() as isize;
+                (id, capacity)
             })
             .collect();
         let mut result = Self {
@@ -46,11 +60,11 @@ impl<'a> PressureTracker<'a> {
             live,
             live_out,
             remaining,
-            pressure: vec![0; sets.len()],
+            pressure: SecondaryMap::new(),
             capacity,
         };
-        for (i, set) in sets.iter().enumerate() {
-            result.pressure[i] = result
+        for (set_id, set) in result.sets.iter() {
+            result.pressure[set_id] = result
                 .live
                 .iter()
                 .filter(|&r| result.in_set(r, set))
@@ -60,14 +74,11 @@ impl<'a> PressureTracker<'a> {
     }
 
     fn in_set(&self, r: Reg, set: &RegClassInfo) -> bool {
-        if self.region.function.state_unit(r).is_some() {
-            return false;
-        }
         if r.is_preg() {
             return set.allocatable.contains(&r);
         }
         let data = self.region.function.vreg_data(r);
-        self.target.reg_class_for_vreg(&data.ty, data.bank()) == set.kind
+        self.target.reg_class_for_vreg(&data.ty, data.bank) == set.kind
     }
 
     fn needed_after(&self, access: RegisterAccess<'_>, r: Reg) -> bool {
@@ -85,21 +96,22 @@ impl<'a> PressureTracker<'a> {
             .sum()
     }
 
-    pub fn score(&self, node: usize) -> (isize, isize) {
+    pub fn score(&self, node: NodeId) -> PressureScore {
         let access = self.region.inst(node).register_access();
         self.sets
             .iter()
-            .enumerate()
-            .fold((0, 0), |(excess, total), (i, set)| {
-                let next = self.pressure[i] + self.delta(access, set);
-                (excess + (next - self.capacity[i]).max(0), total + next)
+            .fold(PressureScore::default(), |mut score, (set_id, set)| {
+                let next = self.pressure[set_id] + self.delta(access, set);
+                score.excess += (next - self.capacity[set_id]).max(0);
+                score.total += next;
+                score
             })
     }
 
-    pub fn advance(&mut self, node: usize) {
+    pub fn advance(&mut self, node: NodeId) {
         let access = self.region.inst(node).register_access();
-        for (i, set) in self.sets.iter().enumerate() {
-            self.pressure[i] += self.delta(access, set);
+        for (set_id, set) in self.sets.iter() {
+            self.pressure[set_id] += self.delta(access, set);
         }
         // Remaining uses count instructions, independent of operand multiplicity.
         for r in access.all() {

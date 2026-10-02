@@ -15,7 +15,6 @@ pub(crate) struct FinalInstDef {
     operands: Vec<OperandConstraint>,
     reg_classes: Vec<(String, Vec<String>)>,
     state_operands: Vec<String>,
-    rematerializable: bool,
     value_types: Vec<(String, crate::types::TypeSet)>,
     ties: Vec<(usize, usize)>,
     clobbers: Vec<String>,
@@ -135,8 +134,9 @@ impl Plan {
         let mut final_inst_defs = contracts::compile(contracts, &module, &types).map_err(&error)?;
         for def in &mut module.defs {
             if let Def::SelectRule(rule) = def {
-                select::complete_state_results(rule, &final_inst_defs, &types).map_err(&error)?;
+                select::complete_state_results(rule, &final_inst_defs).map_err(&error)?;
                 select::check_construction(rule, &final_inst_defs, &types).map_err(&error)?;
+                select::lower_state_operands(rule, &final_inst_defs).map_err(&error)?;
             }
         }
         encoding::compile(source, arch, &mut final_inst_defs).map_err(&error)?;

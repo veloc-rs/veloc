@@ -95,7 +95,7 @@ fn groups(
                 let class = allocator
                     .target
                     .desc()
-                    .reg_class_for_vreg(&data.ty, data.bank());
+                    .reg_class_for_vreg(&data.ty, data.bank);
                 allocator
                     .target
                     .desc()

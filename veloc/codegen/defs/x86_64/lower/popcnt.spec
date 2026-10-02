@@ -9,7 +9,6 @@ template Popcount(Opcode: ident, Wide: expr, Mnemonic: expr, Bits: expr) {
             Immediate::None,
         );
         registers = { dst: GPR64, src: GPR64 };
-        rematerializable = true;
         schedule = IntPopcnt;
         movable = true;
         assembly = {

@@ -8,7 +8,6 @@ template GprCompare(Opcode: ident, Byte: expr, Wide: expr, Mnemonic: expr, Bits:
             rhs: GPR64,
         };
         clobbers = [AF];
-        rematerializable = true;
         schedule = IntAlu;
         movable = true;
         assembly = {
@@ -29,7 +28,6 @@ op X86Cmp32ri(src: Value<GprValue>, imm: i64) -> (cf: Value<CARRY>, pf: Value<PA
         src: GPR64,
     };
     clobbers = [AF];
-        rematerializable = true;
     schedule = IntAlu;
     movable = true;
     assembly = {
@@ -52,7 +50,6 @@ template FloatCompare(Opcode: ident, Prefix: expr, Ty: expr, Mnemonic: expr) {
             rhs: FPR128,
         };
         clobbers = [AF];
-        rematerializable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(lhs, 128), reg(rhs, 128)] }]
         };

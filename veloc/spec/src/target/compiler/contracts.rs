@@ -544,14 +544,6 @@ pub(super) fn compile(
                     _ => return Err("movable requires a boolean".into()),
                 },
             };
-            let rematerializable = match fields.remove("rematerializable") {
-                None => false,
-                Some(node) if name(&node)? == "true" => true,
-                _ => return Err("rematerializable must be true when specified".into()),
-            };
-            if rematerializable && (has_memory || flow != "Next" || is_pseudo) {
-                return Err("state rematerialization requires a pure producer".into());
-            }
             // Checked by the shared expression compiler after operand resolution.
             fields.remove("encoding");
             let assembly = fields.remove("assembly");
@@ -560,7 +552,6 @@ pub(super) fn compile(
                 operands,
                 reg_classes,
                 state_operands,
-                rematerializable,
                 value_types,
                 ties,
                 clobbers,

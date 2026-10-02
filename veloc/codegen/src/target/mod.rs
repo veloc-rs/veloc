@@ -236,17 +236,13 @@ pub trait TargetEmitter: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetInstMetadata {
     pub constraints: &'static [veloc_lir::OperandConstraint],
-    /// State categories from the operand signature, independent of placement.
-    /// All other operands carry ordinary register values.
+    /// Hardware state operands must name these physical units after selection.
     pub state_operands: &'static [veloc_lir::StateOperand],
     pub flow: veloc_lir::ControlFlow,
     pub schedule_class: ScheduleClass,
     /// The target guarantees local reordering is safe when register and state
     /// dependencies and memory/trap order are preserved. Unknown effects remain barriers.
     pub movable: bool,
-    /// Reexecuting this producer with the same inputs is safe. Data results
-    /// receive fresh identities when hardware state must be recomputed.
-    pub rematerializable: bool,
     /// Destroyed physical storage roots, without defining result values.
     /// Per-call ABI destruction is supplied separately by CallInfo.
     pub clobbers: &'static [Reg],

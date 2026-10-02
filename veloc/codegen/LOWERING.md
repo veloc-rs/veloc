@@ -76,7 +76,7 @@ an input's location by a result. The current machine schemas read inputs before
 writing results; destructive instructions state their reuse relation explicitly.
 There are no pre/post-selection passes that replace constrained values with
 physical registers for ordinary data, and no inference of generic constraints
-from select rules. Non-renamable state has a separate lowering boundary below.
+from select rules. Hardware state is resolved when compiling selection recipes.
 
 Global linear scan chooses a preferred home for each value. Fixed operand
 occurrences reserve short read/write points, with the occupying SSA value
@@ -102,38 +102,25 @@ block-frequency weighting and rematerialization are separate future work.
 
 ## Non-renamable state
 
-Flags retain SSA identities through selection and scheduling. Target builders
-record `VRegKind::State` when defining a result, using the
-spec's state operand signature. Both ordinary fixed operands and state operands
-use `Placement::Fixed`; the value category determines whether ordinary allocation
-or state lowering handles preservation and recovery.
-The category identifies a hardware unit; it
-does not assert that the unit contains this value for the value's whole lifetime.
-The selected-IR verifier checks every occurrence against its operand contract.
-Ordinary register allocation rejects unresolved symbolic state.
+Generic conditions, carry and overflow remain ordinary boolean SSA values.
+Selection recipes can connect state results to consumers using local temporary
+names. The spec compiler verifies that each input still names the resident
+definition, accounting for other results, clobbers and calls. State temporaries
+cannot escape a recipe or appear in ordinary operand positions. Conditions that
+must survive a hardware overwrite are materialized as ordinary values by the
+recipe (for example, `setcc` before an intervening arithmetic instruction).
 
-`StateContents` is the shared transfer model for scheduling and state lowering.
-Inputs read the old contents; all writes and clobbers invalidate overwritten
-units, then symbolic results install their identities. Effects remain precise
-per state bit, including instructions that write several bits together.
+After checking these lifetimes, the compiler replaces state names with physical
+register constants and removes their temporary allocations. Omitted state
+results also write their physical units. Selected code therefore contains no
+symbolic hardware-state values, including at optimization level zero. Builders
+and the selected-IR verifier enforce physical state operand contracts.
 
-Scheduling retains its ordinary physical-dependency schedule as a fallback. An
-additional candidate orders symbolic state lifetimes dynamically, allowing a
-whole definition/use interval to move across another writer. It must consume
-the right versions without recovery and preserve observable exit contents.
-Explicit physical reads keep their original dependencies. The candidate is
-selected only when its estimated pressure and completion cost are no worse.
-Live-in states or conflicts that this local policy cannot handle fall back to
-the ordinary schedule; they do not restrict what the IR can represent.
-
-Required state lowering runs after optional scheduling. Its CFG worklist meets
-available identities across predecessors, distinguishing an unvisited edge from
-an unknown hardware value so preserved values can flow around loops. Safe
-producer recomputation handles unavailable states before conversion to physical
-operands. Block parameters and edge transfers still require explicit lowering;
-this change does not introduce arbitrary flags Phi or ordinary flags spills.
-Target-specific condition materialization and costed recovery alternatives are
-future extensions; current recovery retains the safe-rematerialization contract.
+Scheduling preserves state through the same physical data, anti and output
+dependencies as other fixed registers. Effects remain precise per declared
+hardware unit. There is no separate state scheduling candidate, CFG residency
+analysis or post-scheduling recovery pass. Ordinary register allocation only
+sees allocatable SSA values and physical operands.
 
 ## Memory representation
 

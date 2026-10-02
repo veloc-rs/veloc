@@ -228,21 +228,16 @@ impl<'a> RegisterAllocator<'a> {
             .map(|(vreg, segments)| {
                 let reg = Reg::new_vreg(vreg.as_u32());
                 let data = f.vreg_data(reg);
-                if data.state_unit().is_some() {
-                    return Err(Error::codegen(
-                        "symbolic state reached ordinary register allocation",
-                    ));
-                }
-                Ok(Interval {
+                Interval {
                     reg,
                     start: segments[0].0,
                     end: segments.last().unwrap().1,
                     segments: segments.clone(),
-                    class: self.target.desc().reg_class_for_vreg(&data.ty, data.bank()),
+                    class: self.target.desc().reg_class_for_vreg(&data.ty, data.bank),
                     preferences: core::mem::take(&mut preferences[vreg]),
-                })
+                }
             })
-            .collect::<Result<_>>()?;
+            .collect();
         intervals.sort_by_key(|i| (i.start, i.reg));
         let mut assigned_ranges = Vec::<Vec<Interval>>::new();
         for interval in intervals {

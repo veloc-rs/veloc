@@ -5,7 +5,9 @@ use std::fmt::Write;
 
 use super::FinalInstDef;
 mod matcher;
+mod state;
 use super::generate::{collect_reg_ids, sanitize_ident};
+pub(super) use state::lower_state_operands;
 
 fn positional_arg_at(args: &[PatternArg], index: usize) -> Option<&Pattern> {
     args.iter()
@@ -245,12 +247,10 @@ fn constructor_arg_bindings_by_target_operand<'a>(
     bindings
 }
 
-/// Omitted fixed-state results are fresh dead SSA values, never missing machine
-/// effects. Explicitly supplied results can be connected to other constructors.
+/// Omitted state results still write hardware, but need no symbolic identity.
 pub(super) fn complete_state_results(
     rule: &mut SelectRuleDef,
     instructions: &HashMap<String, FinalInstDef>,
-    types: &crate::types::Types,
 ) -> Result<(), String> {
     let source = infer_schema_source_def_field(&rule.fields);
     let fields = collect_field_variable_bindings(&rule.fields);
@@ -259,7 +259,7 @@ pub(super) fn complete_state_results(
         .find(|(_, field)| Some(field.as_str()) == source)
         .map(|(value, _)| value.clone());
     let single = rule.builds.len() == 1;
-    for (build_index, ctor) in rule.builds.iter_mut().enumerate() {
+    for ctor in &mut rule.builds {
         let Constructor::Inst { opcode, args } = ctor else {
             continue;
         };
@@ -291,30 +291,13 @@ pub(super) fn complete_state_results(
         for op in &definition.operands {
             if let OperandConstraint::Def(name) = op {
                 if definition.state_operands.contains(name) {
-                    let fresh = format!("__state_{build_index}_{name}");
-                    if rule.temps.iter().any(|(name, _)| name == &fresh)
-                        || fields.contains_key(&fresh)
-                    {
-                        return Err("reserved state temporary name used in selection".into());
-                    }
-                    let domain = &definition
-                        .value_types
+                    let registers = &definition
+                        .reg_classes
                         .iter()
                         .find(|(n, _)| n == name)
                         .unwrap()
                         .1;
-                    let scalar = types
-                        .scalars
-                        .iter()
-                        .find(|scalar| &types.exact[&scalar.name] == domain)
-                        .ok_or_else(|| {
-                            format!(
-                                "{opcode}: state result `{name}` requires a scalar representation"
-                            )
-                        })?;
-                    rule.temps
-                        .push((fresh.clone(), format!("Type::{}", scalar.name)));
-                    args.push(Constructor::Variable(fresh));
+                    args.push(Constructor::Reg(registers[0].clone()));
                     continue;
                 }
                 if let Some(value) = source.take() {

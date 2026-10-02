@@ -52,8 +52,8 @@ execute on the host. Scheduling costs remain separate from ISA availability.
 4. Spec selects target instructions. Calls explicitly expose ABI register uses
    and caller-saved clobbers, even though these operands have no encoding fields.
 5. Operand constraints survive scheduling and are consumed by allocation.
-   Fixed hardware state values use explicit SSA edges; state placement resolves
-   their non-copyable locations before ordinary register allocation.
+   Hardware-state dependencies are checked inside selection recipes and encoded
+   as physical operands. Conditions escaping a recipe use ordinary SSA values.
 6. Scheduling preserves register dependencies and effect boundaries. Allocation
    uses the same cached CFG liveness, then inserts target-provided spill code.
 7. Frame finalization saves modified callee-saved registers and restores them at

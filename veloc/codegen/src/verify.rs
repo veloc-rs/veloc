@@ -12,10 +12,10 @@ use veloc_lir::InstBuild;
 use veloc_lir::InstRead;
 use veloc_lir::{MachineFunction, Reg};
 
-/// Selected code is SSA with target instructions and symbolic call-frame boundaries.
+/// Selected code has ordinary SSA values, physical state, and call-frame boundaries.
 pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
     verify(f, target)?;
-    verify_state_values(f, target)?;
+    verify_state_operands(f, target)?;
     verify_entry_bindings(f)?;
     for block in f.blocks() {
         for id in f.block_insts(block) {
@@ -29,20 +29,10 @@ pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> 
     Ok(())
 }
 
-/// State identity belongs to definitions. Every occurrence must use the same
-/// category; ordinary copies and edge transfers cannot preserve hardware state.
-fn verify_state_values(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
-    use veloc_lir::{MachineOpcode, OperandRef};
+/// Selection must finish hardware-state placement before machine passes run.
+fn verify_state_operands(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
+    use veloc_lir::MachineOpcode;
     for block in f.blocks() {
-        if f.block_params(block)
-            .unwrap()
-            .iter()
-            .any(|&v| f.state_unit(v).is_some())
-        {
-            return Err(Error::codegen(
-                "state block parameters require explicit edge lowering",
-            ));
-        }
         for id in f.block_insts(block) {
             let inst = f.inst(id);
             let state_operands = match inst.opcode() {
@@ -54,42 +44,11 @@ fn verify_state_values(f: &MachineFunction, target: &dyn TargetInstructions) -> 
                     .operand
                     .get(inst.inputs(), inst.results())
                     .ok_or_else(|| Error::codegen("missing state operand"))?;
-                if f.register_unit(value) != Reg::from(state.unit) {
-                    return Err(Error::codegen("operand has an incompatible state category"));
+                if value != Reg::from(state.unit) {
+                    return Err(Error::codegen(
+                        "state operand must name its physical hardware unit",
+                    ));
                 }
-            }
-            for (operand, &value) in inst
-                .inputs()
-                .iter()
-                .enumerate()
-                .map(|(i, v)| (OperandRef::Input(i), v))
-                .chain(
-                    inst.results()
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| (OperandRef::Result(i), v)),
-                )
-            {
-                if let Some(unit) = f.state_unit(value) {
-                    if !state_operands
-                        .iter()
-                        .any(|state| state.operand == operand && Reg::from(state.unit) == unit)
-                    {
-                        return Err(Error::codegen(
-                            "state value used outside its declared operand category",
-                        ));
-                    }
-                }
-            }
-            if inst.edge_ids().any(|edge| {
-                inst.edge(edge)
-                    .args
-                    .iter()
-                    .any(|&v| f.state_unit(v).is_some())
-            }) {
-                return Err(Error::codegen(
-                    "state edge arguments require explicit edge lowering",
-                ));
             }
         }
     }

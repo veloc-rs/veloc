@@ -1,6 +1,7 @@
 //! Ordering constraints are independent of scheduling priorities and CPU resources.
-use super::Region;
+use super::{NodeId, Region};
 use crate::analysis::RegSet;
+use cranelift_entity::PrimaryMap;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 use veloc_lir::Reg;
@@ -16,100 +17,68 @@ pub(super) enum DependencyKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Dependency {
-    pub successor: usize,
+    pub successor: NodeId,
     pub kind: DependencyKind,
 }
 
 /// Node indices refer to the region's original order; every edge points forward.
 pub(super) struct DependencyGraph {
-    pub edges: Vec<SmallVec<[Dependency; 4]>>,
-    pub indegree: Vec<usize>,
+    pub edges: PrimaryMap<NodeId, SmallVec<[Dependency; 4]>>,
+    pub indegree: PrimaryMap<NodeId, usize>,
 }
 
 impl DependencyGraph {
-    pub fn build(region: Region<'_>, live_out: &RegSet, flexible: &RegSet) -> Self {
+    pub fn build(region: Region<'_>, live_out: &RegSet) -> Self {
         let mut graph = Self {
-            edges: vec![SmallVec::new(); region.insts.len()],
-            indegree: vec![0; region.insts.len()],
+            edges: region.nodes().map(|_| SmallVec::new()).collect(),
+            indegree: region.nodes().map(|_| 0).collect(),
         };
-        let mut definitions = HashMap::<Reg, usize>::new();
+        let mut definitions = HashMap::<Reg, NodeId>::new();
         let mut resources = HashMap::<Reg, ResourceAccess>::new();
         let mut last_memory = None;
-        for i in 0..region.insts.len() {
+        for node in region.nodes() {
             // Until alias analysis proves independence, keep all accesses in
             // source order. Pure computations may still fill load latency gaps.
-            if region.inst(i).mem_flags().is_some() {
+            if region.inst(node).mem_flags().is_some() {
                 if let Some(previous) = last_memory {
-                    graph.edge(previous, i, DependencyKind::Memory);
+                    graph.edge(previous, node, DependencyKind::Memory);
                 }
-                last_memory = Some(i);
+                last_memory = Some(node);
             }
-            let access = region.inst(i).register_access();
+            let access = region.inst(node).register_access();
             for value in access.reads() {
                 if let Some(&producer) = definitions.get(&value) {
-                    graph.edge(producer, i, DependencyKind::Data(value));
+                    graph.edge(producer, node, DependencyKind::Data(value));
                 }
-                let unit = region.function.register_unit(value);
-                if unit.is_preg() {
-                    let resource = resources.entry(unit).or_default();
-                    let writer = resource.writes.last().copied();
-                    resource.readers.entry(writer).or_default().push(i);
+                if value.is_preg() {
+                    resources
+                        .entry(value)
+                        .or_default()
+                        .read(&mut graph, value, node);
                 }
             }
             for value in access.writes() {
                 if value.is_vreg() {
-                    definitions.insert(value, i);
+                    definitions.insert(value, node);
                 }
-                let unit = region.function.register_unit(value);
-                if unit.is_preg() {
-                    let writes = &mut resources.entry(unit).or_default().writes;
-                    if writes.last() != Some(&i) {
-                        writes.push(i);
-                    }
+                if value.is_preg() {
+                    resources
+                        .entry(value)
+                        .or_default()
+                        .write(&mut graph, value, node);
                 }
             }
         }
-        let mut live_units = RegSet::default();
-        for value in live_out.iter() {
-            live_units.insert(region.function.register_unit(value));
-        }
-        for (unit, resource) in resources {
-            // Symbolic state lifetimes can be ordered by the scheduler. Actual
-            // physical reads and all other resources keep their fixed hazards.
-            if !flexible.contains(&unit) {
-                graph.protect_resource(unit, resource, live_units.contains(&unit));
+        // A live-out observes the last write just like a read beyond the region.
+        for (unit, mut resource) in resources {
+            if live_out.contains(&unit) {
+                resource.observe_write(&mut graph, unit);
             }
         }
         graph
     }
 
-    /// Preserve each observed version, without serializing unobserved writes.
-    /// The DAG keeps interfering writes on their original side of each read;
-    /// it does not attempt the disjunctive scheduling of fixed live intervals.
-    fn protect_resource(&mut self, unit: Reg, resource: ResourceAccess, live_out: bool) {
-        let mut readers = resource.readers.get(&None).cloned().unwrap_or_default();
-        let mut pending = Vec::new();
-        let last = resource.writes.last().copied();
-        for writer in resource.writes {
-            for &reader in &readers {
-                self.edge(reader, writer, DependencyKind::Anti(unit));
-            }
-            let uses = resource.readers.get(&Some(writer));
-            if uses.is_some() || (live_out && Some(writer) == last) {
-                for previous in pending.drain(..) {
-                    self.edge(previous, writer, DependencyKind::Output(unit));
-                }
-                readers = uses.cloned().unwrap_or_default();
-                for &reader in &readers {
-                    self.edge(writer, reader, DependencyKind::Data(unit));
-                }
-            } else {
-                pending.push(writer);
-            }
-        }
-    }
-
-    fn edge(&mut self, from: usize, to: usize, kind: DependencyKind) {
+    fn edge(&mut self, from: NodeId, to: NodeId, kind: DependencyKind) {
         if from == to {
             return;
         }
@@ -125,11 +94,12 @@ impl DependencyGraph {
         }
     }
 
-    pub fn preserves_dependencies(&self, order: &[usize]) -> bool {
+    pub fn preserves_dependencies(&self, order: &[NodeId]) -> bool {
         if order.len() != self.indegree.len() {
             return false;
         }
-        let mut positions = vec![None; order.len()];
+        let mut positions: PrimaryMap<NodeId, Option<usize>> =
+            self.edges.keys().map(|_| None).collect();
         for (pos, &node) in order.iter().enumerate() {
             let Some(entry) = positions.get_mut(node) else {
                 return false;
@@ -138,7 +108,7 @@ impl DependencyGraph {
                 return false;
             }
         }
-        self.edges.iter().enumerate().all(|(from, edges)| {
+        self.edges.iter().all(|(from, edges)| {
             edges
                 .iter()
                 .all(|e| positions[from] < positions[e.successor])
@@ -146,9 +116,44 @@ impl DependencyGraph {
     }
 }
 
-/// Instruction indices only; the IR remains the authority for operands.
+/// Streaming dependencies for one physical unit. Unobserved writes may reorder
+/// among themselves, but must stay between the surrounding observed versions.
 #[derive(Default)]
 struct ResourceAccess {
-    writes: Vec<usize>,
-    readers: HashMap<Option<usize>, Vec<usize>>,
+    last_write: Option<NodeId>,
+    /// Readers of the last observed version, possibly the region's live-in.
+    readers: Vec<NodeId>,
+    /// Writes since that version, including last_write until it is observed.
+    pending_writes: Vec<NodeId>,
+}
+
+impl ResourceAccess {
+    fn read(&mut self, graph: &mut DependencyGraph, unit: Reg, reader: NodeId) {
+        self.observe_write(graph, unit);
+        if let Some(writer) = self.last_write {
+            graph.edge(writer, reader, DependencyKind::Data(unit));
+        }
+        self.readers.push(reader);
+    }
+
+    fn write(&mut self, graph: &mut DependencyGraph, unit: Reg, writer: NodeId) {
+        for &reader in &self.readers {
+            graph.edge(reader, writer, DependencyKind::Anti(unit));
+        }
+        self.last_write = Some(writer);
+        self.pending_writes.push(writer);
+    }
+
+    /// The first observation protects this write from preceding dead writes.
+    /// Later reads of the same version only need their data dependency.
+    fn observe_write(&mut self, graph: &mut DependencyGraph, unit: Reg) {
+        let Some(writer) = self.pending_writes.pop() else {
+            return;
+        };
+        for previous in self.pending_writes.drain(..) {
+            graph.edge(previous, writer, DependencyKind::Output(unit));
+        }
+        // Previous readers already constrain all writes up to this definition.
+        self.readers.clear();
+    }
 }

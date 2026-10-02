@@ -1,42 +1,44 @@
 //! CPU costs and critical-path priorities for a scheduling region.
 use super::{
-    Region,
+    NodeId, Region,
     graph::{Dependency, DependencyGraph, DependencyKind},
 };
 use crate::target::{ScheduleCost, TargetSchedule};
+use cranelift_entity::PrimaryMap;
 
 pub(super) struct ScheduleTiming {
-    pub costs: Vec<ScheduleCost>,
-    pub height: Vec<u32>,
+    pub costs: PrimaryMap<NodeId, ScheduleCost>,
+    pub height: PrimaryMap<NodeId, u32>,
 }
 
 impl ScheduleTiming {
     pub fn new(region: Region<'_>, graph: &DependencyGraph, target: &dyn TargetSchedule) -> Self {
         let model = target.schedule_model();
         let mut timing = Self {
-            costs: (0..region.insts.len())
-                .map(|i| model.cost(region.schedule_class(i, target)))
+            costs: region
+                .nodes()
+                .map(|node| model.cost(region.schedule_class(node, target)))
                 .collect(),
-            height: vec![0; region.insts.len()],
+            height: region.nodes().map(|_| 0).collect(),
         };
         // Graph nodes are in topological order. Include the node's own result
         // latency even when it has no successor within this region.
-        for i in (0..region.insts.len()).rev() {
-            timing.height[i] = graph.edges[i]
+        for node in region.nodes().rev() {
+            timing.height[node] = graph.edges[node]
                 .iter()
                 .map(|edge| {
                     timing
-                        .latency(i, edge)
+                        .latency(node, edge)
                         .saturating_add(timing.height[edge.successor])
                 })
                 .max()
                 .unwrap_or(0)
-                .max(timing.costs[i].latency);
+                .max(timing.costs[node].latency);
         }
         timing
     }
 
-    pub fn latency(&self, producer: usize, dependency: &Dependency) -> u32 {
+    pub fn latency(&self, producer: NodeId, dependency: &Dependency) -> u32 {
         match dependency.kind {
             // The current CPU model gives all results the same latency.
             DependencyKind::Data(_) => self.costs[producer].latency,

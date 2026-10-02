@@ -12,7 +12,6 @@ template GprBinary(Opcode: ident, Byte: expr, Wide: expr, Mnemonic: expr, Bits: 
             src1: GPR64,
         };
         clobbers = [AF];
-        rematerializable = true;
         schedule = IntAlu;
         movable = true;
         assembly = {
@@ -47,7 +46,6 @@ template GprBinaryImm(Opcode: ident, Wide: expr, Extension: expr, Imm: ident, Mn
             src: GPR64,
         };
         clobbers = [AF];
-        rematerializable = true;
         schedule = IntAlu;
         movable = true;
         assembly = {
@@ -83,7 +81,6 @@ template GprMultiply(Opcode: ident, Wide: expr, Mnemonic: expr, Bits: expr) {
             src1: GPR64,
         };
         clobbers = [PF, ZF, SF, AF];
-        rematerializable = true;
         schedule = IntMul;
         movable = true;
         assembly = {

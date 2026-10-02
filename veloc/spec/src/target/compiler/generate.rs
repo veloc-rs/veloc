@@ -196,12 +196,6 @@ pub(super) fn generate_target_inst_metadata(
         .unwrap();
         writeln!(output, "    schedule_class: {schedule},").unwrap();
         writeln!(output, "    movable: {},", inst_def.movable).unwrap();
-        writeln!(
-            output,
-            "    rematerializable: {},",
-            inst_def.rematerializable
-        )
-        .unwrap();
         let constraints = inst_def.operands.iter().filter_map(|op| match op {
             OperandConstraint::Def(n) => Some((n, true)),
             OperandConstraint::Use(n) => Some((n, false)),
@@ -301,8 +295,11 @@ impl TargetInst {
     /// Construct register operands and destruction effects from the schema.
     pub fn write(self, writer: veloc_lir::InstWriter<'_>, results: &[Reg], inputs: &[Reg], fields: veloc_lir::Fields) -> veloc_lir::InstId {
         let metadata = target_inst_metadata(self);
+        for state in metadata.state_operands {
+            assert_eq!(state.operand.get(inputs, results), Some(&Reg::from(state.unit)),
+                "state operands must be physical before instruction construction");
+        }
         writer.with_clobbers(metadata.clobbers.iter().copied())
-            .with_state_results(results, metadata.state_operands)
             .write(veloc_lir::MachineOpcode::Target(self.as_u32()), results, inputs, fields)
     }
 }
