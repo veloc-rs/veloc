@@ -1,14 +1,32 @@
-//! LIR 机器函数与基本块定义
+//! Function storage, layout, register references and structural editing.
 
-use super::{CallInfo, InstId, InstRef, Reg, StackSlot, VReg, VRegData};
-use crate::BlockId as Block;
-use crate::RegisterBank;
+mod cursor;
+mod edit;
+mod frame;
+mod layout;
+mod store;
+mod use_def;
+
+pub use cursor::InstCursor;
+pub use edit::{EditChanges, FuncEditor, InstInserter, InstWriter};
+pub use frame::*;
+pub use layout::{InstOrder, Layout};
+pub use store::InstStore;
+pub use use_def::{OperandId, RefRole, RegRef, RegRefs};
+
+use self::BlockId as Block;
+use crate::{CallInfo, InstId, InstRef, Reg, RegisterBank, VReg, VRegData};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
-use cranelift_entity::PrimaryMap;
+use cranelift_entity::{PrimaryMap, entity_impl};
 use veloc_mir::Type;
+
+/// Function-local block identity, independent of MIR and physical order.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BlockId(u32);
+entity_impl!(BlockId, "block");
 
 #[derive(Debug, Clone, Default)]
 struct BlockData {
@@ -29,8 +47,8 @@ pub struct FuncBody {
     blocks: PrimaryMap<Block, BlockData>,
     /// Dedicated call entry, retained for the lifetime of the function.
     entry: Block,
-    layout: crate::layout::Layout,
-    store: crate::store::InstStore,
+    layout: Layout,
+    store: InstStore,
     vregs: PrimaryMap<VReg, VRegData>,
     entry_bindings: Vec<EntryBinding>,
 }
@@ -39,13 +57,13 @@ impl FuncBody {
     fn with_capacity(blocks: usize, insts: usize, vregs: usize) -> Self {
         let mut data = PrimaryMap::with_capacity(blocks.max(1));
         let entry = data.push(BlockData::default());
-        let mut layout = crate::layout::Layout::with_capacity(blocks.max(1), insts);
+        let mut layout = Layout::with_capacity(blocks.max(1), insts);
         layout.append_block(entry);
         Self {
             blocks: data,
             entry,
             layout,
-            store: crate::store::InstStore::with_capacity(insts),
+            store: InstStore::with_capacity(insts),
             vregs: PrimaryMap::with_capacity(vregs),
             entry_bindings: Vec::new(),
         }
@@ -54,7 +72,7 @@ impl FuncBody {
     pub fn entry_block(&self) -> Block {
         self.entry
     }
-    pub fn layout(&self) -> &crate::layout::Layout {
+    pub fn layout(&self) -> &Layout {
         &self.layout
     }
     pub fn inst(&self, id: InstId) -> InstRef<'_> {
@@ -70,9 +88,6 @@ impl FuncBody {
     }
 }
 
-mod frame;
-pub use frame::*;
-
 /// 机器函数主体数据。
 #[derive(Debug, Clone)]
 pub struct MachineFunction {
@@ -80,12 +95,6 @@ pub struct MachineFunction {
     body: FuncBody,
     pub stack_frame: StackFrame,
 }
-
-mod cursor;
-pub use cursor::InstCursor;
-
-mod edit;
-pub use edit::{EditChanges, FuncEditor, InstInserter, InstWriter};
 
 impl MachineFunction {
     pub fn new(name: String) -> Self {
@@ -113,7 +122,7 @@ impl MachineFunction {
     pub fn params(&self) -> &[Reg] {
         &self.body.blocks[self.entry_block()].params
     }
-    pub fn layout(&self) -> &crate::layout::Layout {
+    pub fn layout(&self) -> &Layout {
         self.body.layout()
     }
     pub fn vregs(&self) -> &PrimaryMap<VReg, VRegData> {

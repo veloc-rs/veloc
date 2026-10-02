@@ -119,14 +119,7 @@ impl Allocation {
                 for inst in plan.before {
                     inst.emit(target, edit.before(id).writer())?;
                 }
-                assert_eq!(plan.results.len(), edit.inst(id).results().len());
-                for (index, reg) in plan.results.into_iter().enumerate() {
-                    edit.set_inst_result(id, index, reg.into());
-                }
-                assert_eq!(plan.locations.len(), edit.inst(id).inputs().len());
-                for (index, reg) in plan.locations.into_iter().enumerate() {
-                    edit.set_inst_input(id, index, reg.into());
-                }
+                edit.assign_registers(id, &plan.results, &plan.locations);
                 let mut after = id;
                 for inst in plan.after {
                     after = inst.emit(target, edit.after(after).writer())?;

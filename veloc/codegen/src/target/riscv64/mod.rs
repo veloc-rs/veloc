@@ -122,7 +122,7 @@ impl TargetInstructions for Riscv64TargetMachine {
         let MachineOpcode::Target(op) = i.opcode() else {
             return Err(crate::Error::codegen("expected target instruction"));
         };
-        inst::TargetInst::from_u32(op).validate(f, i, mode)
+        inst::TargetInst::from_u32(op).validate(f, i, mode, self.features)
     }
     fn write_assembly(
         &self,

@@ -5,12 +5,13 @@ use crate::{
     target::{TargetInstructions, ValidationMode},
 };
 use hashbrown::{HashMap, HashSet};
+use smallvec::SmallVec;
 use std::{format, vec::Vec};
 use veloc_lir::BlockId as Block;
 #[cfg(test)]
 use veloc_lir::InstBuild;
 use veloc_lir::InstRead;
-use veloc_lir::{MachineFunction, Reg};
+use veloc_lir::{MachineFunction, Reg, Type};
 
 /// Selected code has ordinary SSA values, physical state, and call-frame boundaries.
 pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
@@ -169,8 +170,29 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
                 return Err(fail(format!("instruction {id:?} occurs twice in layout")));
             }
             let inst = f.inst(id);
-            if inst.is_generic() {
+            if let Some(opcode) = inst.generic_opcode() {
                 inst.validate()?;
+                let types = |regs: &[Reg]| -> Result<SmallVec<[Type; 4]>> {
+                    regs.iter()
+                        .map(|reg| {
+                            let value = reg.as_vreg().ok_or_else(|| {
+                                fail(format!(
+                                    "physical value operand {reg:?} in {opcode:?} at {id:?}"
+                                ))
+                            })?;
+                            f.vregs().get(value).map(|data| data.ty).ok_or_else(|| {
+                                fail(format!("unknown value {reg:?} in {opcode:?} at {id:?}"))
+                            })
+                        })
+                        .collect()
+                };
+                let inputs = types(inst.inputs())?;
+                let results = types(inst.results())?;
+                opcode.validate_types(&inputs, &results).map_err(|error| {
+                    fail(format!(
+                        "type scheme violation in {opcode:?} at {id:?}: {error:?}"
+                    ))
+                })?;
             } else {
                 target.validate_instruction(f, &inst, ValidationMode::Virtual)?;
             }

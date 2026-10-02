@@ -5,10 +5,9 @@
 //! 目标提供静态规则和扩展，通用 VM 负责匹配与构建。
 
 use super::matching::{self, Program};
-use crate::analysis::CfgInfo;
 use crate::target::FeatureSetRef;
 use std::vec::Vec;
-use veloc_lir::{GenericOpcode, InstCursor, InstId, MachineFunction, Reg};
+use veloc_lir::{FuncEditor, GenericOpcode, InstCursor, InstId, MachineFunction, Reg};
 
 /// Target data and the explicit host extension used by the selection VM.
 #[derive(Clone, Copy)]
@@ -51,7 +50,7 @@ struct SelectionScratch {
 }
 
 impl SelectionScratch {
-    fn commit(&mut self, mfunc: &mut MachineFunction, root: InstId) {
+    fn commit(&mut self, mfunc: &mut FuncEditor<'_>, root: InstId) {
         let mut edit = mfunc.editor();
         for &(original, replacement) in &self.edge_transfers {
             assert!(edit.inst(root).edge_ids().any(|edge| edge == original));
@@ -92,7 +91,7 @@ impl<'a> InstructionSelector<'a> {
     /// Build the selected sequence, preserve boundary metadata, then commit.
     fn select_inst(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut FuncEditor<'_>,
         inst_id: InstId,
         generic: GenericOpcode,
         scratch: &mut SelectionScratch,
@@ -122,7 +121,7 @@ impl<'a> InstructionSelector<'a> {
 
     fn select_one(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut FuncEditor<'_>,
         inst: InstId,
         scratch: &mut SelectionScratch,
     ) -> Result<(), crate::error::Error> {
@@ -160,18 +159,10 @@ impl<'a> InstructionSelector<'a> {
     }
 
     /// Requires unreachable blocks to have been removed. Selection preserves
-    /// CFG topology; snapshot its order before rewriting instructions.
-    pub fn select(
-        &self,
-        mfunc: &mut MachineFunction,
-        cfg: &CfgInfo,
-    ) -> Result<(), crate::error::Error> {
-        self.select_in_order(mfunc, cfg.compute_post_order(mfunc.entry_block()))
-    }
-
+    /// CFG topology; the caller snapshots postorder before rewriting instructions.
     pub(crate) fn select_in_order(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut FuncEditor<'_>,
         blocks: Vec<veloc_lir::BlockId>,
     ) -> Result<(), crate::error::Error> {
         assert_eq!(

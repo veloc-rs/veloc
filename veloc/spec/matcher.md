@@ -83,26 +83,20 @@ macro, its readers or fixups currently would couple unrelated representations.
 No dependency on veloc-interpreter, common VM crate, or generic dispatch layer
 has been introduced.
 
-## Reproduce
-## Reproduce
+## Checks
 
 ```sh
-cargo run -p veloc-codegen --release --example selector_bench
-
 cargo test -p veloc-spec -p veloc-lir -p veloc-codegen
 cargo check --workspace --all-targets --all-features
 ```
 
-For reliable timing, pin the executable to the same available CPU. Do not time
-Cargo or concurrent builds as part of selector execution. Each process uses one warmup and nine samples; selector samples contain 64 functions
-and pipeline samples contain 128 compilations. Cloning, source parsing, and
-output hashing are outside the respective timed regions.
-
-The benchmark now measures only the table implementation. Reproducing the
-historical three-way comparison requires the earlier experimental source;
-the removed backends are not available through CLI or Cargo switches.
-
 ## Measurements (2026-09-19)
+
+These historical measurements used a synthetic benchmark that has since been
+removed. Reproduction requires the corresponding historical source, including
+the experimental backends. Each process used one warmup and nine samples;
+selector samples contained 64 functions and pipeline samples 128 compilations.
+Cloning, source parsing and output hashing were outside the timed regions.
 
 Environment: Linux x86-64 VM, reported AMD Ryzen 9 9950X, 24 virtual CPUs;
 `rustc 1.98.0-nightly (bc2112ed5 2026-06-18)`. Cargo release defaults from this

@@ -32,8 +32,8 @@ impl<'a> FunctionPass for LegalizePass<'a> {
     fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
         let target = cx.target;
         let mut edit = cx.edit();
-        let (function, symbols) = edit.with_symbols();
-        Legalizer::new(self.legalizer).legalize(function, target, symbols)?;
+        let (mut function, symbols) = edit.with_symbols();
+        Legalizer::new(self.legalizer).legalize(&mut function, target, symbols)?;
         Ok(())
     }
 }

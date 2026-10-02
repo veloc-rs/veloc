@@ -70,15 +70,18 @@ be retained deliberately, but it is not a query for the updated function.
 Extension passes can intern function symbols through the edit guard, without
 obtaining mutable access to the shared symbol table.
 
-- `edit()` adapts existing algorithms that require `&mut MachineFunction`.
-  First mutable access conservatively invalidates all function analyses before
-  modification. Subsequent queries become possible only after releasing the
-  guard. This remains correct on early return or unwinding and requires no
-  pass-authored change report. It may invalidate analyses even if the algorithm
-  ultimately makes no change.
-- Constrained operations such as `erase_block` and `reorder_block` record their
-  own change categories. New precise edit APIs should expose only the mutations
-  whose effects they can describe; arbitrary mutable access stays conservative.
+- `edit()` exposes the existing `FuncEditor`, with read-only access to the
+  function. Passes cannot obtain `&mut MachineFunction`; generated builders,
+  replacement and frame finalization all use the editor's mutation APIs.
+- Opening a general edit conservatively invalidates all function analyses before
+  granting write access, including when no changes follow. The exclusive borrow
+  prevents queries until the edit ends. Early returns and unwinding require no
+  deferred invalidation or pass-authored change report.
+- Constrained operations such as `erase_block` and `reorder_block` retain their
+  specific invalidation categories. The legalizer's `EditChanges` only collects
+  instructions for its incremental worklist; it is not an analysis journal.
+- Full verification remains optional at pass boundaries. Target operand, type
+  and feature checks are generated from spec and used by that verifier.
 - Scheduling first computes an owned plan from a read-only function and current
   liveness, then applies its orders through the session.
 

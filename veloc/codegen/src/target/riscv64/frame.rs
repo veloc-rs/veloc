@@ -1,11 +1,11 @@
 use super::*;
-use veloc_lir::{FrameLayout, SavedReg, StackAddress, StackObject};
+use veloc_lir::{FrameLayout, FuncEditor, SavedReg, StackAddress, StackObject};
 pub(super) struct Frame;
 impl TargetFrameLowering for Frame {
     fn stack_alignment(&self) -> u32 {
         16
     }
-    fn finalize_stack_frame(&self, f: &mut MachineFunction, _: CallConv) -> crate::Result<()> {
+    fn finalize_stack_frame(&self, f: &mut FuncEditor<'_>, _: CallConv) -> crate::Result<()> {
         let mut saved = vec![Reg(1)]; // ra is overwritten by every call.
         let mut outgoing = 0u32;
         for block in f.blocks() {
@@ -70,14 +70,16 @@ impl TargetFrameLowering for Frame {
             }
         }
         let callee_saved_size = saves.len() as u32 * 8;
-        f.stack_frame.append(batch);
-        f.stack_frame.finish(FrameLayout {
-            addresses,
-            saves,
-            local_size: end - outgoing - callee_saved_size,
-            callee_saved_size,
-            total_size: total,
-        });
+        f.finalize_frame(
+            batch,
+            FrameLayout {
+                addresses,
+                saves,
+                local_size: end - outgoing - callee_saved_size,
+                callee_saved_size,
+                total_size: total,
+            },
+        );
         let mut cursor = veloc_lir::InstCursor::new(f);
         while let Some(id) = cursor.next(f) {
             if f.inst(id).is_call_frame() {
@@ -86,7 +88,7 @@ impl TargetFrameLowering for Frame {
         }
         Ok(())
     }
-    fn insert_prologue_epilogue(&self, f: &mut MachineFunction) {
+    fn insert_prologue_epilogue(&self, f: &mut FuncEditor<'_>) {
         let layout = f.stack_frame.layout().unwrap();
         let total = layout.total_size as i64;
         let saves = layout.saves.clone();

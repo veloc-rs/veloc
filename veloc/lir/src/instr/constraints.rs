@@ -2,7 +2,7 @@
 //! entire lifetime. Value categories are independent of placement: both ordinary
 //! and state operands can require a fixed physical register.
 //! Inputs are read before results are written.
-use crate::{OperandRef, Reg};
+use crate::{OperandRef, PReg, Reg};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
@@ -25,4 +25,11 @@ impl OperandConstraint {
             placement: Placement::Fixed(reg),
         }
     }
+}
+
+/// A physical hardware-state operand declared by an instruction's signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateOperand {
+    pub operand: crate::OperandRef,
+    pub unit: PReg,
 }

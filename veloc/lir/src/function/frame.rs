@@ -1,6 +1,11 @@
-use super::{Reg, StackSlot};
+use crate::Reg;
 use alloc::vec::Vec;
-use cranelift_entity::PrimaryMap;
+use cranelift_entity::{PrimaryMap, entity_impl};
+
+/// 栈槽标识符
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StackSlot(pub u32);
+entity_impl!(StackSlot, "stackslot");
 
 /// Symbolic placement constraints; no physical register is chosen here.
 #[derive(Debug, Clone, Copy)]

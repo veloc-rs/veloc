@@ -1,6 +1,6 @@
 //! Function-owned instruction storage. IDs are stable; operand ranges and cold
 //! payloads belong directly to InstId. Operand ranges are recycled on replacement.
-use crate::use_def::{Owner, References};
+use super::use_def::{Owner, References};
 use crate::{InstId, InstRef, MachineOpcode};
 use crate::{OperandId, RefRole, Reg, RegRefs, VReg};
 use alloc::vec::Vec;

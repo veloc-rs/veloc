@@ -1,7 +1,7 @@
 use super::inst as generated;
 use crate::target::{CallConv as TargetCallConv, TargetArch, TargetFrameLowering};
 use std::vec::Vec;
-use veloc_lir::MachineFunction;
+use veloc_lir::FuncEditor;
 
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64FrameLowering;
@@ -13,7 +13,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
 
     fn finalize_stack_frame(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut FuncEditor<'_>,
         call_conv: TargetCallConv,
     ) -> crate::Result<()> {
         let preserved_regs = call_conv.preserved_regs(TargetArch::X86_64);
@@ -132,8 +132,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
             callee_saved_size: end - local_size,
             total_size,
         };
-        mfunc.stack_frame.append(batch);
-        mfunc.stack_frame.finish(layout);
+        mfunc.finalize_frame(batch, layout);
         // This target currently reserves the maximum outgoing area once.
         // Erase lifetime markers only after all frame constraints succeeded.
         let mut cursor = veloc_lir::InstCursor::new(mfunc);
@@ -145,7 +144,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
         Ok(())
     }
 
-    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction) {
+    fn insert_prologue_epilogue(&self, mfunc: &mut FuncEditor<'_>) {
         use crate::target::x86_64::inst::{
             REG_CF, REG_OF, REG_PF, REG_RBP, REG_RSP, REG_SF, REG_ZF, TargetInst,
         };

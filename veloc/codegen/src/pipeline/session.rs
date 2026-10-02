@@ -3,7 +3,7 @@ use crate::analysis::{ChangeSet, FunctionAnalysisCtx};
 use crate::pipeline::FunctionPassContext;
 use crate::target::TargetMachine;
 use core::ops::{Deref, DerefMut};
-use veloc_lir::{BlockId, InstId, MachineFunction, SymbolTable};
+use veloc_lir::{BlockId, FuncEditor, InstId, MachineFunction, SymbolTable};
 
 pub struct FunctionSession<'a> {
     function: &'a mut MachineFunction,
@@ -61,16 +61,14 @@ impl<'a> FunctionSession<'a> {
             self.analyses.liveness(self.function, self.target),
         )
     }
-    /// Compatibility entry for algorithms that still mutate MachineFunction
-    /// directly. First mutable access conservatively invalidates all analyses.
-    /// The guard exclusively borrows this session, preventing queries until it
-    /// is released, including on early return or unwinding. No rollback implied.
+    /// Invalidate before granting write access. The editor exclusively borrows
+    /// the session and cannot expose mutable function storage. This also covers
+    /// early returns and unwinding; edits are not rolled back.
     pub fn edit(&mut self) -> FunctionEdit<'_> {
+        self.analyses.apply(ChangeSet::WHOLE_FUNCTION);
         FunctionEdit {
-            function: self.function,
-            analyses: self.analyses,
+            editor: self.function.editor(),
             symbols: self.symbols,
-            invalidated: false,
         }
     }
     /// A constrained edit can precisely record the only kind of change it permits.
@@ -93,18 +91,10 @@ impl<'a> FunctionSession<'a> {
 }
 
 pub struct FunctionEdit<'a> {
-    function: &'a mut MachineFunction,
-    analyses: &'a mut FunctionAnalysisCtx,
+    editor: FuncEditor<'a>,
     symbols: &'a mut SymbolTable,
-    invalidated: bool,
 }
 impl FunctionEdit<'_> {
-    fn invalidate(&mut self) {
-        if !self.invalidated {
-            self.analyses.apply(ChangeSet::WHOLE_FUNCTION);
-            self.invalidated = true;
-        }
-    }
     /// Function passes may intern identities, but cannot rename or mutate other
     /// symbols in the shared table.
     pub fn intern_function(
@@ -112,25 +102,22 @@ impl FunctionEdit<'_> {
         name: &str,
         linkage: veloc_mir::Linkage,
     ) -> veloc_lir::SymbolId {
-        self.invalidate();
         self.symbols.get_or_create_function(name, linkage)
     }
     /// Adapter for the existing legalization implementation. Keep unrestricted
     /// table access internal; extension passes use intern_function instead.
-    pub(crate) fn with_symbols(&mut self) -> (&mut MachineFunction, &mut SymbolTable) {
-        self.invalidate();
-        (self.function, self.symbols)
+    pub(crate) fn with_symbols(&mut self) -> (FuncEditor<'_>, &mut SymbolTable) {
+        (self.editor.editor(), self.symbols)
     }
 }
-impl Deref for FunctionEdit<'_> {
-    type Target = MachineFunction;
-    fn deref(&self) -> &MachineFunction {
-        self.function
+impl<'a> Deref for FunctionEdit<'a> {
+    type Target = FuncEditor<'a>;
+    fn deref(&self) -> &Self::Target {
+        &self.editor
     }
 }
 impl DerefMut for FunctionEdit<'_> {
-    fn deref_mut(&mut self) -> &mut MachineFunction {
-        self.invalidate();
-        self.function
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.editor
     }
 }

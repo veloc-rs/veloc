@@ -5,6 +5,20 @@ schemas, registers and register banks, functions and blocks, stack-frame data,
 symbols and use-def chains. It supports `no_std` with `alloc` and
 has no dependency on codegen or any target backend.
 
+## Source organization
+
+- `register.rs`: register identities, value types, banks and physical clobber masks.
+- `instr/`: instruction definitions and views, fields, operand constraints,
+  control-flow and call contracts, register access and schema validation.
+- `function/`: function and block ownership, instruction storage, layout,
+  use-def references, editing, cursors and stack frames.
+- `module.rs` and `symbol.rs`: module-level functions and shared symbols.
+
+Consumers use the crate-root exports, such as `veloc_lir::{Reg, InstRef,
+MachineFunction}`, independently of this internal file organization.
+
+## Codegen boundary
+
 Codegen owns MIR-to-LIR translation, legalization,
 instruction selection, register allocation, ABI handling and machine-code
 emission. A single mutable `MachineFunction` is shared by these passes; it does
@@ -221,8 +235,10 @@ variable register lists borrow `&[Reg]` without allocation.
 The separately generated `validate()` checks counts, attribute kinds
 and structural index constraints and returns `ValidationError`. The existing
 `CodegenOptions::verify` switch opts into this check at pass boundaries.
-Generated `GenericOpcode::validate_types()` remains an independent type contract;
-SSA/dominance checks use function-level algorithms. A generic view of a target
+Generated `GenericOpcode::validate_types()` remains an independent type contract.
+Codegen's optional verifier collects generic instruction input/result types from
+the function and checks this contract after structural validation. SSA/dominance
+checks use function-level algorithms. A generic view of a target
 or invalid opcode is an internal error, not a fallible decode operation.
 
 All builders are generated from the opcode name (`Brcond` -> `writer.brcond`,

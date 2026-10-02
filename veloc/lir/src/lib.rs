@@ -5,37 +5,19 @@
 #![feature(const_trait_impl)]
 extern crate alloc;
 
-mod constraints;
-pub use constraints::*;
-pub use veloc_bytecode::OperandRef;
-
-pub mod control;
-mod register_access;
-pub use register_access::RegisterAccess;
-mod regmask;
-pub use regmask::RegMask;
-pub mod error;
-mod fields;
 pub mod function;
 pub mod instr;
-pub mod layout;
 pub mod module;
-mod store;
+mod register;
 pub mod symbol;
-pub mod use_def;
-mod validation;
 
-pub use control::*;
-pub use error::{Result, ValidationError};
-pub(crate) use fields::FieldPools;
-pub use fields::{FieldBuild, FieldView, Fields};
 pub use function::*;
+pub(crate) use instr::FieldPools;
 pub use instr::*;
 pub use module::*;
-pub use store::InstStore;
+pub use register::*;
 pub use symbol::*;
-pub use use_def::{OperandId, RefRole, RegRef, RegRefs};
-pub use validation::TypeError;
+pub use veloc_bytecode::OperandRef;
 pub use veloc_types::{Type, TypeBits, TypeInfo};
 
 pub mod types {

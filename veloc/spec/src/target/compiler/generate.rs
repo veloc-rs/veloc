@@ -331,7 +331,18 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
         }
     }
     out.push_str("_ => FeatureSet::empty(),\n} } }\n");
-    out.push_str("impl TargetInst { pub fn validate(&self, function: &veloc_lir::MachineFunction, inst: &veloc_lir::InstRef<'_>, mode: crate::target::ValidationMode) -> crate::Result<()> {\nlet invalid = || crate::Error::codegen(alloc::format!(\"invalid operands for {:?}\", self));\nmatch self {\n");
+    out.push_str(r#"impl TargetInst {
+    pub fn validate(&self, function: &veloc_lir::MachineFunction, inst: &veloc_lir::InstRef<'_>, mode: crate::target::ValidationMode, features: FeatureSet) -> crate::Result<()> {
+        for feature in self.required_features().iter() {
+            if !features.contains(feature) {
+                return Err(crate::Error::codegen(alloc::format!(
+                    "{self:?} requires target feature {}", feature.name()
+                )));
+            }
+        }
+        let invalid = || crate::Error::codegen(alloc::format!("invalid operands for {:?}", self));
+        match self {
+"#);
     let mut instructions: Vec<_> = instructions.iter().collect();
     instructions.sort_by_key(|(name, _)| *name);
     for (name, instruction) in instructions {

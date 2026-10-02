@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::target::TargetMachine;
 use std::collections::VecDeque;
 use veloc_lir::function::EditChanges;
-use veloc_lir::{InstId, MachineFunction, SymbolTable};
+use veloc_lir::{FuncEditor, InstId, MachineFunction, SymbolTable};
 
 pub struct Legalizer<'a> {
     target: LegalizePolicy<'a>,
@@ -43,7 +43,7 @@ impl<'a> Legalizer<'a> {
     /// call. Ordinary calls must already have passed through ABI lowering.
     pub fn legalize(
         &self,
-        function: &mut MachineFunction,
+        function: &mut FuncEditor<'_>,
         target: &dyn TargetMachine,
         symbols: &mut SymbolTable,
     ) -> Result<bool> {
@@ -84,7 +84,7 @@ fn check_call_abi(function: &MachineFunction, id: InstId) -> Result<()> {
 impl Legalizer<'_> {
     fn step(
         &self,
-        function: &mut MachineFunction,
+        function: &mut FuncEditor<'_>,
         id: InstId,
         target: &dyn TargetMachine,
         symbols: &mut SymbolTable,

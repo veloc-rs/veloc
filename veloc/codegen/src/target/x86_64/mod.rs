@@ -151,16 +151,7 @@ impl TargetInstructions for X86_64TargetMachine {
         let veloc_lir::MachineOpcode::Target(op) = inst.opcode() else {
             return Err(crate::Error::codegen("expected a target instruction"));
         };
-        let opcode = inst::TargetInst::from_u32(op);
-        for feature in opcode.required_features().iter() {
-            if !self.features.contains(feature) {
-                return Err(crate::Error::codegen(std::format!(
-                    "{opcode:?} requires target feature {}",
-                    feature.name()
-                )));
-            }
-        }
-        opcode.validate(function, inst, mode)
+        inst::TargetInst::from_u32(op).validate(function, inst, mode, self.features)
     }
     fn write_assembly(
         &self,

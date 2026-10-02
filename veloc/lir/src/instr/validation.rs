@@ -1,3 +1,4 @@
+//! Instruction schema errors and generated type contracts.
 use alloc::string::String;
 use core::fmt;
 
@@ -23,3 +24,7 @@ impl fmt::Display for ValidationError {
 }
 
 impl core::error::Error for ValidationError {}
+
+pub use veloc_mir::inst::TypeError;
+
+include!(concat!(env!("OUT_DIR"), "/type_rules.rs"));

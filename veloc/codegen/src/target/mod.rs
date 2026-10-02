@@ -259,13 +259,13 @@ pub trait TargetFrameLowering: Send + Sync {
     /// 最终栈大小和 ABI 对齐等目标相关信息。
     fn finalize_stack_frame(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut veloc_lir::FuncEditor<'_>,
         call_conv: CallConv,
     ) -> crate::Result<()>;
 
     /// 插入函数序言和尾声 (Prologue/Epilogue Insertion)
     /// 在寄存器分配之后调用，将序言/尾声指令插入到 LIR 中。
-    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction);
+    fn insert_prologue_epilogue(&self, mfunc: &mut veloc_lir::FuncEditor<'_>);
 }
 
 /// Build target extensions for the requested optimization policy.

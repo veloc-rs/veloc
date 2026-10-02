@@ -261,6 +261,24 @@ impl FuncEditor<'_> {
         self.function.body.store.set_result(id, index, reg);
         self.changed_inst(id);
     }
+    /// Allocation replaces every register occurrence together, preserving the
+    /// instruction's shape. Ordinary rewrites should use replacement builders.
+    pub fn assign_registers(
+        &mut self,
+        id: InstId,
+        results: &[crate::PReg],
+        inputs: &[crate::PReg],
+    ) {
+        assert_eq!(results.len(), self.inst(id).results().len());
+        assert_eq!(inputs.len(), self.inst(id).inputs().len());
+        for (index, &reg) in results.iter().enumerate() {
+            self.function.body.store.set_result(id, index, reg.into());
+        }
+        for (index, &reg) in inputs.iter().enumerate() {
+            self.function.body.store.set_input(id, index, reg.into());
+        }
+        self.changed_inst(id);
+    }
     pub fn replace_uses(&mut self, old: VReg, new: VReg) {
         if old == new {
             return;
@@ -279,6 +297,12 @@ impl FuncEditor<'_> {
 
     pub fn alloc_stack_object(&mut self, object: StackObject, size: u32, align: u32) -> StackSlot {
         self.function.stack_frame.alloc_object(object, size, align)
+    }
+
+    /// Commit a target's completed stack layout and its additional save slots.
+    pub fn finalize_frame(&mut self, batch: crate::StackBatch, layout: crate::FrameLayout) {
+        self.function.stack_frame.append(batch);
+        self.function.stack_frame.finish(layout);
     }
 
     /// Replace a destination's contents with an existing instruction.
@@ -500,7 +524,7 @@ impl crate::InstBuild for &mut InstInserter<'_> {
 pub struct InstWriter<'a> {
     changes: Option<&'a mut crate::EditChanges>,
     store: &'a mut crate::InstStore,
-    layout: &'a mut crate::layout::Layout,
+    layout: &'a mut crate::Layout,
     position: Position,
     clobbers: smallvec::SmallVec<[Reg; 4]>,
     constraints: Vec<crate::OperandConstraint>,
