@@ -1,6 +1,6 @@
 //! Resolve OpSpec contracts against a target's registers and encoding bodies.
 use super::{FinalInstDef, assembly};
-use crate::target::{Def, Module, OperandConstraint};
+use crate::target::{AttributeKind, Def, Module, OperandConstraint};
 use crate::{
     schema::{Contract, Operand, ValueTypes},
     syntax::{Kind, Node},
@@ -318,14 +318,11 @@ pub(super) fn compile(
             for input in contract.inputs {
                 operands.push(match input {
                     Operand::Value(n) => OperandConstraint::Use(n),
-                    Operand::Attribute { name, ty } => match ty.as_str() {
-                        "i64" => OperandConstraint::Imm(name),
-                        "Successor" => OperandConstraint::Block(name),
-                        "Global" => OperandConstraint::Global(name),
-                        "StackSlot" => OperandConstraint::StackSlot(name),
-                        "CallInfo" => OperandConstraint::Call(name),
-                        _ => return Err(format!("unsupported machine attribute type `{ty}`")),
-                    },
+                    Operand::Attribute { name, ty } => OperandConstraint::Attribute(
+                        name,
+                        AttributeKind::from_spec(&ty)
+                            .ok_or_else(|| format!("unsupported machine attribute type `{ty}`"))?,
+                    ),
                     _ => return Err("machine instructions require fixed operands".into()),
                 });
             }
@@ -451,8 +448,8 @@ pub(super) fn compile(
             }
             finish(&locations)?;
             for &(dst, src) in &ties {
-                let def = operand_name(&operands[dst]);
-                let input = operand_name(&operands[src]);
+                let def = operands[dst].name();
+                let input = operands[src].name();
                 let a = &reg_classes.iter().find(|(n, _)| n == def).unwrap().1;
                 let b = &reg_classes.iter().find(|(n, _)| n == input).unwrap().1;
                 if !a.iter().any(|r| b.contains(r)) {
@@ -507,31 +504,52 @@ pub(super) fn compile(
             ) {
                 return Err(format!("unknown control flow `{flow}`"));
             }
-            let memory = fields
-                .remove("memory")
-                .map(|node| -> Result<(String, u32), String> {
-                    let mut fields = object(node)?;
-                    let kind =
-                        name(&fields.remove("kind").ok_or("missing memory kind")?)?.to_owned();
-                    let bytes = number(&fields.remove("bytes").ok_or("missing memory size")?)?;
-                    if !matches!(kind.as_str(), "Read" | "Write") || bytes == 0 {
-                        return Err("expected Read/Write with a positive byte size".into());
-                    }
-                    finish(&fields)?;
-                    Ok((kind, bytes))
-                })
-                .transpose()?;
+            let has_memory = if let Some(node) = fields.remove("memory") {
+                let mut fields = object(node)?;
+                let kind = fields.remove("kind").ok_or("missing memory kind")?;
+                let bytes = number(&fields.remove("bytes").ok_or("missing memory size")?)?;
+                if !matches!(name(&kind)?, "Read" | "Write") || bytes == 0 {
+                    return Err("expected Read/Write with a positive byte size".into());
+                }
+                finish(&fields)?;
+                true
+            } else {
+                false
+            };
+            let flag_count = operands
+                .iter()
+                .filter(|op| matches!(op, OperandConstraint::Attribute(_, AttributeKind::MemFlags)))
+                .count();
+            if flag_count != usize::from(has_memory) {
+                return Err("a memory instruction requires exactly one MemFlags field; other instructions must not have one".into());
+            }
             let is_pseudo = match fields.remove("pseudo") {
                 None => false,
                 Some(node) if name(&node)? == "true" => true,
                 _ => return Err("pseudo must be true when specified".into()),
+            };
+            if is_pseudo && schedule_class.is_some() {
+                return Err("pseudo instruction costs must be assigned after expansion".into());
+            }
+            if !is_pseudo && schedule_class.is_none() {
+                return Err("machine instruction requires a schedule class".into());
+            }
+            // Permission to reorder is independent of the CPU cost model.
+            // An absent declaration remains conservative, even with a cost.
+            let movable = match fields.remove("movable") {
+                None => false,
+                Some(node) => match name(&node)? {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err("movable requires a boolean".into()),
+                },
             };
             let rematerializable = match fields.remove("rematerializable") {
                 None => false,
                 Some(node) if name(&node)? == "true" => true,
                 _ => return Err("rematerializable must be true when specified".into()),
             };
-            if rematerializable && (memory.is_some() || flow != "Next" || is_pseudo) {
+            if rematerializable && (has_memory || flow != "Next" || is_pseudo) {
                 return Err("state rematerialization requires a pure producer".into());
             }
             // Checked by the shared expression compiler after operand resolution.
@@ -547,8 +565,8 @@ pub(super) fn compile(
                 ties,
                 clobbers,
                 schedule_class,
+                movable,
                 flow,
-                memory,
                 encoding: None,
                 is_pseudo,
                 assembly: None,
@@ -569,16 +587,4 @@ pub(super) fn compile(
         }
     }
     Ok(result)
-}
-
-fn operand_name(op: &OperandConstraint) -> &str {
-    match op {
-        OperandConstraint::Def(n)
-        | OperandConstraint::Use(n)
-        | OperandConstraint::Imm(n)
-        | OperandConstraint::Block(n)
-        | OperandConstraint::Global(n)
-        | OperandConstraint::StackSlot(n)
-        | OperandConstraint::Call(n) => n,
-    }
 }

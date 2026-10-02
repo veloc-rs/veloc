@@ -12,7 +12,7 @@ pub mod inst {
 mod frame;
 
 use crate::target::*;
-use veloc_lir::{FieldValue, MachineOpcode, RegisterBank};
+use veloc_lir::{MachineOpcode, RegisterBank};
 use veloc_types::{DataLayout, TypeLayout};
 
 pub const DATA_LAYOUT: DataLayout = DataLayout {
@@ -153,7 +153,7 @@ impl TargetRegalloc for Riscv64TargetMachine {
             MachineOpcode::Target(inst::TargetInst::RvJump.as_u32()),
             &[],
             &[],
-            [FieldValue::Edge(edge)],
+            veloc_lir::Fields::Jump([edge]),
         ))
     }
     fn copy_instruction(
@@ -180,7 +180,10 @@ impl TargetRegalloc for Riscv64TargetMachine {
             w,
             if load { &one } else { &[] },
             if load { &[] } else { &one },
-            [FieldValue::StackSlot(s)],
+            veloc_lir::Fields::StackMemory {
+                slot: s,
+                flags: veloc_lir::MemFlags::new(),
+            },
         ))
     }
 }
@@ -210,10 +213,9 @@ fn copy(w: veloc_lir::InstWriter<'_>, dst: Reg, src: Reg, ty: Type) -> InstId {
     } else {
         inst::TargetInst::RvMove64
     };
-    op.write(w, &[dst], &[src], [])
+    op.write(w, &[dst], &[src], veloc_lir::Fields::None)
 }
 struct Passes;
-impl TargetPostIsel for Passes {}
 impl TargetPassConfig for Passes {
     fn prepare_passes(
         &self,
@@ -238,14 +240,10 @@ impl TargetMachine for Riscv64TargetMachine {
         crate::passes::isel::SelectPolicy {
             program: &inst::SELECTION_PROGRAM,
             features: crate::target::FeatureSetRef::new(self.features.as_words()),
-            metadata,
             predicate: None,
         }
     }
 
-    fn post_isel(&self) -> &dyn TargetPostIsel {
-        &Passes
-    }
     fn frame_lowering(&self) -> &dyn TargetFrameLowering {
         &frame::Frame
     }

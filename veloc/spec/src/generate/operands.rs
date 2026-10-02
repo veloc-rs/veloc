@@ -172,14 +172,52 @@ impl Operands {
         ));
         out.push_str(&crate::generate::ownership::operand_methods(defs));
         out.push_str("}\n");
-        writeln!(out, "pub trait {writer}: Sized {{
+        let (host, fields) = self.payloads.as_ref().map_or(
+            (String::new(), format!("impl IntoIterator<Item = {attrs}>")),
+            |payloads| (format!(" + {}", payloads.host), payloads.rust.clone()),
+        );
+        writeln!(out, "pub trait {writer}: Sized{host} {{
             type Inst;
-            fn write(self, opcode: {opcode}, results: &[{reg}], inputs: &[{reg}], fields: impl IntoIterator<Item = {attrs}>) -> Self::Inst;").unwrap();
+            fn write(self, opcode: {opcode}, results: &[{reg}], inputs: &[{reg}], fields: {fields}) -> Self::Inst;").unwrap();
         for op in &defs.ops {
             self.emit_builder(&mut out, op);
         }
         out.push_str("}\n");
+        if self.payloads.is_some() {
+            self.emit_dynamic_fields(&mut out, defs);
+        }
         out
+    }
+    fn emit_dynamic_fields(&self, out: &mut String, defs: &Definitions) {
+        let payloads = self.payloads.as_ref().unwrap();
+        writeln!(out, "impl {} {{ pub fn build_fields(self, _writer: &mut impl {}, values: impl IntoIterator<Item = {}>) -> {} {{ let mut values = values.into_iter(); match self {{", self.opcode, self.writer, self.attributes, payloads.rust).unwrap();
+        for op in &defs.ops {
+            writeln!(out, "Self::{} => {{", op.name).unwrap();
+            let mut fields = Vec::new();
+            for member in op
+                .operands()
+                .members
+                .iter()
+                .filter(|m| m.domain == Domain::Attribute && m.binding.is_some())
+            {
+                let codec = member.field.codec.as_ref().unwrap();
+                let variant = codec.rsplit_once("::").unwrap().1;
+                let name = format!("field{}", member.index);
+                if member.field.shape == Shape::Sequence {
+                    writeln!(out, "let {name}: alloc::vec::Vec<_> = values.by_ref().map(|value| match value {{ {codec}(value) => value, _ => panic!(\"invalid instruction field\") }}).collect();").unwrap();
+                    fields.push((variant, format!("&{name}"), member.field.shape));
+                } else {
+                    writeln!(out, "let Some({codec}({name})) = values.next() else {{ panic!(\"invalid instruction field\") }};").unwrap();
+                    fields.push((variant, name, member.field.shape));
+                }
+            }
+            out.push_str("assert!(values.next().is_none(), \"unexpected instruction field\");\n");
+            let payload = payloads
+                .construct(&fields, "_writer", &payloads.rust)
+                .expect("checked instruction field layout");
+            writeln!(out, "{payload}\n}},").unwrap();
+        }
+        out.push_str("} } }\n");
     }
     fn emit_validator(&self, out: &mut String, defs: &Definitions) {
         let opcode = &self.opcode;
@@ -255,7 +293,7 @@ impl Operands {
             .join(", ");
         writeln!(
             out,
-            "fn {}(self, {args}) -> Self::Inst {{",
+            "#[allow(unused_mut)] fn {}(mut self, {args}) -> Self::Inst {{",
             crate::model::mnemonic(&op.name)
         )
         .unwrap();

@@ -75,7 +75,8 @@ restrict an occurrence to a register set, a fixed physical register, or reuse of
 an input's location by a result. The current machine schemas read inputs before
 writing results; destructive instructions state their reuse relation explicitly.
 There are no pre/post-selection passes that replace constrained values with
-physical registers, and no inference of generic constraints from select rules.
+physical registers for ordinary data, and no inference of generic constraints
+from select rules. Non-renamable state has a separate lowering boundary below.
 
 Global linear scan chooses a preferred home for each value. Fixed operand
 occurrences reserve short read/write points, with the occupying SSA value
@@ -99,6 +100,41 @@ materialization removes function/block parameters and produces physical code.
 The allocator still uses whole-range homes and spills. Live-range splitting,
 block-frequency weighting and rematerialization are separate future work.
 
+## Non-renamable state
+
+Flags retain SSA identities through selection and scheduling. Target builders
+record `VRegKind::State` when defining a result, using the
+spec's state operand signature. Both ordinary fixed operands and state operands
+use `Placement::Fixed`; the value category determines whether ordinary allocation
+or state lowering handles preservation and recovery.
+The category identifies a hardware unit; it
+does not assert that the unit contains this value for the value's whole lifetime.
+The selected-IR verifier checks every occurrence against its operand contract.
+Ordinary register allocation rejects unresolved symbolic state.
+
+`StateContents` is the shared transfer model for scheduling and state lowering.
+Inputs read the old contents; all writes and clobbers invalidate overwritten
+units, then symbolic results install their identities. Effects remain precise
+per state bit, including instructions that write several bits together.
+
+Scheduling retains its ordinary physical-dependency schedule as a fallback. An
+additional candidate orders symbolic state lifetimes dynamically, allowing a
+whole definition/use interval to move across another writer. It must consume
+the right versions without recovery and preserve observable exit contents.
+Explicit physical reads keep their original dependencies. The candidate is
+selected only when its estimated pressure and completion cost are no worse.
+Live-in states or conflicts that this local policy cannot handle fall back to
+the ordinary schedule; they do not restrict what the IR can represent.
+
+Required state lowering runs after optional scheduling. Its CFG worklist meets
+available identities across predecessors, distinguishing an unvisited edge from
+an unknown hardware value so preserved values can flow around loops. Safe
+producer recomputation handles unavailable states before conversion to physical
+operands. Block parameters and edge transfers still require explicit lowering;
+this change does not introduce arbitrary flags Phi or ordinary flags spills.
+Target-specific condition materialization and costed recovery alternatives are
+future extensions; current recovery retains the safe-rematerialization contract.
+
 ## Memory representation
 
 Translation receives an explicit target `DataLayout`. Pointer loads/stores use
@@ -118,14 +154,15 @@ Target-independent constant encoding is separate from these layouts. The memory
 optimization pass requires an explicit `OptConfig::data_layout`; without one it
 leaves memory operations unchanged. `PassManager::with_layout` supplies it.
 
-MIR load/store alignment and volatility survive as `InstRef::memory()`.
-Stack accesses also receive a descriptor, with conservative alignment and MIR's
-nontrapping stack-access contract. Source offsets remain instruction operands.
+MIR load/store alignment and volatility survive in the required `MemFlags`
+field of generic and target memory instructions. Offsets and stack slots are
+ordinary fields too. ABI, spill and frame lowering supply flags explicitly.
+There is no instruction-indexed memory side table.
 
 x86 legalization checks offset loads/stores against the signed disp32 range.
 Larger displacements become an i64 constant plus a pointer addition, followed by
-the original access with offset zero. The access keeps its ID and full memory
-descriptor; address calculation has no memory effects. Thus unsigned MIR offsets
+the original access with offset zero. The access keeps its ID and memory
+fields; address calculation has no memory effects. Thus unsigned MIR offsets
 above `i32::MAX` never silently turn into negative displacements. In-range
 offsets retain the compact addressing form. Generic i8/i16 and pointer accesses
 use their existing target load/store rules. Physical transfers preserve their
@@ -134,20 +171,22 @@ required widths. Narrow arithmetic legalization is still separate work.
 `ptr-offset` emits a pointer-valued `PtrAdd` directly, without constructing
 an integer-typed address and copying it back to a pointer.
 
-ISA templates declare `(memory Read 8)` or `(memory Write 4)`. The generated
-metadata states the encoded access width independently of result register width.
-The current x86 selector requires one matching target access for a source access
-and transfers its descriptor only to that instruction, not to address-calculation
-instructions. Changing the direction, size or number of accesses fails explicitly;
-future split/fused-access lowering needs its own checked mapping.
+ISA definitions declare `memory = { kind: Read, bytes: 8 };` and a required
+`flags: MemFlags` parameter. Generation checks that exactly one such field is
+present on every concrete memory instruction and absent from other instructions.
+Direction and access width come from the instruction definition; generic
+load/store width comes from its value type and the target data layout.
 
-Allocation preserves descriptors when rewriting registers. Final emission
-rechecks direction/width and alignment validity. Unknown memory effects and
-annotated accesses remain scheduling barriers: these descriptors alone do not
-establish alias independence or authorize speculative execution.
-ABI/spill/prologue accesses do not yet all have per-instance descriptors, so
-absence must not be interpreted as purity. Atomic ordering, address spaces,
-scalable accesses and general memory alias analysis remain future work.
+Selection rules pass `n.flags` to the target instruction directly. Address
+temporaries carry no access attributes, and selection no longer scans its output
+to attach descriptors afterward. Legalization and register allocation retain
+attributes through ordinary field copying. Replacement and deletion release
+them with the instruction's other fields.
+
+Scheduling reads `InstRef::mem_flags()` directly, excludes volatile accesses and
+preserves source order between other accesses; these fields do not establish
+alias independence or authorize speculative execution. Atomic ordering, address
+spaces, scalable accesses and general memory alias analysis remain future work.
 
 ## Integer reassociation
 

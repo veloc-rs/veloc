@@ -12,6 +12,7 @@ template GprExtend(Opcode: ident, Map: expr, Byte: expr, Wide: expr, RmKind: ide
             src: GPR64,
         };
         schedule = Copy;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, DstBits), reg(src, SrcBits)] }]
         };
@@ -26,6 +27,7 @@ template GprMove(Opcode: ident, Bits: expr, Wide: expr, Mnemonic: expr) {
             src: GPR64,
         };
         schedule = Copy;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src, Bits)] }]
         };
@@ -48,6 +50,7 @@ template FloatMove(Opcode: ident, Bits: expr, Prefix: expr, Ty: expr, Mnemonic: 
             src2: FPR128,
         };
         schedule = Copy;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 128), reg(src2, 128)] }]
         };
@@ -70,6 +73,7 @@ template GprToXmmMove(Opcode: ident, Bits: expr, Wide: expr, FloatType: expr, Mn
             src: GPR64,
         };
         schedule = Copy;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 128), reg(src, Bits)] }]
         };
@@ -90,6 +94,7 @@ template XmmToGprMove(Opcode: ident, Bits: expr, Wide: expr, FloatType: expr, Mn
             src: FPR128,
         };
         schedule = Copy;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src, 128)] }]
         };
@@ -126,6 +131,7 @@ op X86Mov32Imm(imm: i64) -> (dst: Value<GprValue>) {
         dst: GPR64,
     };
     schedule = Copy;
+    movable = true;
     assembly = {
         lines: [{ mnemonic: "mov", operands: [reg(dst, 32), imm(imm)] }]
     };
@@ -141,6 +147,7 @@ op X86Mov64Imm32(imm: i64) -> (dst: Value<GprValue>) {
         dst: GPR64,
     };
     schedule = Copy;
+    movable = true;
     assembly = {
         lines: [{ mnemonic: "mov", operands: [reg(dst, 64), imm(imm)] }]
     };
@@ -156,6 +163,7 @@ op X86Mov64Imm64(imm: i64) -> (dst: Value<GprValue>) {
         dst: GPR64,
     };
     schedule = Copy;
+    movable = true;
     assembly = {
         lines: [{ mnemonic: "mov", operands: [reg(dst, 64), imm(imm)] }]
     };

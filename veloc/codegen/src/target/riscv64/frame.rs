@@ -98,7 +98,7 @@ impl TargetFrameLowering for Frame {
                 at.writer(),
                 &[Reg(2)],
                 &[Reg(2)],
-                [FieldValue::Imm(-total)],
+                veloc_lir::Fields::Imm(-total),
             );
             for save in &saves {
                 spill_opcode(
@@ -113,7 +113,10 @@ impl TargetFrameLowering for Frame {
                     at.writer(),
                     &[],
                     &[save.reg],
-                    [FieldValue::StackSlot(save.slot)],
+                    veloc_lir::Fields::StackMemory {
+                        slot: save.slot,
+                        flags: veloc_lir::MemFlags::new(),
+                    },
                 );
             }
         }
@@ -135,14 +138,17 @@ impl TargetFrameLowering for Frame {
                         at.writer(),
                         &[save.reg],
                         &[],
-                        [FieldValue::StackSlot(save.slot)],
+                        veloc_lir::Fields::StackMemory {
+                            slot: save.slot,
+                            flags: veloc_lir::MemFlags::new(),
+                        },
                     );
                 }
                 inst::TargetInst::RvAddOffset.write(
                     at.writer(),
                     &[Reg(2)],
                     &[Reg(2)],
-                    [FieldValue::Imm(total)],
+                    veloc_lir::Fields::Imm(total),
                 );
             }
         }

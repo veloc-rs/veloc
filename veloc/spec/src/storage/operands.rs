@@ -15,6 +15,7 @@ pub(crate) struct Operands {
     pub(crate) register: String,
     pub(crate) register_rust: String,
     pub(crate) attributes: String,
+    pub(crate) payloads: Option<super::payload::Payloads>,
     pub(crate) control: Option<(String, String, BTreeSet<String>)>,
 }
 #[derive(Debug)]
@@ -131,6 +132,26 @@ pub(crate) fn compile(
             return Err(config.error("attribute payload types must be unique"));
         }
     }
+    let payloads = if let Some(node) = config.optional("payload") {
+        let ty = model::name(source, node)?;
+        let host = model::name(source, config.take("payload_host")?)?;
+        if !data.rust.contains(&ty) || !data.rust.contains(&host) {
+            return Err(config.error("payload and payload_host require declared Rust types"));
+        }
+        Some(super::payload::Payloads::compile(
+            source,
+            config.take("field_layouts")?,
+            data.rust.qualified(&ty),
+            data.rust.qualified(&host),
+            &attr_enum
+                .variants
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect(),
+        )?)
+    } else {
+        None
+    };
     let control = if let Some(node) = config.optional("control") {
         let path = model::name(source, node)?;
         let (owner, default) = path
@@ -225,6 +246,7 @@ pub(crate) fn compile(
         register_rust: data.rust.rust(&register),
         register,
         attributes,
+        payloads,
         control,
     })
 }
@@ -336,6 +358,23 @@ impl Operands {
                 .filter(|m| m.domain == domain && m.binding.is_some())
                 .collect();
             members.sort_by_key(|m| m.index);
+            if domain == Domain::Attribute
+                && let Some(payloads) = &self.payloads
+            {
+                let fields: Vec<_> = members
+                    .iter()
+                    .map(|m| {
+                        let variant = m.field.codec.as_ref().unwrap().rsplit_once("::").unwrap().1;
+                        (variant, local(m.binding.as_ref().unwrap()), m.field.shape)
+                    })
+                    .collect();
+                args.push(
+                    payloads
+                        .construct(&fields, receiver, &payloads.rust)
+                        .expect("checked instruction field layout"),
+                );
+                continue;
+            }
             let tail = if members
                 .last()
                 .is_some_and(|m| m.field.shape == Shape::Sequence)
@@ -353,10 +392,9 @@ impl Operands {
                 .iter()
                 .map(|m| {
                     let value = local(m.binding.as_ref().unwrap());
-                    if let Some(codec) = &m.field.codec {
-                        format!("{codec}({value})")
-                    } else {
-                        value
+                    match &m.field.codec {
+                        Some(codec) => format!("{codec}({value})"),
+                        None => value,
                     }
                 })
                 .collect();

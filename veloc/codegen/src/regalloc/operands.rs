@@ -60,14 +60,6 @@ fn groups(
             placement => {
                 let regs = match placement {
                     Placement::Fixed(reg) => vec![reg],
-                    Placement::State(reg) => {
-                        if values[i] != reg {
-                            return Err(Error::codegen(
-                                "state value must be resolved before register allocation",
-                            ));
-                        }
-                        vec![reg]
-                    }
                     Placement::Registers(regs) => regs.to_vec(),
                     Placement::Reuse(_) => unreachable!(),
                 };
@@ -103,7 +95,7 @@ fn groups(
                 let class = allocator
                     .target
                     .desc()
-                    .reg_class_for_vreg(&data.ty, data.bank);
+                    .reg_class_for_vreg(&data.ty, data.bank());
                 allocator
                     .target
                     .desc()

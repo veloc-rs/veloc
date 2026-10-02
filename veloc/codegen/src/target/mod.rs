@@ -11,7 +11,6 @@ mod features;
 mod types;
 
 use crate::Emitter;
-pub use crate::passes::lowering::RewriteContext;
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
 use std::boxed::Box;
 use std::vec::Vec;
@@ -131,9 +130,6 @@ pub trait TargetMachine: TargetRegalloc + TargetSchedule {
     /// Immutable selection rules and explicit host extensions.
     fn selector(&self) -> crate::passes::isel::SelectPolicy<'_>;
 
-    /// 获取 post-isel 组件。
-    fn post_isel(&self) -> &dyn TargetPostIsel;
-
     /// 获取栈帧和序言/尾声 lowering 组件。
     fn frame_lowering(&self) -> &dyn TargetFrameLowering;
 
@@ -164,10 +160,12 @@ impl ResourceId {
     }
 }
 
-/// A movable, nontrapping operation without memory or control effects.
+/// CPU cost category, independent of permission to reorder an instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScheduleInfo {
-    pub class: ScheduleClassId,
+pub enum ScheduleClass {
+    Modeled(ScheduleClassId),
+    /// No machine cost until this instruction has been expanded.
+    Pseudo,
 }
 
 /// A scheduling class reserves one resource pool. Classes can share a pool.
@@ -236,57 +234,22 @@ pub trait TargetEmitter: Send + Sync {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RewriteResult {
-    Keep,
-    InPlace,
-    Replace,
-    Remove,
-}
-
-/// pre-isel rewrite 规则表项。
-///
-/// 规则以一个紧凑的 typed IR 存储，运行时不需要再解析字符串。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreIselRewriteExpr {
-    Var(u32),
-    Imm(i64),
-    Op {
-        opcode: veloc_lir::GenericOpcode,
-        args: &'static [PreIselRewriteExpr],
-    },
-}
-
-/// pre-isel rewrite 规则表项。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PreIselRewriteRuleData {
-    pub name: &'static str,
-    pub match_expr: PreIselRewriteExpr,
-    pub replace_expr: PreIselRewriteExpr,
-    pub cost: i64,
-    pub priority: i64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetInstMetadata {
     pub constraints: &'static [veloc_lir::OperandConstraint],
-    /// Fixed access encoded by this instruction; absence is not an effect proof.
-    pub memory: Option<(veloc_lir::MemoryKind, u32)>,
+    /// State categories from the operand signature, independent of placement.
+    /// All other operands carry ordinary register values.
+    pub state_operands: &'static [veloc_lir::StateOperand],
     pub flow: veloc_lir::ControlFlow,
-    pub schedule: Option<ScheduleInfo>,
+    pub schedule_class: ScheduleClass,
+    /// The target guarantees local reordering is safe when register and state
+    /// dependencies and memory/trap order are preserved. Unknown effects remain barriers.
+    pub movable: bool,
     /// Reexecuting this producer with the same inputs is safe. Data results
     /// receive fresh identities when hardware state must be recomputed.
     pub rematerializable: bool,
     /// Destroyed physical storage roots, without defining result values.
     /// Per-call ABI destruction is supplied separately by CallInfo.
     pub clobbers: &'static [Reg],
-}
-
-pub trait TargetPostIsel: Send + Sync {
-    /// 指令融合（可选）
-    ///
-    /// 在指令选择后、寄存器分配前执行。
-    /// 默认不做任何处理，目标后端可以按需覆写。
-    fn combine_instructions(&self, _mfunc: &mut MachineFunction) {}
 }
 
 pub trait TargetFrameLowering: Send + Sync {

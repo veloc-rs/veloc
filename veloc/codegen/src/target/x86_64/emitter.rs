@@ -46,7 +46,7 @@ impl TargetEmitter for X86_64CodeEmitter {
             }
             MachineOpcode::Target(target_inst_code) => {
                 let target = crate::target::x86_64::inst::TargetInst::from_u32(*target_inst_code);
-                if target.is_pseudo() || !target.has_encoding() {
+                if target.is_pseudo() {
                     return Err(crate::Error::codegen(std::format!(
                         "{target:?} has no final encoding"
                     )));
@@ -55,16 +55,6 @@ impl TargetEmitter for X86_64CodeEmitter {
                     return Err(crate::Error::codegen(std::format!(
                         "{target:?} requires unavailable target features"
                     )));
-                }
-                if let Some(access) = inst.memory() {
-                    let shape = super::inst::target_inst_metadata(target).memory;
-                    if shape != Some((access.kind, access.bytes))
-                        || !access.alignment.is_power_of_two()
-                    {
-                        return Err(crate::Error::codegen(
-                            "emitted instruction violates its memory access contract",
-                        ));
-                    }
                 }
                 target.emit(emitter, inst, mfunc).map_err(|error| {
                     crate::Error::codegen(std::format!("{target:?}: {error}; {inst:?}"))

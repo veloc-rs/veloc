@@ -6,7 +6,7 @@ mod generate;
 mod select;
 mod selection;
 
-use crate::target::ast::Def;
+use crate::target::ast::{AttributeKind, Def};
 use crate::target::{ExtractorDef, OperandConstraint, parser};
 use std::collections::HashMap;
 
@@ -20,8 +20,8 @@ pub(crate) struct FinalInstDef {
     ties: Vec<(usize, usize)>,
     clobbers: Vec<String>,
     schedule_class: Option<String>,
+    movable: bool,
     flow: String,
-    memory: Option<(String, u32)>,
     encoding: Option<String>,
     is_pseudo: bool,
     assembly: Option<assembly::Assembly>,
@@ -53,6 +53,7 @@ pub(crate) struct Plan {
     context: Option<String>,
     cpu: cpu::Plan,
     input_layouts: std::collections::BTreeMap<String, crate::storage::operands::Projection>,
+    payloads: Option<crate::storage::payload::Payloads>,
 }
 impl Plan {
     pub(crate) fn prepare(
@@ -82,8 +83,13 @@ impl Plan {
             .map(|(_, source)| source.contracts())
             .transpose()?;
         let mut input_layouts = std::collections::BTreeMap::new();
+        let mut payloads = None;
         if let Some((dialect, source)) = input_definitions {
-            for op in source.parse()?.ops {
+            let definitions = source.parse()?;
+            if let crate::storage::Strategy::Operands(storage) = &definitions.storage.strategy {
+                payloads = storage.payloads.clone();
+            }
+            for op in definitions.ops {
                 if let crate::model::Projection::Operands(projection) = op.projection {
                     input_layouts.insert(op.name, projection);
                 }
@@ -107,6 +113,16 @@ impl Plan {
                 "selection requires input operation definitions".into(),
             ));
         }
+        if payloads.is_none()
+            && module
+                .defs
+                .iter()
+                .any(|def| matches!(def, Def::SelectRule(_)))
+        {
+            return Err(error(
+                "selection requires payload layouts in its input storage definition".into(),
+            ));
+        }
         let extractors = collect_extractors(&module).map_err(&error)?;
         select::check_predicates(&module).map_err(&error)?;
         if !extractors.is_empty() && context.is_none() {
@@ -125,22 +141,41 @@ impl Plan {
         }
         encoding::compile(source, arch, &mut final_inst_defs).map_err(&error)?;
         for (name, inst) in &final_inst_defs {
-            if inst.schedule_class.is_some()
-                && (inst.memory.is_some()
-                    || inst.flow != "Next"
+            if let Some(payloads) = &payloads {
+                let fields: Vec<_> = inst
+                    .operands
+                    .iter()
+                    .filter_map(|op| match op {
+                        OperandConstraint::Attribute(_, kind) => Some((
+                            kind.description().field_variant,
+                            String::new(),
+                            crate::storage::operands::Shape::One,
+                        )),
+                        _ => None,
+                    })
+                    .collect();
+                payloads
+                    .construct(&fields, "writer", "veloc_lir::Fields")
+                    .map_err(|e| error(format!("{name}: {e}")))?;
+            }
+            if inst.movable
+                && (inst.flow != "Next"
                     || inst.is_pseudo
                     || inst.operands.iter().any(|op| {
                         matches!(
                             op,
-                            OperandConstraint::Block(_)
-                                | OperandConstraint::Global(_)
-                                | OperandConstraint::StackSlot(_)
-                                | OperandConstraint::Call(_)
+                            OperandConstraint::Attribute(
+                                _,
+                                AttributeKind::Block
+                                    | AttributeKind::Global
+                                    | AttributeKind::StackSlot
+                                    | AttributeKind::Call
+                            )
                         )
                     }))
             {
                 return Err(error(format!(
-                    "{name}: scheduled instructions must not have memory, control or stack effects"
+                    "{name}: movable instructions must not have control or unresolved stack effects"
                 )));
             }
         }
@@ -196,6 +231,7 @@ impl Plan {
             context: context.map(str::to_owned),
             cpu,
             input_layouts,
+            payloads,
         })
     }
     pub(crate) fn emit(&self, kind: crate::Emit) -> String {
@@ -212,9 +248,9 @@ impl Plan {
                 module,
                 extractors,
                 final_inst_defs,
-                arch,
                 self.context.as_deref(),
                 &self.input_layouts,
+                self.payloads.as_ref(),
             ),
             crate::Emit::Target => {}
             _ => unreachable!("not a target artifact"),
@@ -243,9 +279,9 @@ impl Plan {
             &module,
             &extractors,
             &final_inst_defs,
-            arch,
             self.context.as_deref(),
             &self.input_layouts,
+            self.payloads.as_ref(),
         );
 
         output

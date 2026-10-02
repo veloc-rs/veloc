@@ -15,7 +15,7 @@ use veloc_lir::{MachineFunction, Reg};
 /// Selected code is SSA with target instructions and symbolic call-frame boundaries.
 pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
     verify(f, target)?;
-    crate::passes::state::StateValues::collect(f, target)?;
+    verify_state_values(f, target)?;
     verify_entry_bindings(f)?;
     for block in f.blocks() {
         for id in f.block_insts(block) {
@@ -23,6 +23,73 @@ pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> 
                 && !f.inst(id).is_call_frame()
             {
                 return Err(Error::codegen(format!("unselected instruction {id:?}")));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// State identity belongs to definitions. Every occurrence must use the same
+/// category; ordinary copies and edge transfers cannot preserve hardware state.
+fn verify_state_values(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
+    use veloc_lir::{MachineOpcode, OperandRef};
+    for block in f.blocks() {
+        if f.block_params(block)
+            .unwrap()
+            .iter()
+            .any(|&v| f.state_unit(v).is_some())
+        {
+            return Err(Error::codegen(
+                "state block parameters require explicit edge lowering",
+            ));
+        }
+        for id in f.block_insts(block) {
+            let inst = f.inst(id);
+            let state_operands = match inst.opcode() {
+                MachineOpcode::Target(op) => target.instruction_metadata(op).state_operands,
+                _ => &[],
+            };
+            for state in state_operands {
+                let value = *state
+                    .operand
+                    .get(inst.inputs(), inst.results())
+                    .ok_or_else(|| Error::codegen("missing state operand"))?;
+                if f.register_unit(value) != Reg::from(state.unit) {
+                    return Err(Error::codegen("operand has an incompatible state category"));
+                }
+            }
+            for (operand, &value) in inst
+                .inputs()
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (OperandRef::Input(i), v))
+                .chain(
+                    inst.results()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| (OperandRef::Result(i), v)),
+                )
+            {
+                if let Some(unit) = f.state_unit(value) {
+                    if !state_operands
+                        .iter()
+                        .any(|state| state.operand == operand && Reg::from(state.unit) == unit)
+                    {
+                        return Err(Error::codegen(
+                            "state value used outside its declared operand category",
+                        ));
+                    }
+                }
+            }
+            if inst.edge_ids().any(|edge| {
+                inst.edge(edge)
+                    .args
+                    .iter()
+                    .any(|&v| f.state_unit(v).is_some())
+            }) {
+                return Err(Error::codegen(
+                    "state edge arguments require explicit edge lowering",
+                ));
             }
         }
     }
@@ -338,7 +405,7 @@ mod tests {
     #[test]
     fn checks_representation_invariants_without_phase_tags() {
         use crate::target::x86_64::inst::{REG_RAX, TargetInst};
-        use veloc_lir::{FieldValue, MachineOpcode};
+        use veloc_lir::MachineOpcode;
         let target =
             crate::target::x86_64::X86_64TargetMachine::new(crate::TargetConfig::default())
                 .unwrap();
@@ -363,13 +430,13 @@ mod tests {
             MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
             &[value],
             &[],
-            [FieldValue::Imm(42)],
+            veloc_lir::Fields::Imm(42),
         );
         f.editor().replace(ret).write(
             MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
             &[],
             &[],
-            [],
+            veloc_lir::Fields::None,
         );
         verify_selected(&f, &target).unwrap();
         assert!(verify_allocated(&f, &target).is_err());
@@ -378,7 +445,7 @@ mod tests {
             MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
             &[REG_RAX],
             &[],
-            [FieldValue::Imm(42)],
+            veloc_lir::Fields::Imm(42),
         );
         verify_allocated(&f, &target).unwrap();
         f.editor().append_param(value);

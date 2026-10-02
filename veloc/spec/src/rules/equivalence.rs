@@ -256,10 +256,16 @@ pub(crate) fn generate(
 struct CheckedRule {
     lhs: Expr,
     rhs: Expr,
-    guard: Option<(usize, u64, bool)>,
+    guard: Option<Guard>,
     types: String,
     domain: TypeSet,
     name: String,
+}
+
+#[derive(Clone, Copy)]
+enum Guard {
+    IsConstant(usize),
+    Constant(usize, u64, bool),
 }
 
 impl CheckedRule {
@@ -336,8 +342,11 @@ fn local_folds(
                         Expr::Apply(..) => unreachable!("local pattern"),
                     }
                 }
-                if let Some((v, value, equal)) = rule.guard {
-                    checks.push(check_constant(vars[&v], value, equal));
+                if let Some(guard) = rule.guard {
+                    checks.push(match guard {
+                        Guard::IsConstant(v) => format!("constant(args[{}]).is_some()", vars[&v]),
+                        Guard::Constant(v, value, equal) => check_constant(vars[&v], value, equal),
+                    });
                 }
                 let result = match &rule.rhs {
                     Expr::Variable(v) => format!("crate::evaluate::Fold::Operand({})", vars[v]),
@@ -565,16 +574,18 @@ impl Checker<'_> {
             )),
         }
     }
-    fn guard(&self, node: &Node) -> Result<(usize, u64, bool), Error> {
+    fn guard(&self, node: &Node) -> Result<Guard, Error> {
         let fail = || {
             Error::at(
                 self.source,
                 node.offset,
-                "guard requires matched_value == integer or matched_value != integer",
+                "guard requires is_const(value), value == integer or value != integer",
             )
         };
-        let Kind::Binary(op @ ("==" | "!="), left, right) = &node.kind else {
-            return Err(fail());
+        let (left, comparison) = match &node.kind {
+            Kind::Call(name, args) if name == "is_const" && args.len() == 1 => (&args[0], None),
+            Kind::Binary(op @ ("==" | "!="), left, right) => (left.as_ref(), Some((*op, right))),
+            _ => return Err(fail()),
         };
         let Kind::Name(name) = &left.kind else {
             return Err(fail());
@@ -595,6 +606,9 @@ impl Checker<'_> {
                 "integer guard requires a boolean or scalar integer of at most 64 bits",
             ));
         }
+        let Some((op, right)) = comparison else {
+            return Ok(Guard::IsConstant(self.parameters[name]));
+        };
         let value = match right.kind {
             Kind::Number(value) => u64::from(value),
             Kind::Integer(value) => u64::try_from(value)
@@ -610,7 +624,7 @@ impl Checker<'_> {
             },
             _ => return Err(fail()),
         };
-        Ok((self.parameters[name], value, *op == "=="))
+        Ok(Guard::Constant(self.parameters[name], value, op == "=="))
     }
 }
 
@@ -663,13 +677,14 @@ enum Step {
     },
     Same(usize, usize),
     Equal(usize, usize),
+    IsConstant(usize),
     Constant(usize, usize, bool),
     Capture(usize),
 }
 
 /// Predicates on any occurrence of a repeated variable constrain all its
 /// occurrences. Derive them from the same equality checks used by the matcher.
-fn input_constants(prefix: &[(Step, usize)], slot: usize) -> Vec<(usize, bool)> {
+fn input_constants(prefix: &[(Step, usize)], slot: usize) -> (bool, Vec<(usize, bool)>) {
     let mut aliases = BTreeSet::new();
     let mut pending = vec![slot];
     while let Some(slot) = pending.pop() {
@@ -687,7 +702,10 @@ fn input_constants(prefix: &[(Step, usize)], slot: usize) -> Vec<(usize, bool)> 
             }
         }
     }
-    prefix
+    let requires_constant = prefix
+        .iter()
+        .any(|(step, _)| matches!(step, Step::IsConstant(slot) if aliases.contains(slot)));
+    let constants = prefix
         .iter()
         .filter_map(|(step, _)| match *step {
             Step::Constant(slot, constant, equal) if aliases.contains(&slot) => {
@@ -697,7 +715,8 @@ fn input_constants(prefix: &[(Step, usize)], slot: usize) -> Vec<(usize, bool)> 
         })
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .collect()
+        .collect();
+    (requires_constant, constants)
 }
 
 struct Search {
@@ -779,6 +798,7 @@ struct Trigger {
     scan: Option<usize>,
     path: Vec<Edge>,
     types: usize,
+    requires_constant: bool,
     constants: Vec<(usize, bool)>,
 }
 
@@ -848,9 +868,14 @@ impl Bytecode {
             let ty = crate::bytecode::intern(&mut self.types, rule.types.clone());
             let mut steps = vec![Step::Type(ty)];
             self.pattern(&rule.lhs, 0, &mut vars, &mut steps);
-            if let Some((var, value, equal)) = rule.guard {
-                let constant = self.constant(value);
-                steps.push(Step::Constant(vars[&var], constant, equal));
+            if let Some(guard) = rule.guard {
+                steps.push(match guard {
+                    Guard::IsConstant(var) => Step::IsConstant(vars[&var]),
+                    Guard::Constant(var, value, equal) => {
+                        let constant = self.constant(value);
+                        Step::Constant(vars[&var], constant, equal)
+                    }
+                });
             }
             let mut captures = BTreeSet::new();
             collect_vars(&rule.rhs, &mut captures);
@@ -883,6 +908,7 @@ impl Bytecode {
                 trigger.scan,
                 trigger.path.clone(),
                 trigger.types,
+                trigger.requires_constant,
                 trigger.constants.clone(),
             );
             queries
@@ -987,6 +1013,10 @@ impl Bytecode {
                             rhs,
                             otherwise: 0,
                         },
+                        Step::IsConstant(value) => Op::CheckIsConstant {
+                            value,
+                            otherwise: 0,
+                        },
                         Step::Constant(value, constant, true) => Op::CheckConstantEq {
                             value,
                             constant,
@@ -1041,6 +1071,7 @@ impl Bytecode {
             {
                 root.get_or_insert(*opcode);
                 let parent = paths[source].clone();
+                let (requires_constant, constants) = input_constants(prefix, *source);
                 self.triggers.push(Trigger {
                     root: root.unwrap(),
                     rules: BTreeSet::from([rule]),
@@ -1050,7 +1081,8 @@ impl Bytecode {
                     scan: Some(*scan),
                     path: parent.clone(),
                     types,
-                    constants: input_constants(prefix, *source),
+                    requires_constant,
+                    constants,
                 });
                 let slots = &bindings[0];
                 for &slot in slots {
@@ -1082,6 +1114,7 @@ impl Bytecode {
             // Unions can create new joins and satisfy repeated-variable checks
             // or constant predicates without adding an expression. Every bound
             // class is a dependency; conditions filter its final state.
+            let (requires_constant, constants) = input_constants(prefix, slot);
             self.triggers.push(Trigger {
                 root,
                 rules: BTreeSet::from([rule]),
@@ -1091,7 +1124,8 @@ impl Bytecode {
                 scan: None,
                 path,
                 types,
-                constants: input_constants(prefix, slot),
+                requires_constant,
+                constants,
             });
         }
     }
@@ -1167,8 +1201,8 @@ impl Bytecode {
                     .or_default()
                     .extend(&edge.columns);
             }
-            writeln!(output, "Trigger {{ root: {opcode}::{}, entry: {}, slot: {}, scan: {:?}, path: PathId({path}), types: {}, constants: &{:?} }},",
-                self.opcodes[trigger.root], trigger.entry, trigger.slot, trigger.scan, trigger.types, trigger.constants).unwrap();
+            writeln!(output, "Trigger {{ root: {opcode}::{}, entry: {}, slot: {}, scan: {:?}, path: PathId({path}), types: {}, requires_constant: {}, constants: &{:?} }},",
+                self.opcodes[trigger.root], trigger.entry, trigger.slot, trigger.scan, trigger.types, trigger.requires_constant, trigger.constants).unwrap();
         }
         writeln!(output, "];").unwrap();
         writeln!(output, "pub(super) static PATHS: &[&[Edge]] = &[").unwrap();

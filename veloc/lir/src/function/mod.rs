@@ -174,6 +174,22 @@ impl MachineFunction {
         &self.body.vregs[VReg::from_u32(reg.index())]
     }
 
+    /// Hardware category of a symbolic state result. Physical registers and
+    /// ordinary data values have no symbolic state identity.
+    pub fn state_unit(&self, value: Reg) -> Option<Reg> {
+        self.body
+            .vregs
+            .get(value.as_vreg()?)?
+            .state_unit()
+            .map(Reg::from)
+    }
+
+    /// Storage resource used by a register occurrence, independent of whether
+    /// that resource currently contains the required symbolic value.
+    pub fn register_unit(&self, value: Reg) -> Reg {
+        self.state_unit(value).unwrap_or(value)
+    }
+
     pub fn try_call_info(&self, inst_id: InstId) -> Option<&CallInfo> {
         self.body.store.call_info(inst_id)
     }

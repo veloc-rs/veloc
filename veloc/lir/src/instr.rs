@@ -114,13 +114,46 @@ impl core::fmt::Debug for Reg {
 pub struct StackSlot(pub u32);
 entity_impl!(StackSlot, "stackslot");
 
-/// 寄存器数据
+/// A state category declared by an instruction's operand signature.
+/// Operands absent from this signature use ordinary register values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateOperand {
+    pub operand: crate::OperandRef,
+    pub unit: PReg,
+}
+
+/// Ordinary register placement and non-renamable state are mutually exclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VRegKind {
+    /// None leaves bank selection to the target and operand constraints.
+    Register(Option<RegisterBank>),
+    /// State category, identified by its target hardware unit. The logical
+    /// value can outlive its residency in this unit; ordinary RA cannot spill it.
+    State(PReg),
+}
+
+/// Typed identity; state categories share storage with ordinary bank metadata.
 #[derive(Debug, Clone)]
 pub struct VRegData {
     pub ty: Type,
-    /// Optional target placement constraint, not a required pipeline stage.
-    /// `None` leaves register-class selection to the target and instruction constraints.
-    pub bank: Option<RegisterBank>,
+    pub kind: VRegKind,
+}
+
+impl VRegData {
+    pub fn state_unit(&self) -> Option<PReg> {
+        match self.kind {
+            VRegKind::State(unit) => Some(unit),
+            VRegKind::Register(_) => None,
+        }
+    }
+
+    /// Bank selection is meaningful only for ordinary register values.
+    pub fn bank(&self) -> Option<RegisterBank> {
+        match self.kind {
+            VRegKind::Register(bank) => bank,
+            VRegKind::State(_) => panic!("state values have no register bank"),
+        }
+    }
 }
 
 include!(concat!(env!("OUT_DIR"), "/instructions.rs"));
@@ -154,7 +187,6 @@ impl core::fmt::Debug for InstRef<'_> {
                 "clobbers",
                 &self.clobbers().collect::<smallvec::SmallVec<[Reg; 4]>>(),
             )
-            .field("memory", &self.memory())
             .finish()
     }
 }
@@ -213,7 +245,7 @@ impl<'a> InstRef<'a> {
             && !meta
                 .traits
                 .intersects(OpTraits::MAY_TRAP | OpTraits::ABORT | OpTraits::TERMINATOR)
-            && self.memory().is_none()
+            && self.mem_flags().is_none()
             && self.clobbers().next().is_none()
             && !self.results().is_empty()
             && self
@@ -239,8 +271,8 @@ impl<'a> InstRef<'a> {
     pub fn constraints(self) -> &'a [crate::OperandConstraint] {
         self.store.constraints(self.id)
     }
-    pub fn memory(self) -> Option<crate::MemoryAccess> {
-        self.store.memory(self.id)
+    pub fn mem_flags(self) -> Option<crate::MemFlags> {
+        self.fields().mem_flags()
     }
 
     /// Distinct register access for dependency, liveness and pressure analyses.

@@ -1,4 +1,5 @@
 use crate::target::TargetInstructions;
+pub(crate) mod state;
 use core::ops::{BitOr, BitOrAssign};
 use cranelift_entity::SecondaryMap;
 use hashbrown::HashMap;
@@ -648,7 +649,7 @@ mod tests {
     #[test]
     fn selected_control_distinguishes_branch_fallthrough_and_terminal_transfer() {
         use crate::target::x86_64::inst::{REG_ZF, TargetInst};
-        use veloc_lir::{FieldValue, MachineOpcode};
+        use veloc_lir::MachineOpcode;
         let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut f = MachineFunction::new("selected".into());
         for _id in 1..8 {
@@ -656,11 +657,19 @@ mod tests {
         }
         let mut emit = |block, op: TargetInst, targets: &[u32]| {
             {
-                let fields: std::vec::Vec<_> = targets
+                let edges: std::vec::Vec<_> = targets
                     .iter()
-                    .map(|&b| FieldValue::Edge(f.editor().create_edge(Block::from_u32(b), &[])))
+                    .map(|&b| f.editor().create_edge(Block::from_u32(b), &[]))
                     .collect();
-                let id = f.editor().at_end(Block::from_u32(block)).writer().write(
+                let mut editor = f.editor();
+                let mut cursor = editor.at_end(Block::from_u32(block));
+                let mut writer = cursor.writer();
+                let fields = if edges.is_empty() {
+                    veloc_lir::Fields::None
+                } else {
+                    writer.switch_fields(&edges)
+                };
+                let id = writer.write(
                     MachineOpcode::Target(op.as_u32()),
                     &[],
                     if op == TargetInst::X86Je {
@@ -731,7 +740,7 @@ mod tests {
                     MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
                     &[],
                     &[],
-                    [],
+                    veloc_lir::Fields::None,
                 );
 
             id

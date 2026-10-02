@@ -209,28 +209,6 @@ impl<'a> FuncTranslator<'a> {
         Ok(self.mfunc)
     }
 
-    fn memory_access(&self, inst: veloc_mir::Inst) -> Result<veloc_lir::MemoryAccess> {
-        let source = inst
-            .memory_access(self.func.dfg())
-            .expect("memory lowering requires an access contract");
-        let bytes = source.bytes(&self.layout).ok_or_else(|| {
-            Error::translate(format!(
-                "memory access requires a fixed machine representation: {:?}",
-                source.ty
-            ))
-        })?;
-        let kind = if source.stored.is_some() {
-            veloc_lir::MemoryKind::Write
-        } else {
-            veloc_lir::MemoryKind::Read
-        };
-        let mut access = veloc_lir::MemoryAccess::new(kind, bytes);
-        access.alignment = source.flags.alignment();
-        access.volatile = source.flags.is_volatile();
-        access.may_trap = self.func.stack_access(source, &self.layout).is_none();
-        Ok(access)
-    }
-
     fn lower_edge(&mut self, edge: veloc_mir::Successor<'_>) -> veloc_lir::EdgeId {
         let args = self.values(edge.args);
         self.mfunc
@@ -358,28 +336,31 @@ impl<'a> FuncTranslator<'a> {
                     .fcmp(result(), src0, src1, *kind))
             }
 
-            InstView::Load { ptr, offset, .. } => {
-                let base = self.value_map[*ptr];
-                let access = self.memory_access(inst_id)?;
-                Ok(self.mfunc.editor().at_end(mblock).with_memory(access).load(
-                    result(),
-                    base,
-                    *offset as i64,
-                ))
-            }
-
-            InstView::Store {
-                ptr, value, offset, ..
+            InstView::Load {
+                ptr, offset, flags, ..
             } => {
-                let val = self.value_map[*value];
                 let base = self.value_map[*ptr];
-                let access = self.memory_access(inst_id)?;
                 Ok(self
                     .mfunc
                     .editor()
                     .at_end(mblock)
-                    .with_memory(access)
-                    .store(val, base, *offset as i64))
+                    .load(result(), base, *offset as i64, *flags))
+            }
+
+            InstView::Store {
+                ptr,
+                value,
+                offset,
+                flags,
+                ..
+            } => {
+                let val = self.value_map[*value];
+                let base = self.value_map[*ptr];
+                Ok(self
+                    .mfunc
+                    .editor()
+                    .at_end(mblock)
+                    .store(val, base, *offset as i64, *flags))
             }
 
             InstView::Jump { dest } => {

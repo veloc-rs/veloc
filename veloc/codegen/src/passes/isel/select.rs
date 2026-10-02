@@ -15,7 +15,6 @@ use veloc_lir::{GenericOpcode, InstCursor, InstId, MachineFunction, Reg};
 pub struct SelectPolicy<'a> {
     pub program: &'static Program,
     pub features: FeatureSetRef<'a>,
-    pub metadata: fn(u32) -> &'static crate::target::TargetInstMetadata,
     /// Optional host extension for programs containing CallPredicate.
     pub predicate: Option<&'a (dyn Fn(u32, Reg) -> bool + Send + Sync)>,
 }
@@ -104,7 +103,6 @@ impl<'a> InstructionSelector<'a> {
         let entry = program
             .entry(generic)
             .ok_or_else(|| crate::error::Error::select(opcode, "No selection entry"))?;
-        let memory = mfunc.inst(inst_id).memory();
         let mut edit = mfunc.editor();
         let mut insert = edit.before(inst_id);
         matching::execute(
@@ -118,25 +116,6 @@ impl<'a> InstructionSelector<'a> {
             &mut scratch.edge_transfers,
         )
         .ok_or_else(|| crate::error::Error::select(opcode, "No matching selection rule"))?;
-        if let Some(access) = memory {
-            let mut destination = None;
-            for &id in scratch.selected.iter() {
-                let veloc_lir::MachineOpcode::Target(op) = edit.inst(id).opcode() else {
-                    continue;
-                };
-                if let Some(shape) = (self.target.metadata)(op).memory {
-                    if shape != (access.kind, access.bytes) || destination.replace(id).is_some() {
-                        return Err(crate::error::Error::codegen(
-                            "selection changed the memory access direction, size or count",
-                        ));
-                    }
-                }
-            }
-            let id = destination.ok_or_else(|| {
-                crate::error::Error::codegen("selection dropped the source memory access")
-            })?;
-            edit.set_inst_memory(id, Some(access));
-        }
         scratch.commit(mfunc, inst_id);
         Ok(())
     }

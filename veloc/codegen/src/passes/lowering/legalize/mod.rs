@@ -93,7 +93,7 @@ impl Legalizer<'_> {
             return Ok(None);
         }
         let inst = function.inst(id);
-        if !inst.is_generic() || inst.is_invalid() || inst.is_call_frame() {
+        if !inst.is_generic() || inst.is_call_frame() {
             return Ok(None);
         }
         let opcode = inst.opcode();

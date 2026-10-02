@@ -2,9 +2,9 @@ use crate::error::{Error, Result};
 use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
 use crate::target::{AbiLocation, AbiPlan, CallConv, TargetMachine};
 use smallvec::SmallVec;
+use veloc_lir::MemFlags;
 use veloc_lir::{GenericOpcode, InstId, MachineOpcode, Reg, StackObject, StackSlot, Type};
 use veloc_lir::{InstBuild, InstRead, OperandConstraint, OperandRef};
-use veloc_lir::{MemoryAccess, MemoryKind};
 
 pub struct AbiLoweringPass;
 
@@ -35,27 +35,15 @@ fn plan_signature(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Res
 
 /// Prepare a stack slot and typed access. ABI slot size may exceed access width.
 fn stack_access(
-    target: &dyn TargetMachine,
     insert: &mut veloc_lir::InstInserter<'_>,
     object: StackObject,
     size: u32,
     align: u32,
-    ty: Type,
-    kind: MemoryKind,
-) -> (Reg, StackSlot, MemoryAccess) {
+) -> (Reg, StackSlot, MemFlags) {
     let slot = insert.alloc_stack_object(object, size, align);
     let address = insert.alloc_vreg(Type::PTR);
     insert.stack_addr(address, slot);
-    let bytes = target
-        .desc()
-        .data_layout
-        .layout_of(ty)
-        .and_then(|layout| layout.store_size.fixed_bytes())
-        .expect("checked ABI storage layout");
-    let mut access = MemoryAccess::new(kind, bytes);
-    access.alignment = align;
-    access.may_trap = false;
-    (address, slot, access)
+    (address, slot, MemFlags::new().with_alignment(align))
 }
 
 fn return_constraints(
@@ -73,11 +61,7 @@ fn return_constraints(
         })
 }
 
-fn lower_formal_arguments(
-    target: &dyn TargetMachine,
-    mfunc: &mut veloc_lir::FuncEditor<'_>,
-    plan: &AbiPlan,
-) {
+fn lower_formal_arguments(mfunc: &mut veloc_lir::FuncEditor<'_>, plan: &AbiPlan) {
     let entry = mfunc.entry_block();
     assert_eq!(
         mfunc.params().len(),
@@ -101,16 +85,9 @@ fn lower_formal_arguments(
                 align,
             } => {
                 let mut insert = mfunc.at_start(entry);
-                let (address, _, access) = stack_access(
-                    target,
-                    &mut insert,
-                    StackObject::Incoming { offset },
-                    size,
-                    align,
-                    assignment.ty,
-                    MemoryKind::Read,
-                );
-                insert.with_memory(access).load(dst, address, 0);
+                let (address, _, flags) =
+                    stack_access(&mut insert, StackObject::Incoming { offset }, size, align);
+                insert.load(dst, address, 0, flags);
             }
         }
     }
@@ -128,7 +105,7 @@ pub(super) fn emit_libcall(
     symbol: &str,
 ) -> Result<()> {
     let inst = mfunc.inst(id);
-    if inst.memory().is_some() || inst.clobbers().next().is_some() {
+    if inst.mem_flags().is_some() || inst.clobbers().next().is_some() {
         return Err(Error::codegen(
             "libcall replacement cannot discard memory facts or register clobbers",
         ));
@@ -154,7 +131,7 @@ pub(super) fn emit_libcall(
             stack_args: Default::default(),
         },
     );
-    apply_call_abi(target, mfunc, id, &plan);
+    apply_call_abi(mfunc, id, &plan);
     Ok(())
 }
 
@@ -164,16 +141,11 @@ fn lower_call(
     id: InstId,
 ) -> Result<()> {
     let plan = plan_signature(target, &mfunc.call_info(id).sig)?;
-    apply_call_abi(target, mfunc, id, &plan);
+    apply_call_abi(mfunc, id, &plan);
     Ok(())
 }
 
-fn apply_call_abi(
-    target: &dyn TargetMachine,
-    mfunc: &mut veloc_lir::FuncEditor<'_>,
-    id: InstId,
-    plan: &AbiPlan,
-) {
+fn apply_call_abi(mfunc: &mut veloc_lir::FuncEditor<'_>, id: InstId, plan: &AbiPlan) {
     let inst = mfunc.inst(id);
     let (results, args, callee) = match inst.view() {
         veloc_lir::InstView::Call(call) => (call.results, call.args, None),
@@ -211,16 +183,13 @@ fn apply_call_abi(
                     size,
                     align,
                 } => {
-                    let (address, slot, access) = stack_access(
-                        target,
+                    let (address, slot, flags) = stack_access(
                         &mut insert,
                         StackObject::Outgoing { frame, offset },
                         size,
                         align,
-                        assignment.ty,
-                        MemoryKind::Write,
                     );
-                    insert.with_memory(access).store(src, address, 0);
+                    insert.store(src, address, 0, flags);
                     stack_args.push(slot);
                 }
             }
@@ -257,7 +226,7 @@ impl FunctionPass for AbiLoweringPass {
         let target = cx.target;
         let plan = plan_signature(target, cx.signature)?;
         let mut mfunc = cx.edit();
-        lower_formal_arguments(target, &mut mfunc.editor(), &plan);
+        lower_formal_arguments(&mut mfunc.editor(), &plan);
         let mut cursor = veloc_lir::InstCursor::new(&mfunc);
         while let Some(id) = cursor.next(&mfunc) {
             match mfunc.inst(id).opcode() {

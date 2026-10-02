@@ -185,7 +185,6 @@ mod tests {
         X86_64TargetMachine,
         inst::{REG_RAX, TargetInst},
     };
-    use veloc_lir::FieldValue;
     use veloc_lir::{MachineOpcode, Type};
 
     #[test]
@@ -206,7 +205,7 @@ mod tests {
                         MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
                         &[reg],
                         &[],
-                        [FieldValue::Imm(n)],
+                        veloc_lir::Fields::Imm(n),
                     );
 
                 id
@@ -218,7 +217,7 @@ mod tests {
                     f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
                     &[REG_RAX],
                     &[reg],
-                    [],
+                    veloc_lir::Fields::None,
                 );
 
                 id

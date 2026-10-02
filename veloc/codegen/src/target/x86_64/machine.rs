@@ -48,6 +48,9 @@ pub(super) fn spill_instruction(
         MachineOpcode::Target(op.as_u32()),
         results,
         inputs,
-        [veloc_lir::FieldValue::StackSlot(slot)],
+        veloc_lir::Fields::StackMemory {
+            slot: slot,
+            flags: veloc_lir::MemFlags::new(),
+        },
     ))
 }

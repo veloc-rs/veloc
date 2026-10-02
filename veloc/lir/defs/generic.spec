@@ -7,8 +7,10 @@ type CallFrameId = rust("crate::CallFrameId");
 type Successor = rust("crate::EdgeId");
 
 type Reg = rust("crate::Reg");
+type Fields = rust("crate::Fields");
+type FieldBuild = rust("crate::FieldBuild");
 enum FieldValue {
-    variants = [Imm(i64), FImm(f64), Edge(Successor), StackSlot(StackSlot), CallFrame(CallFrameId), IntCC(IntCC), FloatCC(FloatCC), Global(SymbolId), Call(CallInfo)];
+    variants = [Imm(i64), FImm(f64), Edge(Successor), StackSlot(StackSlot), CallFrame(CallFrameId), IntCC(IntCC), FloatCC(FloatCC), Global(SymbolId), Call(CallInfo), MemFlags(MemFlags)];
 }
 enum ControlFlow {
     variants = [Next, Branch, Jump, Return, Call, Trap];
@@ -20,6 +22,25 @@ storage Operands {
     writer = InstBuild;
     register = Reg;
     attributes = FieldValue;
+    payload = Fields;
+    payload_host = FieldBuild;
+    field_layouts = [
+        { fields: [], value: payload::None },
+        { fields: [Imm], value: payload::Imm(field0) },
+        { fields: [FImm], value: payload::FImm(field0) },
+        { fields: [StackSlot], value: payload::StackSlot(field0) },
+        { fields: [CallFrame], value: payload::CallFrame(field0) },
+        { fields: [IntCC], value: payload::IntCC(field0) },
+        { fields: [FloatCC], value: payload::FloatCC(field0) },
+        { fields: [Global], value: payload::Symbol(field0) },
+        { fields: [Edge], value: payload::Jump([field0]) },
+        { fields: [Edge, Edge], value: payload::Branch([field0, field1]) },
+        { fields: [sequence(Edge)], value: host::switch_fields(field0) },
+        { fields: [Call], value: host::call_fields(None, field0) },
+        { fields: [Global, Call], value: host::call_fields(Some(field0), field1) },
+        { fields: [Imm, MemFlags], value: payload::Memory { offset: field0, flags: field1 } },
+        { fields: [StackSlot, MemFlags], value: payload::StackMemory { slot: field0, flags: field1 } },
+    ];
     control = ControlFlow::Next;
 }
 
@@ -46,6 +67,7 @@ struct Load {
     dst: Reg,
     base: Reg,
     offset: i64,
+    flags: MemFlags,
 }
 
 struct StackAddr {
@@ -72,6 +94,7 @@ struct Store {
     src: Reg,
     base: Reg,
     offset: i64,
+    flags: MemFlags,
 }
 
 struct Constant {
@@ -425,14 +448,14 @@ op StackAddr(slot: StackSlot) -> (dst: Value<Type::PTR>) {
     storage = StackAddr { dst, slot };
 }
 
-op Load<T: Any>(base: Value<Type::PTR>, offset: i64) -> (dst: Value<T>) {
+op Load<T: Any>(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
-    storage = Load { dst, base, offset };
+    storage = Load { dst, base, offset, flags };
 }
 
-op Store<T: Any>(src: Value<T>, base: Value<Type::PTR>, offset: i64) -> () {
+op Store<T: Any>(src: Value<T>, base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> () {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
-    storage = Store { src, base, offset };
+    storage = Store { src, base, offset, flags };
 }
 
 op Constant<T: ScalarInteger | Type::BOOL | Type::PTR>(imm: i64) -> (dst: Value<T>) {

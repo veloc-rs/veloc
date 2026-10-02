@@ -48,7 +48,6 @@ impl<'a> RewriteContext<'a> {
     pub(super) fn update(&mut self, changes: &[(usize, Reg)], attributes: &[(usize, FieldValue)]) {
         let inst = self.function.inst(self.root);
         let opcode = inst.opcode();
-        let memory = inst.memory();
         let results: SmallVec<[Reg; 2]> = SmallVec::from_slice(inst.results());
         let mut inputs: SmallVec<[Reg; 4]> = SmallVec::from_slice(inst.inputs());
         let mut fields: SmallVec<[FieldValue; 2]> = (0..inst.fields().len())
@@ -67,9 +66,10 @@ impl<'a> RewriteContext<'a> {
             fields[*index] = value.clone();
         }
         let mut writer = self.function.replace(self.root).with_clobbers(clobbers);
-        if let Some(access) = memory {
-            writer = writer.with_memory(access);
-        }
+        let veloc_lir::MachineOpcode::Generic(generic) = opcode else {
+            unreachable!("legalization updates generic instructions");
+        };
+        let fields = generic.build_fields(&mut writer, fields);
         writer.write(opcode, &results, &inputs, fields);
     }
 
@@ -131,11 +131,14 @@ impl RewriteContext<'_> {
             Some(value) => value,
             None => self.function.alloc_vreg(ty),
         };
-        self.function.before(self.root).write(
+        let mut cursor = self.function.before(self.root);
+        let mut writer = cursor.writer();
+        let fields = opcode.build_fields(&mut writer, fields.iter().cloned());
+        writer.write(
             veloc_lir::MachineOpcode::Generic(opcode),
             &[dst],
             inputs,
-            fields.iter().cloned(),
+            fields,
         );
         dst
     }

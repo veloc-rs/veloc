@@ -92,6 +92,10 @@ initializes the groups unconditionally.
 
 ## Board run
 
+See [the 2026-10-02 optimization measurements](PERFORMANCE.md) for repeated
+C908 runs, the current optimization changes and validation limitations.
+The numbers below are the earlier backend bring-up results.
+
 On the K230/C908 board at `192.168.2.19`, the JIT at `-O 0` completed 11,000
 iterations at 596.265 iterations/second with the Clang/LLD-linked executable.
 A separate `-O 1` run completed at 638.649 iterations/second. Both runs reported

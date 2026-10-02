@@ -186,8 +186,22 @@ impl Encoder {
             return self.word(i(0x13, d, 0, 0, value));
         }
         let low = (value << 52) >> 52;
-        self.constant(d, ((value as i128 - low as i128) >> 12) as i64)?;
-        self.word(i(0x13, d, 1, d, 12))?;
+        if i32::try_from(value).is_ok() {
+            // LUI sign-extends bit 31. ADDIW restores the correct signed word
+            // when rounding the high immediate crosses that sign boundary.
+            let high = ((value + 0x800) >> 12) as u32;
+            self.word(0x37 | d << 7 | high << 12)?;
+            if low != 0 {
+                self.word(i(0x1b, d, 0, d, low))?;
+            }
+            return Ok(());
+        }
+        // Build the significant high part once and skip all intervening zeros.
+        // Widen subtraction so i64::MAX with a negative low part cannot overflow.
+        let high = ((value as i128 - low as i128) >> 12) as i64;
+        let zeros = high.trailing_zeros();
+        self.constant(d, high >> zeros)?;
+        self.word(i(0x13, d, 1, d, (12 + zeros) as i64))?;
         if low != 0 {
             self.word(i(0x13, d, 0, d, low))?;
         }
@@ -234,7 +248,14 @@ pub fn encode(instruction: Instruction) -> Result<crate::Encoded<128>, Error> {
             d.hardware(),
             i32::try_from(offset).map_err(|_| Error::Immediate)?,
         ))?,
-        Instruction::Constant(d, value) => e.constant(d.hardware(), value)?,
+        Instruction::Constant(d, value, bits) => {
+            let value = match bits {
+                32 => value as i32 as i64,
+                64 => value,
+                _ => return Err(Error::Encoding),
+            };
+            e.constant(d.hardware(), value)?;
+        }
         Instruction::Move(d, a, bits) => {
             let (rd, rs) = (d.hardware(), a.hardware());
             let word = match (d.is_float(), a.is_float()) {

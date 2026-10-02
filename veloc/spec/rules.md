@@ -58,6 +58,23 @@ rule<T: ScalarInteger>(root: mir::ISub<T>) {
 }
 ```
 
+An optional `if` guard can test `is_const(value)`, `value == integer` or
+`value != integer`. All three require a known scalar integer/boolean constant;
+inequality does not match an unknown value. Guards reference variables bound
+by the pattern and support scalar widths up to 64 bits.
+
+```text
+rule<T: ScalarInteger>(root: mir::IAdd<T>) {
+    case (mir::IAdd(x, c), y) if is_const(c) => mir::IAdd(x, mir::IAdd(c, y));
+}
+```
+
+The query bytecode checks the guard before capturing a match. Incremental
+triggers carry the same constant requirements, including through repeated
+variable aliases, so impossible inputs are rejected before reverse-path search.
+When a class becomes constant, its change event can enable previously rejected
+matches. This predicate restricts search; it does not prove the rewrite equality.
+
 Pattern variables bind independently in each case. Repeated names require the
 same equivalence class; replacements and guards may only reference variables
 bound by that case. The root parameter names the instruction, not an operand

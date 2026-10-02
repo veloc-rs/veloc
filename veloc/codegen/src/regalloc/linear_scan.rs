@@ -1,4 +1,4 @@
-//! Global linear scan with CFG liveness, fixed registers and whole-range spills.
+//! Global linear scan with CFG lifetime holes, fixed registers and whole-value spills.
 #[cfg(test)]
 use super::allocation::Transfer;
 use super::allocation::{Allocation, InstAllocation};
@@ -8,6 +8,7 @@ use crate::target::SpillKind;
 use crate::target::{RegClass, TargetRegalloc};
 use crate::{Error, Result};
 use cranelift_entity::SecondaryMap;
+use hashbrown::HashMap;
 use std::format;
 use std::vec::Vec;
 use veloc_lir::{InstId, MachineFunction, PReg, Reg, StackBatch, StackSlot, Type, VReg};
@@ -54,8 +55,29 @@ struct Interval {
     reg: Reg,
     start: u32,
     end: u32,
+    // Sorted, disjoint inclusive ranges. A single home is used across all
+    // segments, so control-flow edges need no extra split-location transfers.
+    segments: Vec<(u32, u32)>,
     class: RegClass,
     preferences: Vec<Reg>,
+}
+
+impl Interval {
+    fn overlaps(&self, other: &Self) -> bool {
+        let (mut a, mut b) = (0, 0);
+        while a < self.segments.len() && b < other.segments.len() {
+            let left = self.segments[a];
+            let right = other.segments[b];
+            if left.1 < right.0 {
+                a += 1;
+            } else if right.1 < left.0 {
+                b += 1;
+            } else {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 pub struct RegisterAllocator<'a> {
@@ -97,7 +119,8 @@ impl<'a> RegisterAllocator<'a> {
         let f = &source;
         let mut frame = f.stack_frame.batch();
         let live = analyses.liveness(f, self.target);
-        let mut ranges = SecondaryMap::<VReg, Option<(u32, u32)>>::with_capacity(f.vregs().len());
+        let mut ranges = SecondaryMap::<VReg, Vec<(u32, u32)>>::with_capacity(f.vregs().len());
+        let mut local_virtual = HashMap::new();
         let mut fixed = Vec::<Vec<Reservation>>::new();
         let mut preferences = SecondaryMap::<VReg, Vec<Reg>>::with_capacity(f.vregs().len());
         let mut local_fixed = Vec::<Option<(u32, u32)>>::new();
@@ -112,7 +135,7 @@ impl<'a> RegisterAllocator<'a> {
             local_fixed.fill(None);
             for &param in f.block_params(block).unwrap() {
                 let definition = if block == f.entry_block() { 0 } else { start };
-                extend_range(&mut ranges, &mut local_fixed, param, definition);
+                extend_range(&mut local_virtual, &mut local_fixed, param, definition);
             }
             for id in f.block_insts(block) {
                 let inst = &f.inst(id);
@@ -130,7 +153,7 @@ impl<'a> RegisterAllocator<'a> {
                             veloc_lir::OperandRef::Result(_)
                         ));
                     match constraint.placement {
-                        veloc_lir::Placement::Fixed(reg) | veloc_lir::Placement::State(reg) => {
+                        veloc_lir::Placement::Fixed(reg) => {
                             reserve(&mut fixed, reg, at, value.as_vreg().map(|_| value));
                             if let Some(v) = value.as_vreg() {
                                 preferences[v].push(reg);
@@ -147,10 +170,10 @@ impl<'a> RegisterAllocator<'a> {
                 // All current machine schemas read inputs before writing defs.
                 // Separate positions let a dying input share an output register.
                 for reg in inst.uses() {
-                    extend_range(&mut ranges, &mut local_fixed, reg, pos * 2);
+                    extend_range(&mut local_virtual, &mut local_fixed, reg, pos * 2);
                 }
                 for reg in inst.defs() {
-                    extend_range(&mut ranges, &mut local_fixed, reg, pos * 2 + 1);
+                    extend_range(&mut local_virtual, &mut local_fixed, reg, pos * 2 + 1);
                 }
                 // Instruction and ABI clobbers reserve only the write point.
                 // Input reads occur one position earlier.
@@ -168,10 +191,20 @@ impl<'a> RegisterAllocator<'a> {
             }
             let end = pos * 2;
             for reg in live.live_in(block).into_iter().flat_map(|set| set.iter()) {
-                extend_range(&mut ranges, &mut local_fixed, reg, start);
+                extend_range(&mut local_virtual, &mut local_fixed, reg, start);
             }
             for reg in live.live_out(block).into_iter().flat_map(|set| set.iter()) {
-                extend_range(&mut ranges, &mut local_fixed, reg, end);
+                extend_range(&mut local_virtual, &mut local_fixed, reg, end);
+            }
+            // Keep layout gaps where the value is not live. CFG liveness has
+            // already extended every segment through its incoming/outgoing edges.
+            for (vreg, range) in local_virtual.drain() {
+                let segments = &mut ranges[vreg];
+                if let Some(last) = segments.last_mut().filter(|last| range.0 <= last.1) {
+                    last.1 = last.1.max(range.1);
+                } else {
+                    segments.push(range);
+                }
             }
             for (index, range) in local_fixed.iter().copied().enumerate() {
                 if let Some(range) = range {
@@ -191,26 +224,30 @@ impl<'a> RegisterAllocator<'a> {
         }
         let mut intervals: Vec<_> = ranges
             .iter()
-            .filter_map(|(vreg, range)| range.map(|range| (vreg, range)))
-            .map(|(vreg, (start, end))| {
+            .filter(|(_, segments)| !segments.is_empty())
+            .map(|(vreg, segments)| {
                 let reg = Reg::new_vreg(vreg.as_u32());
                 let data = f.vreg_data(reg);
-                Interval {
+                if data.state_unit().is_some() {
+                    return Err(Error::codegen(
+                        "symbolic state reached ordinary register allocation",
+                    ));
+                }
+                Ok(Interval {
                     reg,
-                    start,
-                    end,
-                    class: self.target.desc().reg_class_for_vreg(&data.ty, data.bank),
+                    start: segments[0].0,
+                    end: segments.last().unwrap().1,
+                    segments: segments.clone(),
+                    class: self.target.desc().reg_class_for_vreg(&data.ty, data.bank()),
                     preferences: core::mem::take(&mut preferences[vreg]),
-                }
+                })
             })
-            .collect();
+            .collect::<Result<_>>()?;
         intervals.sort_by_key(|i| (i.start, i.reg));
-        let mut active = Vec::<Option<Interval>>::new();
+        let mut assigned_ranges = Vec::<Vec<Interval>>::new();
         for interval in intervals {
-            for old in &mut active {
-                if old.as_ref().is_some_and(|old| old.end < interval.start) {
-                    *old = None;
-                }
+            for old in &mut assigned_ranges {
+                old.retain(|old| old.end >= interval.start);
             }
             let available = |&reg: &Reg| {
                 !self.target.spill_scratch(interval.class).contains(&reg)
@@ -219,8 +256,10 @@ impl<'a> RegisterAllocator<'a> {
                             .iter()
                             .any(|r| {
                                 r.value != Some(interval.reg)
-                                    && r.start <= interval.end
-                                    && interval.start <= r.end
+                                    && interval
+                                        .segments
+                                        .iter()
+                                        .any(|&(start, end)| r.start <= end && start <= r.end)
                             })
                     })
             };
@@ -235,7 +274,11 @@ impl<'a> RegisterAllocator<'a> {
             let free = candidates
                 .iter()
                 .filter(|r| available(r))
-                .find(|r| active.get(r.index() as usize).is_none_or(Option::is_none))
+                .find(|r| {
+                    assigned_ranges
+                        .get(r.index() as usize)
+                        .is_none_or(|ranges| ranges.iter().all(|old| !old.overlaps(&interval)))
+                })
                 .copied();
             let chosen = free.or_else(|| {
                 // Evict the furthest-ending range only when the current one ends sooner.
@@ -243,26 +286,32 @@ impl<'a> RegisterAllocator<'a> {
                     .iter()
                     .filter(|r| available(r))
                     .filter_map(|&r| {
-                        active
-                            .get(r.index() as usize)
-                            .and_then(Option::as_ref)
-                            .filter(|old| old.end > interval.end)
-                            .map(|old| (r, old.end))
+                        let mut conflicts = assigned_ranges
+                            .get(r.index() as usize)?
+                            .iter()
+                            .filter(|old| old.overlaps(&interval));
+                        let old = conflicts.next()?;
+                        (old.end > interval.end && conflicts.next().is_none())
+                            .then_some((r, old.end))
                     })
                     .max_by_key(|&(reg, end)| (end, reg))
                     .map(|(reg, _)| reg)
             });
             if let Some(reg) = chosen {
                 let index = reg.index() as usize;
-                if active.len() <= index {
-                    active.resize_with(index + 1, || None);
+                if assigned_ranges.len() <= index {
+                    assigned_ranges.resize_with(index + 1, Vec::new);
                 }
-                if let Some(old) = active[index].take() {
+                if let Some(conflict) = assigned_ranges[index]
+                    .iter()
+                    .position(|old| old.overlaps(&interval))
+                {
+                    let old = assigned_ranges[index].remove(conflict);
                     self.allocation[old.reg.as_vreg().unwrap()] = None;
                     self.spill(old.reg, f, &mut frame)?;
                 }
                 self.assign(interval.reg, reg);
-                active[index] = Some(interval);
+                assigned_ranges[index].push(interval);
             } else {
                 self.spill(interval.reg, f, &mut frame)?;
             }
@@ -271,23 +320,26 @@ impl<'a> RegisterAllocator<'a> {
             fixed,
             assigned: Vec::new(),
         };
-        for (vreg, range) in ranges.iter() {
-            if let (Some(preg), Some((start, end))) = (self.allocation[vreg], *range) {
+        for (vreg, segments) in ranges.iter() {
+            if let Some(preg) = self.allocation[vreg] {
                 let reg: Reg = preg.into();
                 let index = reg.index() as usize;
                 physical
                     .assigned
                     .resize_with(physical.assigned.len().max(index + 1), Vec::new);
-                physical.assigned[index].push(Resident {
-                    start,
-                    end,
-                    value: Reg::new_vreg(vreg.as_u32()),
-                    ty: source.vreg_data(Reg::new_vreg(vreg.as_u32())).ty,
-                });
+                for &(start, end) in segments {
+                    physical.assigned[index].push(Resident {
+                        start,
+                        end,
+                        value: Reg::new_vreg(vreg.as_u32()),
+                        ty: source.vreg_data(Reg::new_vreg(vreg.as_u32())).ty,
+                    });
+                }
             }
         }
         for ranges in &mut physical.assigned {
             ranges.sort_unstable_by_key(|r| r.start);
+            debug_assert!(ranges.windows(2).all(|w| w[0].end < w[1].start));
         }
         let instructions = self.plan(&source, &mut frame, &physical)?;
         let incoming = source
@@ -370,7 +422,10 @@ mod tests {
                     f.editor().at_end(block).writer(),
                     &[],
                     &[src, base, index],
-                    [veloc_lir::FieldValue::Imm(16)],
+                    veloc_lir::Fields::Memory {
+                        offset: 16,
+                        flags: veloc_lir::MemFlags::new(),
+                    },
                 ));
             }
             let mut allocator = RegisterAllocator::new(&target);
@@ -444,7 +499,7 @@ mod tests {
                 f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
                 &[dst, REG_CF, REG_PF, REG_ZF, REG_SF, REG_OF],
                 &[rhs, lhs],
-                [],
+                veloc_lir::Fields::None,
             );
 
             let mut allocator = RegisterAllocator::new(&target);
@@ -496,21 +551,20 @@ mod tests {
 }
 
 fn extend_range(
-    virtual_: &mut SecondaryMap<VReg, Option<(u32, u32)>>,
+    virtual_: &mut HashMap<VReg, (u32, u32)>,
     physical: &mut Vec<Option<(u32, u32)>>,
     reg: Reg,
     pos: u32,
 ) {
     let range = if let Some(reg) = reg.as_vreg() {
-        &mut virtual_[reg]
+        virtual_.entry(reg).or_insert((pos, pos))
     } else {
         let index = reg.index() as usize;
         if physical.len() <= index {
             physical.resize(index + 1, None);
         }
-        &mut physical[index]
+        physical[index].get_or_insert((pos, pos))
     };
-    let range = range.get_or_insert((pos, pos));
     range.0 = range.0.min(pos);
     range.1 = range.1.max(pos);
 }

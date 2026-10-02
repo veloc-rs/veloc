@@ -1,14 +1,17 @@
 import "../common.spec";
 
-expand Binary(RvFadd64, Type::F64, FPR, 83, 0, 1, "fadd.d", D, None);
+expand Binary(RvFadd64, Type::F64, FPR, 83, 0, 1, "fadd.d", D, FloatAdd, false);
 
-expand Binary(RvFsub64, Type::F64, FPR, 83, 0, 5, "fsub.d", D, None);
+expand Binary(RvFsub64, Type::F64, FPR, 83, 0, 5, "fsub.d", D, FloatAdd, false);
 
-expand Binary(RvFmul64, Type::F64, FPR, 83, 0, 9, "fmul.d", D, None);
+expand Binary(RvFmul64, Type::F64, FPR, 83, 0, 9, "fmul.d", D, FloatMul, false);
 
-expand Binary(RvFdiv64, Type::F64, FPR, 83, 0, 13, "fdiv.d", D, None);
+expand Binary(RvFdiv64, Type::F64, FPR, 83, 0, 13, "fdiv.d", D, FloatDiv, false);
 
-op RvLoadF64(base: Value<Type::PTR>, offset: i64) -> (dst: Value<Type::F64>) {
+op RvLoadF64(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value<Type::F64>) {
+    clobbers = [X31];
+    movable = true;
+    schedule = Load;
     encoding = Emission::instructions([Instruction::Load(7,dst,Address { base: base, offset: offset },3)]);
     registers = { dst: FPR, base: GPR };
     memory = { kind: Read, bytes: 8 };
@@ -17,7 +20,9 @@ op RvLoadF64(base: Value<Type::PTR>, offset: i64) -> (dst: Value<Type::F64>) {
     };
 }
 
-op RvLoadF64Stack(slot: StackSlot) -> (dst: Value<Type::F64>) {
+op RvLoadF64Stack(slot: StackSlot, flags: MemFlags) -> (dst: Value<Type::F64>) {
+    clobbers = [X31];
+    schedule = Load;
     encoding = Emission::instructions([Instruction::Load(7,dst,slot,3)]);
     registers = { dst: FPR };
     memory = { kind: Read, bytes: 8 };
@@ -26,7 +31,10 @@ op RvLoadF64Stack(slot: StackSlot) -> (dst: Value<Type::F64>) {
     };
 }
 
-op RvStoreF64(src: Value<Type::F64>, base: Value<Type::PTR>, offset: i64) -> () {
+op RvStoreF64(src: Value<Type::F64>, base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> () {
+    clobbers = [X31];
+    movable = true;
+    schedule = Store;
     encoding = Emission::instructions([Instruction::Store(39,src,Address { base: base, offset: offset },3)]);
     registers = { src: FPR, base: GPR };
     memory = { kind: Write, bytes: 8 };
@@ -35,7 +43,9 @@ op RvStoreF64(src: Value<Type::F64>, base: Value<Type::PTR>, offset: i64) -> () 
     };
 }
 
-op RvStoreF64Stack(src: Value<Type::F64>, slot: StackSlot) -> () {
+op RvStoreF64Stack(src: Value<Type::F64>, slot: StackSlot, flags: MemFlags) -> () {
+    clobbers = [X31];
+    schedule = Store;
     encoding = Emission::instructions([Instruction::Store(39,src,slot,3)]);
     registers = { src: FPR };
     memory = { kind: Write, bytes: 8 };
@@ -45,6 +55,7 @@ op RvStoreF64Stack(src: Value<Type::F64>, slot: StackSlot) -> () {
 }
 
 op RvSelectF64(cond: Value<Type::BOOL>, v1: Value<Type::F64>, v2: Value<Type::F64>) -> (dst: Value<Type::F64>) {
+    schedule = Select;
     encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Move(dst,v1,64), Instruction::J(Reg::X0,8), Instruction::Move(dst,v2,64)]);
     registers = { dst: FPR, cond: GPR, v1: FPR, v2: FPR };
     assembly = {
@@ -53,6 +64,7 @@ op RvSelectF64(cond: Value<Type::BOOL>, v1: Value<Type::F64>, v2: Value<Type::F6
 }
 
 op RvFcmpEq64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type::BOOL>) {
+    schedule = FloatCompare;
     encoding = Emission::instructions([Instruction::R(83,dst,2,lhs,rhs,81)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
     assembly = {
@@ -61,6 +73,7 @@ op RvFcmpEq64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type:
 }
 
 op RvFcmpNe64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type::BOOL>) {
+    schedule = FloatComparePair;
     encoding = Emission::instructions([Instruction::R(83,dst,2,lhs,rhs,81), Instruction::I(19,dst,4,dst,1)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
     assembly = {
@@ -69,6 +82,7 @@ op RvFcmpNe64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type:
 }
 
 op RvFcmpLt64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type::BOOL>) {
+    schedule = FloatCompare;
     encoding = Emission::instructions([Instruction::R(83,dst,1,lhs,rhs,81)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
     assembly = {
@@ -77,6 +91,7 @@ op RvFcmpLt64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type:
 }
 
 op RvFcmpLe64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type::BOOL>) {
+    schedule = FloatCompare;
     encoding = Emission::instructions([Instruction::R(83,dst,0,lhs,rhs,81)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
     assembly = {
@@ -85,6 +100,7 @@ op RvFcmpLe64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type:
 }
 
 op RvFcmpGt64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type::BOOL>) {
+    schedule = FloatCompare;
     encoding = Emission::instructions([Instruction::R(83,dst,1,rhs,lhs,81)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
     assembly = {
@@ -93,6 +109,7 @@ op RvFcmpGt64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type:
 }
 
 op RvFcmpGe64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type::BOOL>) {
+    schedule = FloatCompare;
     encoding = Emission::instructions([Instruction::R(83,dst,0,rhs,lhs,81)]);
     registers = { dst: GPR, lhs: FPR, rhs: FPR };
     assembly = {
@@ -101,6 +118,7 @@ op RvFcmpGe64(lhs: Value<Type::F64>, rhs: Value<Type::F64>) -> (dst: Value<Type:
 }
 
 op RvFsqrt64(src: Value<Type::F64>) -> (dst: Value<Type::F64>) {
+    schedule = FloatSqrt;
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X0,45)]);
     registers = { dst: FPR, src: FPR };
     assembly = {
@@ -109,6 +127,7 @@ op RvFsqrt64(src: Value<Type::F64>) -> (dst: Value<Type::F64>) {
 }
 
 op RvSitofp32F64(src: Value<Type::I32>) -> (dst: Value<Type::F64>) {
+    schedule = IntToFloat;
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X0,105)]);
     registers = { dst: FPR, src: GPR };
     assembly = {
@@ -117,6 +136,7 @@ op RvSitofp32F64(src: Value<Type::I32>) -> (dst: Value<Type::F64>) {
 }
 
 op RvSitofp64F64(src: Value<Type::I64>) -> (dst: Value<Type::F64>) {
+    schedule = IntToFloat;
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X2,105)]);
     registers = { dst: FPR, src: GPR };
     assembly = {
@@ -125,6 +145,7 @@ op RvSitofp64F64(src: Value<Type::I64>) -> (dst: Value<Type::F64>) {
 }
 
 op RvUitofp32F64(src: Value<Type::I32>) -> (dst: Value<Type::F64>) {
+    schedule = IntToFloat;
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X1,105)]);
     registers = { dst: FPR, src: GPR };
     assembly = {
@@ -133,6 +154,7 @@ op RvUitofp32F64(src: Value<Type::I32>) -> (dst: Value<Type::F64>) {
 }
 
 op RvUitofp64F64(src: Value<Type::I64>) -> (dst: Value<Type::F64>) {
+    schedule = IntToFloat;
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X3,105)]);
     registers = { dst: FPR, src: GPR };
     assembly = {
@@ -141,6 +163,7 @@ op RvUitofp64F64(src: Value<Type::I64>) -> (dst: Value<Type::F64>) {
 }
 
 op RvFptosi32F64(src: Value<Type::F64>) -> (dst: Value<Type::I32>) {
+    schedule = FloatToInt;
     encoding = Emission::instructions([Instruction::R(83,dst,1,src,Reg::X0,97)]);
     registers = { dst: GPR, src: FPR };
     assembly = {
@@ -149,6 +172,7 @@ op RvFptosi32F64(src: Value<Type::F64>) -> (dst: Value<Type::I32>) {
 }
 
 op RvFptosi64F64(src: Value<Type::F64>) -> (dst: Value<Type::I64>) {
+    schedule = FloatToInt;
     encoding = Emission::instructions([Instruction::R(83,dst,1,src,Reg::X2,97)]);
     registers = { dst: GPR, src: FPR };
     assembly = {
@@ -157,6 +181,7 @@ op RvFptosi64F64(src: Value<Type::F64>) -> (dst: Value<Type::I64>) {
 }
 
 op RvFptoui32F64(src: Value<Type::F64>) -> (dst: Value<Type::I32>) {
+    schedule = FloatToInt;
     encoding = Emission::instructions([Instruction::R(83,dst,1,src,Reg::X1,97)]);
     registers = { dst: GPR, src: FPR };
     assembly = {
@@ -165,6 +190,7 @@ op RvFptoui32F64(src: Value<Type::F64>) -> (dst: Value<Type::I32>) {
 }
 
 op RvFptoui64F64(src: Value<Type::F64>) -> (dst: Value<Type::I64>) {
+    schedule = FloatToInt;
     encoding = Emission::instructions([Instruction::R(83,dst,1,src,Reg::X3,97)]);
     registers = { dst: GPR, src: FPR };
     assembly = {
@@ -173,6 +199,7 @@ op RvFptoui64F64(src: Value<Type::F64>) -> (dst: Value<Type::I64>) {
 }
 
 op RvFpext(src: Value<Type::F32>) -> (dst: Value<Type::F64>) {
+    schedule = FloatConvert;
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X0,33)]);
     registers = { dst: FPR, src: FPR };
     assembly = {
@@ -181,6 +208,7 @@ op RvFpext(src: Value<Type::F32>) -> (dst: Value<Type::F64>) {
 }
 
 op RvFptrunc(src: Value<Type::F64>) -> (dst: Value<Type::F32>) {
+    schedule = FloatConvert;
     encoding = Emission::instructions([Instruction::R(83,dst,0,src,Reg::X1,32)]);
     registers = { dst: FPR, src: FPR };
     assembly = {
@@ -210,12 +238,12 @@ select(n: lir::Fdiv) {
 
 select(n: lir::Load) {
     require(type_is<Type::F64>(n.dst));
-    replace(n, build(RvLoadF64(n.base, n.offset)));
+    replace(n, build(RvLoadF64(n.base, n.offset, n.flags)));
 }
 
 select(n: lir::Store) {
     require(type_is<Type::F64>(n.src));
-    replace(n, build(RvStoreF64(n.src, n.base, n.offset)));
+    replace(n, build(RvStoreF64(n.src, n.base, n.offset, n.flags)));
 }
 
 select(n: lir::Select) {

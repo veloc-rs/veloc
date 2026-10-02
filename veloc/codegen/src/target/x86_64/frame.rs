@@ -160,16 +160,26 @@ impl TargetFrameLowering for X86_64FrameLowering {
             let mut edit = mfunc.editor();
             let mut insert = edit.at_start(entry);
 
-            let _ = TargetInst::X86PushRbp.write(insert.writer(), &[], &[REG_RBP], []);
+            let _ = TargetInst::X86PushRbp.write(
+                insert.writer(),
+                &[],
+                &[REG_RBP],
+                veloc_lir::Fields::None,
+            );
 
-            let _ = TargetInst::X86MovRbpRsp.write(insert.writer(), &[REG_RBP], &[REG_RSP], []);
+            let _ = TargetInst::X86MovRbpRsp.write(
+                insert.writer(),
+                &[REG_RBP],
+                &[REG_RSP],
+                veloc_lir::Fields::None,
+            );
 
             if stack_size > 0 {
                 let _ = TargetInst::X86Sub64ri.write(
                     insert.writer(),
                     &[REG_RSP, REG_CF, REG_PF, REG_ZF, REG_SF, REG_OF],
                     &[REG_RSP],
-                    [veloc_lir::FieldValue::Imm(stack_size as i64)],
+                    veloc_lir::Fields::Imm(stack_size as i64),
                 );
             }
 
@@ -179,7 +189,10 @@ impl TargetFrameLowering for X86_64FrameLowering {
                     insert.writer(),
                     &[],
                     &[save.reg],
-                    [veloc_lir::FieldValue::StackSlot(save.slot)],
+                    veloc_lir::Fields::StackMemory {
+                        slot: save.slot,
+                        flags: veloc_lir::MemFlags::new(),
+                    },
                 );
             }
         }
@@ -198,7 +211,10 @@ impl TargetFrameLowering for X86_64FrameLowering {
                         mfunc.editor().before(id).writer(),
                         &[save.reg],
                         &[],
-                        [veloc_lir::FieldValue::StackSlot(save.slot)],
+                        veloc_lir::Fields::StackMemory {
+                            slot: save.slot,
+                            flags: veloc_lir::MemFlags::new(),
+                        },
                     );
                 }
 
@@ -207,7 +223,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
                         mfunc.editor().before(id).writer(),
                         &[REG_RSP, REG_CF, REG_PF, REG_ZF, REG_SF, REG_OF],
                         &[REG_RSP],
-                        [veloc_lir::FieldValue::Imm(stack_size as i64)],
+                        veloc_lir::Fields::Imm(stack_size as i64),
                     );
                 }
 
@@ -215,7 +231,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
                     mfunc.editor().before(id).writer(),
                     &[REG_RBP],
                     &[],
-                    [],
+                    veloc_lir::Fields::None,
                 );
             }
         }

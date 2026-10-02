@@ -11,6 +11,7 @@ template Popcount(Opcode: ident, Wide: expr, Mnemonic: expr, Bits: expr) {
         registers = { dst: GPR64, src: GPR64 };
         rematerializable = true;
         schedule = IntPopcnt;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src, Bits)] }]
         };

@@ -16,12 +16,12 @@ mod pass_config;
 
 pub use emitter::X86_64CodeEmitter;
 pub use frame::X86_64FrameLowering;
-pub use pass_config::{X86_64PassConfig, X86_64PostIsel};
+pub use pass_config::X86_64PassConfig;
 
 use crate::target::{
     RegClass, RegClassInfo, RegisterFile, SpecialRegs, SpillKind, TargetConfig, TargetDescription,
     TargetEmitter, TargetFrameLowering, TargetInfo, TargetInstructions, TargetMachine,
-    TargetPassConfig, TargetPostIsel, TargetRegalloc, TargetSchedule, ValidationMode,
+    TargetPassConfig, TargetRegalloc, TargetSchedule, ValidationMode,
 };
 use veloc_lir::RegisterBank;
 use veloc_types::{DataLayout, Type, TypeLayout};
@@ -106,7 +106,6 @@ pub struct X86_64TargetMachine {
     desc: TargetDescription,
     features: inst::FeatureSet,
     schedule: crate::target::ScheduleModel,
-    post_isel: X86_64PostIsel,
     frame_lowering: X86_64FrameLowering,
     pass_config: X86_64PassConfig,
     emitter: X86_64CodeEmitter,
@@ -135,7 +134,6 @@ impl X86_64TargetMachine {
             desc,
             features,
             schedule: cpu.schedule,
-            post_isel: X86_64PostIsel,
             frame_lowering: X86_64FrameLowering,
             pass_config: X86_64PassConfig,
             emitter: X86_64CodeEmitter::new(features),
@@ -204,7 +202,7 @@ impl TargetRegalloc for X86_64TargetMachine {
             veloc_lir::MachineOpcode::Target(inst::TargetInst::X86Jmp.as_u32()),
             &[],
             &[],
-            [veloc_lir::FieldValue::Edge(edge)],
+            veloc_lir::Fields::Jump([edge]),
         ))
     }
 
@@ -216,7 +214,7 @@ impl TargetRegalloc for X86_64TargetMachine {
         ty: veloc_mir::Type,
     ) -> crate::Result<veloc_lir::InstId> {
         let opcode = lowering::copy_opcode(&self.desc, dst, src, ty)?;
-        Ok(opcode.write(writer, &[dst], &[src], []))
+        Ok(opcode.write(writer, &[dst], &[src], veloc_lir::Fields::None))
     }
 
     fn spill_instruction(
@@ -256,13 +254,8 @@ impl TargetMachine for X86_64TargetMachine {
         crate::passes::isel::SelectPolicy {
             program: &inst::SELECTION_PROGRAM,
             features: crate::target::FeatureSetRef::new(self.features.as_words()),
-            metadata: |op| inst::target_inst_metadata(inst::TargetInst::from_u32(op)),
             predicate: None,
         }
-    }
-
-    fn post_isel(&self) -> &dyn TargetPostIsel {
-        &self.post_isel
     }
 
     fn frame_lowering(&self) -> &dyn TargetFrameLowering {

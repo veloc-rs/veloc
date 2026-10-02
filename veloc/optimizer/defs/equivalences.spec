@@ -14,11 +14,13 @@ rule<T: Any>(root: mir::Select<T>) {
 // Arithmetic is modular; -1 denotes all bits set at the integer width.
 // Factor instead of distributing to avoid multiplying intermediate candidates.
 // Shift factoring keeps the amount identical under modulo-width semantics.
+// Reassociate around known constants to expose folding without enumerating
+// arbitrary permutations of variable-only associative chains.
 
 rule<T: ScalarInteger>(root: mir::IAdd<T>) {
     case (mir::ISub(x, y), y) => x;
     case (x, mir::IXor(x, -1)) => -1;
-    case (mir::IAdd(x, y), z) => mir::IAdd(x, mir::IAdd(y, z));
+    case (mir::IAdd(x, y), z) if is_const(y) => mir::IAdd(x, mir::IAdd(y, z));
     case (mir::IMul(x, y), mir::IMul(x, z)) => mir::IMul(x, mir::IAdd(y, z));
 }
 
@@ -31,13 +33,13 @@ rule<T: ScalarInteger>(root: mir::ISub<T>) {
 }
 
 rule<T: ScalarInteger>(root: mir::IMul<T>) {
-    case (mir::IMul(x, y), z) => mir::IMul(x, mir::IMul(y, z));
+    case (mir::IMul(x, y), z) if is_const(y) => mir::IMul(x, mir::IMul(y, z));
 }
 
 rule<T: ScalarInteger>(root: mir::IAnd<T>) {
     case (x, mir::IXor(x, -1)) => 0;
     case (x, mir::IXor(x, y)) => mir::IAnd(x, mir::IXor(y, -1));
-    case (mir::IAnd(x, y), z) => mir::IAnd(x, mir::IAnd(y, z));
+    case (mir::IAnd(x, y), z) if is_const(y) => mir::IAnd(x, mir::IAnd(y, z));
     case (x, mir::IOr(x, y)) => x;
     case (mir::IOr(x, y), mir::IOr(x, z)) => mir::IOr(x, mir::IAnd(y, z));
     case (mir::IShl(x, amount), mir::IShl(y, amount)) => mir::IShl(mir::IAnd(x, y), amount);
@@ -50,7 +52,7 @@ rule<T: ScalarInteger>(root: mir::IAnd<T>) {
 rule<T: ScalarInteger>(root: mir::IOr<T>) {
     case (x, mir::IXor(x, -1)) => -1;
     case (x, mir::IXor(x, y)) => mir::IOr(x, y);
-    case (mir::IOr(x, y), z) => mir::IOr(x, mir::IOr(y, z));
+    case (mir::IOr(x, y), z) if is_const(y) => mir::IOr(x, mir::IOr(y, z));
     case (x, mir::IAnd(x, y)) => x;
     case (mir::IAnd(x, y), mir::IAnd(x, z)) => mir::IAnd(x, mir::IOr(y, z));
     case (mir::IShl(x, amount), mir::IShl(y, amount)) => mir::IShl(mir::IOr(x, y), amount);
@@ -63,8 +65,8 @@ rule<T: ScalarInteger>(root: mir::IOr<T>) {
 rule<T: ScalarInteger>(root: mir::IXor<T>) {
     case (x, x) => 0;
     case (mir::IXor(x, y), y) => x;
+    case (mir::IXor(x, y), z) if is_const(y) => mir::IXor(x, mir::IXor(y, z));
     case (x, mir::IXor(x, -1)) => -1;
-    case (mir::IXor(x, y), z) => mir::IXor(x, mir::IXor(y, z));
     case (mir::IAnd(x, y), mir::IAnd(x, z)) => mir::IAnd(x, mir::IXor(y, z));
     case (mir::IShl(x, amount), mir::IShl(y, amount)) => mir::IShl(mir::IXor(x, y), amount);
     case (mir::IShrU(x, amount), mir::IShrU(y, amount)) => mir::IShrU(mir::IXor(x, y), amount);

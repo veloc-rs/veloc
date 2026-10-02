@@ -8,6 +8,7 @@ use crate::syntax::{Decl, DeclKind, Kind, Node};
 pub(crate) mod compact;
 mod generate;
 pub(crate) mod operands;
+pub(crate) mod payload;
 
 #[derive(Debug)]
 pub(crate) enum Strategy {

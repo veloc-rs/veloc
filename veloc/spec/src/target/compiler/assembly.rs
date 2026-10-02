@@ -1,7 +1,7 @@
 //! Assembly is a typed projection of an instruction, not its debug spelling.
 use super::{FinalInstDef, generate::find_operand_info};
 use crate::syntax::{Kind, Node};
-use crate::target::OperandConstraint;
+use crate::target::{AttributeKind, OperandConstraint};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
@@ -77,12 +77,12 @@ fn operand(node: &Node, inst: &FinalInstDef) -> Result<Operand, String> {
             })
         }
         ("imm", [name]) => match field(name)? {
-            (i, OperandConstraint::Imm(_)) => Ok(Operand::Imm(i)),
+            (i, OperandConstraint::Attribute(_, AttributeKind::Imm)) => Ok(Operand::Imm(i)),
             _ => Err("imm requires an immediate".into()),
         },
         ("target", [name]) => match field(name)? {
-            (i, OperandConstraint::Block(_)) => Ok(Operand::Block(i)),
-            (i, OperandConstraint::Global(_)) => Ok(Operand::Symbol(i)),
+            (i, OperandConstraint::Attribute(_, AttributeKind::Block)) => Ok(Operand::Block(i)),
+            (i, OperandConstraint::Attribute(_, AttributeKind::Global)) => Ok(Operand::Symbol(i)),
             _ => Err("target requires a block or symbol".into()),
         },
         ("mem", [base, offset, bits]) | ("mem", [base, _, offset, bits]) => {
@@ -100,7 +100,8 @@ fn operand(node: &Node, inst: &FinalInstDef) -> Result<Operand, String> {
                 OperandConstraint::Use(_) => false,
                 _ => return Err("memory base must be a register".into()),
             };
-            let (offset, OperandConstraint::Imm(_)) = field(offset)? else {
+            let (offset, OperandConstraint::Attribute(_, AttributeKind::Imm)) = field(offset)?
+            else {
                 return Err("memory offset must be an immediate".into());
             };
             Ok(Operand::Memory {
@@ -112,10 +113,12 @@ fn operand(node: &Node, inst: &FinalInstDef) -> Result<Operand, String> {
             })
         }
         ("stack", [name, bits]) => match field(name)? {
-            (index, OperandConstraint::StackSlot(_)) => Ok(Operand::Stack {
-                index,
-                bits: width(bits)?,
-            }),
+            (index, OperandConstraint::Attribute(_, AttributeKind::StackSlot)) => {
+                Ok(Operand::Stack {
+                    index,
+                    bits: width(bits)?,
+                })
+            }
             _ => Err("stack requires a stack slot".into()),
         },
         _ => Err(format!("invalid assembly operand `{kind}`")),

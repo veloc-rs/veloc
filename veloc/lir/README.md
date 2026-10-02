@@ -102,21 +102,25 @@ codes, symbols, stack slots and one/two successor IDs need no payload allocation
 Variable-length successor tables and call records use private, recyclable pool
 handles. A call record combines its optional direct target with its `CallInfo`;
 there is no generic field-record pool or per-format allocation.
-Memory accesses remain directly indexed side data.
 
-The writer consumes owned field values (arrays or iterators), moving large
-payloads into pools without an extra clone. Selection caches source locations
-and materializes a payload only when building a target instruction.
-`FieldValue` and `FieldView` are transient construction/selection adapters, not
-additional stored fields. Generated views borrow call contracts without cloning
-them. Unsupported payload combinations fail at the construction boundary;
-opcode-specific structural and semantic validation remain opt-in.
+Generated builders construct `Fields` directly using the `field_layouts`
+declared in Spec. The writer consumes that complete payload. Call and switch
+constructors allocate through `FieldBuild`; scalar payloads allocate nothing.
+There is no runtime shape-inference or `pack` step.
+
+`FieldValue` remains a temporary exchange type for dynamic selection and
+legalization rules. Generated adapters decode it using the known instruction
+signature; `GenericOpcode::build_fields` serves the legalization VM.
+`FieldView` borrows stored fields and call contracts without cloning them.
+`Fields` and its opaque pool handles cannot be cloned by callers.
+`InstWriter::copy_fields` copies payloads and successor edges independently.
+Opcode-specific structural and semantic validation remain opt-in.
 MIR and LIR share the recyclable pools in `veloc-collections`.
 
-`function.writer().add(dst, lhs, rhs)` creates a detached instruction and returns
-its ID; adding that ID to a block is a separate layout operation.
-`function.rewriter(id).add(...)` replaces contents while preserving the ID.
-Replacement resets old memory and releases removed field-owned payloads;
+`function.editor().at_end(block).writer().add(dst, lhs, rhs)` constructs and
+positions an instruction. `function.editor().replace(id).add(...)` replaces
+contents while preserving the ID.
+Replacement replaces all fields and releases removed field-owned payloads;
 operand-only edits preserve them. Call construction allocates a fresh owned
 record from the supplied data, never accepts an external pool handle and never
 guesses whether to adopt or clone a payload. Moving a detached instruction
@@ -234,7 +238,8 @@ of immediate, condition-code or symbol types. `optional(Reg)` fields require
 `some(input)` or `none`; absent fields need not form a suffix.
 `sequence(Reg)` borrows a register slice. Each storage domain permits one
 trailing sequence, which may follow fixed fields. Attributes currently support
-single and optional fields, not sequence pools.
+single fields and trailing sequences. LIR maps successor sequences to a pooled
+payload through its declared field layout.
 Calls are ordinary structs: direct calls have a symbol attribute, indirect
 calls have a register callee followed by argument registers.
 `results: results()` binds the result slice. Two-address constraints do not
@@ -270,12 +275,15 @@ Target definitions supply these facts; LIR does not depend on target decoding.
 In particular, a two-successor generic branch is a `Jump`, whereas a selected
 conditional jump followed by an unconditional jump is `Branch` then `Jump`.
 
-`InstRef::memory()` carries a single fixed-size `MemoryAccess`: direction,
-bytes touched, guaranteed effective-address alignment, volatility and trap
-behavior. It describes the access, not the result register width. Missing data
-means unknown, never memory-free. Cloning the function retains the descriptor;
-rewrites changing the access must explicitly provide a corresponding descriptor.
-This is not yet a model for atomic accesses, multiple accesses or scalable sizes.
+`MemFlags` is a required field of each concrete memory instruction and carries
+alignment and volatility. `InstRef::mem_flags()` reads that field directly;
+there is no separate memory side table or post-construction setter. Offset plus
+flags and stack slot plus flags are compact inline payloads. Cloning and
+replacement use the ordinary field lifecycle.
+
+Direction and access width belong to the instruction definition (and the type
+for generic loads/stores). An absent flags field does not establish purity:
+calls and other broad effects are described by their own contracts.
 
 ```sh
 cargo test -p veloc-lir
@@ -284,11 +292,11 @@ cargo check -p veloc-lir --no-default-features
 
 ## Canonical memory operations
 
-Generic loads and stores always carry a constant byte offset, including zero.
-Stack access uses `StackAddr` followed by these same operations; ABI lowering
-attaches access width, alignment and non-trapping stack metadata.
-Target stack spill/reload instructions remain available after allocation.
-The current single-root selector does not yet fuse StackAddr with its users.
+Generic loads and stores carry a constant byte offset, including zero, and an
+explicit `MemFlags` field. Stack access uses `StackAddr` followed by these same
+operations; ABI lowering supplies the alignment guarantee. Selection rules pass
+flags explicitly, including when folding a stack address. Target stack
+spill/reload instructions remain available after allocation.
 
 Writeback addressing is not a generic memory operation: compute the updated
 pointer explicitly and use either the old or new pointer for the access.

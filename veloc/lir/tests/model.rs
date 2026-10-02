@@ -16,12 +16,22 @@ fn function_editor_preserves_layout_and_references() {
         .editor()
         .at_end(veloc_lir::BlockId::from_u32(0))
         .writer()
-        .write(veloc_lir::MachineOpcode::Target(1), &[], &[], []);
+        .write(
+            veloc_lir::MachineOpcode::Target(1),
+            &[],
+            &[],
+            veloc_lir::Fields::None,
+        );
     let b = f
         .editor()
         .at_end(veloc_lir::BlockId::from_u32(0))
         .writer()
-        .write(veloc_lir::MachineOpcode::Target(2), &[], &[], []);
+        .write(
+            veloc_lir::MachineOpcode::Target(2),
+            &[],
+            &[],
+            veloc_lir::Fields::None,
+        );
 
     f.editor().move_block_before(exit, entry);
     assert_eq!(f.entry_block(), entry);
@@ -53,13 +63,13 @@ fn function_editor_preserves_layout_and_references() {
         veloc_lir::MachineOpcode::Target(3),
         &[],
         &[],
-        [],
+        veloc_lir::Fields::None,
     );
     let d = f.editor().at_end(construction_block).writer().write(
         veloc_lir::MachineOpcode::Target(4),
         &[],
         &[],
-        [],
+        veloc_lir::Fields::None,
     );
     let (tail, changes) = f.editor().track(|f| {
         f.editor().after(a).move_here(c);
@@ -187,7 +197,7 @@ fn function_editor_preserves_layout_and_references() {
         veloc_lir::MachineOpcode::Target(5),
         &[],
         &[],
-        [],
+        veloc_lir::Fields::None,
     );
     edit.before(a).move_here(replacement);
     assert_eq!(
@@ -204,7 +214,7 @@ fn function_editor_preserves_layout_and_references() {
         veloc_lir::MachineOpcode::Target(6),
         &[],
         &[],
-        [],
+        veloc_lir::Fields::None,
     );
     edit.before(c).move_here(next);
     edit.invalidate_inst(c);
@@ -276,7 +286,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
         veloc_lir::MachineOpcode::Target(0),
         &[a],
         &[b, a],
-        [],
+        veloc_lir::Fields::None,
     );
     f.editor()
         .replace_uses(a.as_vreg().unwrap(), b.as_vreg().unwrap());
@@ -305,7 +315,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
         veloc_lir::MachineOpcode::Target(0),
         &[],
         &[a, a],
-        [FieldValue::Imm(7)],
+        veloc_lir::Fields::Imm(7),
     );
     assert_eq!(f.inst(mixed).inputs(), &[a, a]);
     assert_eq!(f.inst(mixed).fields().len(), 1);
@@ -342,13 +352,13 @@ fn references_follow_all_store_edits_and_edge_arguments() {
         f.editor().create_edge(block, &[]),
         f.editor().create_edge(block, &[a]),
     ];
-    let fields = edges.map(veloc_lir::FieldValue::Edge);
-    let source = f.editor().at_end(construction_block).writer().write(
-        veloc_lir::MachineOpcode::Target(42),
-        &[dst],
-        &[a],
-        fields,
-    );
+    let source = {
+        let mut editor = f.editor();
+        let mut cursor = editor.at_end(construction_block);
+        let mut writer = cursor.writer();
+        let fields = writer.switch_fields(&edges);
+        writer.write(veloc_lir::MachineOpcode::Target(42), &[dst], &[a], fields)
+    };
     f.editor().set_inst_clobbers(source, &[preg]);
     let source_slot = f.input_id(source, 0);
     let source_slots: std::collections::HashSet<_> = f.uses(a).map(|r| r.operand()).collect();
@@ -451,7 +461,7 @@ fn validation_errors_are_owned_by_lir() {
             veloc_lir::MachineOpcode::Generic(GenericOpcode::Constant),
             &[],
             &[],
-            [veloc_lir::FieldValue::Imm(42)],
+            veloc_lir::Fields::Imm(42),
         );
     }
     let error: veloc_lir::ValidationError = function.inst(inst).validate().unwrap_err();
@@ -589,7 +599,7 @@ fn carry_input_is_required_exactly_for_carry_instructions() {
             veloc_lir::MachineOpcode::Generic(GenericOpcode::Uaddo),
             &[dst, flag],
             &regs,
-            [],
+            veloc_lir::Fields::None,
         );
     }
     {
@@ -597,7 +607,7 @@ fn carry_input_is_required_exactly_for_carry_instructions() {
             veloc_lir::MachineOpcode::Generic(GenericOpcode::Uadde),
             &[dst, flag],
             &[lhs, rhs],
-            [],
+            veloc_lir::Fields::None,
         );
     }
     assert!(function.inst(add).validate().is_err());
@@ -755,7 +765,7 @@ fn optional_validation_is_separate_from_direct_views() {
         MachineOpcode::Generic(GenericOpcode::Icmp),
         &[dst],
         &[src, src],
-        [FieldValue::FloatCC(FloatCC::Eq)],
+        veloc_lir::Fields::FloatCC(FloatCC::Eq),
     );
     assert!(function.inst(cmp).validate().is_err());
     let info = veloc_lir::CallInfo {
@@ -780,7 +790,10 @@ fn optional_validation_is_separate_from_direct_views() {
     fields.push(FieldValue::Imm(0));
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            function.editor().replace(call).write(
+            let mut editor = function.editor();
+            let mut writer = editor.replace(call);
+            let fields = GenericOpcode::Call.build_fields(&mut writer, fields);
+            writer.write(
                 MachineOpcode::Generic(GenericOpcode::Call),
                 &[dst],
                 &[src],
@@ -797,11 +810,14 @@ fn optional_validation_is_separate_from_direct_views() {
         .writer()
         .callind(&[dst], src, &[], info.clone());
     {
-        function.editor().replace(missing_callee).write(
+        let mut editor = function.editor();
+        let mut writer = editor.replace(missing_callee);
+        let fields = writer.call_fields(None, info);
+        writer.write(
             veloc_lir::MachineOpcode::Generic(GenericOpcode::Callind),
             &[dst],
             &[],
-            [FieldValue::Call(info)],
+            fields,
         );
     }
     assert!(function.inst(missing_callee).validate().is_err());
@@ -818,7 +834,7 @@ fn optional_validation_is_separate_from_direct_views() {
         MachineOpcode::Target(0),
         &[dst],
         &[src],
-        [],
+        veloc_lir::Fields::None,
     );
     assert!(function.inst(target).validate().is_err());
     function.editor().invalidate_inst(target);
@@ -835,7 +851,7 @@ fn optional_validation_is_separate_from_direct_views() {
         MachineOpcode::Generic(GenericOpcode::Add),
         &[dst],
         &[src, src],
-        [veloc_lir::FieldValue::Imm(7)],
+        veloc_lir::Fields::Imm(7),
     );
     assert!(function.inst(add).validate().is_err());
     assert!(matches!(

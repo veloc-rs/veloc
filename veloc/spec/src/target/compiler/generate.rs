@@ -1,4 +1,4 @@
-use crate::target::ast::{Def, OperandConstraint};
+use crate::target::ast::{AttributeKind, Def, OperandConstraint};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
@@ -22,15 +22,7 @@ pub(super) fn find_operand_info<'a>(
     operands
         .iter()
         .enumerate()
-        .find(|(_, op)| match op {
-            OperandConstraint::Use(name)
-            | OperandConstraint::Def(name)
-            | OperandConstraint::Imm(name)
-            | OperandConstraint::Block(name)
-            | OperandConstraint::Global(name)
-            | OperandConstraint::StackSlot(name)
-            | OperandConstraint::Call(name) => name == var_name,
-        })
+        .find(|(_, op)| op.name() == var_name)
         .map(|(index, op)| {
             let class = |op: &OperandConstraint| match op {
                 OperandConstraint::Def(_) => 0,
@@ -189,17 +181,21 @@ pub(super) fn generate_target_inst_metadata(
         );
         let schedule = match &inst_def.schedule_class {
             Some(class) => format!(
-                "Some(crate::target::ScheduleInfo {{ class: crate::target::ScheduleClassId({}) }})",
+                "crate::target::ScheduleClass::Modeled(crate::target::ScheduleClassId({}))",
                 cpu.schedule_class(class),
             ),
-            None => "None".into(),
+            None => {
+                assert!(inst_def.is_pseudo, "checked machine instruction cost");
+                "crate::target::ScheduleClass::Pseudo".into()
+            }
         };
         writeln!(
             output,
             "pub const {const_name}: TargetInstMetadata = TargetInstMetadata {{"
         )
         .unwrap();
-        writeln!(output, "    schedule: {schedule},").unwrap();
+        writeln!(output, "    schedule_class: {schedule},").unwrap();
+        writeln!(output, "    movable: {},", inst_def.movable).unwrap();
         writeln!(
             output,
             "    rematerializable: {},",
@@ -214,6 +210,7 @@ pub(super) fn generate_target_inst_metadata(
         let mut defs = 0;
         let mut uses = 0;
         let mut entries = Vec::new();
+        let mut state_operands = Vec::new();
         for (operand, result) in constraints {
             let index = if result {
                 let n = defs;
@@ -230,9 +227,7 @@ pub(super) fn generate_target_inst_metadata(
                 .find(|(name, _)| name == operand)
                 .expect("checked register constraint")
                 .1;
-            let placement = if inst_def.state_operands.contains(operand) {
-                format!("Placement::State({})", reg_const_name(&registers[0]))
-            } else if let [register] = registers.as_slice() {
+            let placement = if let [register] = registers.as_slice() {
                 format!("Placement::Fixed({})", reg_const_name(register))
             } else {
                 format!(
@@ -241,6 +236,10 @@ pub(super) fn generate_target_inst_metadata(
                 )
             };
             let domain = if result { "Result" } else { "Input" };
+            if inst_def.state_operands.contains(operand) {
+                let unit = reg_const_name(&registers[0]);
+                state_operands.push(format!("veloc_lir::StateOperand {{ operand: OperandRef::{domain}({index}), unit: veloc_lir::PReg::new({unit}.0) }}"));
+            }
             entries.push(format!("OperandConstraint {{ operand: OperandRef::{domain}({index}), placement: {placement} }}"));
         }
         for &(dst, src) in &inst_def.ties {
@@ -255,11 +254,12 @@ pub(super) fn generate_target_inst_metadata(
             entries.push(format!("OperandConstraint {{ operand: OperandRef::Result({def}), placement: Placement::Reuse({input}) }}"));
         }
         writeln!(output, "    constraints: {},", format_slice(entries)).unwrap();
-        let memory = match &inst_def.memory {
-            Some((kind, bytes)) => format!("Some((veloc_lir::MemoryKind::{kind}, {bytes}))"),
-            None => "None".into(),
-        };
-        writeln!(output, "    memory: {memory},").unwrap();
+        writeln!(
+            output,
+            "    state_operands: {},",
+            format_slice(state_operands)
+        )
+        .unwrap();
         writeln!(
             output,
             "    flow: veloc_lir::ControlFlow::{},",
@@ -299,9 +299,10 @@ pub(super) fn generate_target_inst_metadata(
     output.push_str(r#"
 impl TargetInst {
     /// Construct register operands and destruction effects from the schema.
-    pub fn write(self, writer: veloc_lir::InstWriter<'_>, results: &[Reg], inputs: &[Reg], fields: impl IntoIterator<Item = FieldValue>) -> veloc_lir::InstId {
+    pub fn write(self, writer: veloc_lir::InstWriter<'_>, results: &[Reg], inputs: &[Reg], fields: veloc_lir::Fields) -> veloc_lir::InstId {
         let metadata = target_inst_metadata(self);
         writer.with_clobbers(metadata.clobbers.iter().copied())
+            .with_state_results(results, metadata.state_operands)
             .write(veloc_lir::MachineOpcode::Target(self.as_u32()), results, inputs, fields)
     }
 }
@@ -309,28 +310,13 @@ impl TargetInst {
 }
 
 pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<String, FinalInstDef>) {
-    for (method, property) in [
-        (
-            "is_pseudo",
-            (|inst: &FinalInstDef| inst.is_pseudo) as fn(&FinalInstDef) -> bool,
-        ),
-        (
-            "has_encoding",
-            (|inst: &FinalInstDef| inst.encoding.is_some()) as fn(&FinalInstDef) -> bool,
-        ),
-    ] {
-        writeln!(
-            out,
-            "impl TargetInst {{ pub const fn {method}(self) -> bool {{ match self {{"
-        )
-        .unwrap();
-        let mut ordered: Vec<_> = instructions.iter().collect();
-        ordered.sort_by_key(|(name, _)| *name);
-        for (name, inst) in ordered {
-            writeln!(out, "Self::{name} => {},", property(inst)).unwrap();
-        }
-        out.push_str("} } }\n");
+    out.push_str("impl TargetInst { pub const fn is_pseudo(self) -> bool { match self {\n");
+    let mut ordered: Vec<_> = instructions.iter().collect();
+    ordered.sort_by_key(|(name, _)| *name);
+    for (name, inst) in ordered {
+        writeln!(out, "Self::{name} => {},", inst.is_pseudo).unwrap();
     }
+    out.push_str("} } }\n");
     out.push_str(
         "impl TargetInst { pub const fn required_features(self) -> FeatureSet { match self {\n",
     );
@@ -368,7 +354,7 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
         let call = instruction
             .operands
             .iter()
-            .any(|op| matches!(op, OperandConstraint::Call(_)));
+            .any(|op| matches!(op, OperandConstraint::Attribute(_, AttributeKind::Call)));
         let boundary = call || instruction.flow == "Return";
         let count = if boundary { "<" } else { "!=" };
         let mut checks = vec![format!("inst.fields().len() != {fields}")];
@@ -400,14 +386,10 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
             out.push_str("if inst.fields().call_info().is_none_or(|info| info.frame.is_none()) { return Err(invalid()); }\n");
         }
         for op in &instruction.operands {
-            let (field_name, variant) = match op {
-                OperandConstraint::Imm(name) => (name, "Imm"),
-                OperandConstraint::Block(name) => (name, "Edge"),
-                OperandConstraint::Global(name) => (name, "Global"),
-                OperandConstraint::StackSlot(name) => (name, "StackSlot"),
-                OperandConstraint::Call(name) => (name, "Call"),
-                _ => continue,
+            let OperandConstraint::Attribute(field_name, kind) = op else {
+                continue;
             };
+            let variant = kind.description().field_variant;
             let (index, _) = find_operand_info(field_name, &instruction.operands).unwrap();
             writeln!(out, "if !matches!(inst.fields().read({index}), veloc_lir::FieldValueRef::{variant}(_)) {{ return Err(invalid()); }}").unwrap();
         }

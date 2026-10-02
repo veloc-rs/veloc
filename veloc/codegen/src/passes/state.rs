@@ -3,140 +3,20 @@
 //! Selection supplies ordinary SSA def-use edges. State placement is a separate
 //! constraint: ordinary register allocation must never invent a copy or spill
 //! for these values. This required lowering runs even without scheduling.
-use crate::analysis::FunctionAnalysisCtx;
+use crate::analysis::CfgInfo;
 use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
 use crate::target::TargetInstructions;
 use crate::{Error, Result};
 use hashbrown::HashMap;
-use veloc_lir::{
-    BlockId, InstId, InstRef, MachineFunction, MachineOpcode, OperandRef, Placement, Reg,
-};
+use std::collections::VecDeque;
+use veloc_lir::{BlockId, InstId, MachineFunction, MachineOpcode, Reg};
 
-/// Placement inferred from the target's operand categories. SSA identities and
-/// def-use edges remain in the IR; this map only identifies their storage roots.
-#[derive(Default)]
-pub(crate) struct StateValues {
-    locations: HashMap<Reg, Reg>,
-}
-
-impl StateValues {
-    pub fn collect(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<Self> {
-        let mut values = Self::default();
-        for block in f.blocks() {
-            for id in f.block_insts(block) {
-                let inst = f.inst(id);
-                for c in crate::regalloc::constraints::constraints(inst, target) {
-                    let Placement::State(location) = c.placement else {
-                        continue;
-                    };
-                    let value = *c
-                        .operand
-                        .get(inst.inputs(), inst.results())
-                        .ok_or_else(|| Error::codegen("missing state operand"))?;
-                    if value.is_preg() {
-                        if value != location {
-                            return Err(Error::codegen("incorrect physical state operand"));
-                        }
-                    } else if values
-                        .locations
-                        .insert(value, location)
-                        .is_some_and(|old| old != location)
-                    {
-                        return Err(Error::codegen(
-                            "state value has incompatible hardware locations",
-                        ));
-                    }
-                }
-            }
-        }
-        // Every occurrence must respect the same storage contract. In particular,
-        // ordinary copies and block parameters cannot silently copy hardware state.
-        for block in f.blocks() {
-            if f.block_params(block)
-                .unwrap()
-                .iter()
-                .any(|v| values.location(*v).is_some())
-            {
-                return Err(Error::codegen(
-                    "state block parameters require explicit edge lowering",
-                ));
-            }
-            for id in f.block_insts(block) {
-                let inst = f.inst(id);
-                let constraints: Vec<_> =
-                    crate::regalloc::constraints::constraints(inst, target).collect();
-                for (operand, value) in inst
-                    .inputs()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &v)| (OperandRef::Input(i), v))
-                    .chain(
-                        inst.results()
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &v)| (OperandRef::Result(i), v)),
-                    )
-                {
-                    if let Some(location) = values.location(value) {
-                        if !constraints.iter().any(|c| {
-                            c.operand == operand && c.placement == Placement::State(location)
-                        }) {
-                            return Err(Error::codegen(
-                                "state value used without its state placement contract",
-                            ));
-                        }
-                    }
-                }
-                if inst.edge_ids().any(|edge| {
-                    inst.edge(edge)
-                        .args
-                        .iter()
-                        .any(|v| values.location(*v).is_some())
-                }) {
-                    return Err(Error::codegen(
-                        "state edge arguments require explicit edge lowering",
-                    ));
-                }
-            }
-        }
-        Ok(values)
-    }
-
-    pub fn location(&self, value: Reg) -> Option<Reg> {
-        self.locations.get(&value).copied()
-    }
-
-    pub fn physical(&self, value: Reg) -> Reg {
-        self.location(value).unwrap_or(value)
-    }
-}
-
-type Available = HashMap<Reg, Reg>;
+type Available = crate::analysis::state::StateContents;
 type Repairs = HashMap<InstId, Vec<InstId>>;
 
-/// All writes invalidate previous contents, including unused results and
-/// clobbers. Explicit state results then install their new SSA identities.
-/// Reads and untouched roots preserve the available value.
-fn transfer(inst: InstRef<'_>, values: &StateValues, available: &mut Available) {
-    for reg in inst.register_access().writes() {
-        available.remove(&values.physical(reg));
-    }
-    for &value in inst.results() {
-        if let Some(location) = values.location(value) {
-            available.insert(location, value);
-        }
-    }
-}
-
-fn apply_repairs(
-    f: &MachineFunction,
-    values: &StateValues,
-    repairs: &Repairs,
-    id: InstId,
-    available: &mut Available,
-) {
+fn apply_repairs(f: &MachineFunction, repairs: &Repairs, id: InstId, available: &mut Available) {
     for &producer in repairs.get(&id).into_iter().flatten() {
-        transfer(f.inst(producer), values, available);
+        available.apply(f, f.inst(producer));
     }
 }
 
@@ -144,52 +24,46 @@ fn apply_repairs(
 /// entry. Equal incoming SSA identities can flow across any number of blocks.
 fn availability(
     f: &MachineFunction,
-    target: &dyn TargetInstructions,
-    values: &StateValues,
+    cfg: &CfgInfo,
     repairs: &Repairs,
 ) -> HashMap<BlockId, Available> {
-    let mut analyses = FunctionAnalysisCtx::default();
-    let cfg = analyses.cfg(f, target);
     let mut incoming = HashMap::<BlockId, Available>::new();
     let mut outgoing = HashMap::<BlockId, Available>::new();
-    loop {
-        let mut changed = false;
-        for block in f.blocks() {
-            let mut state = Available::new();
-            if block != f.entry_block() {
-                let preds = cfg.preds(block);
-                if let Some(first) = preds.first() {
-                    state = outgoing.get(first).cloned().unwrap_or_default();
-                    state.retain(|unit, value| {
-                        preds
-                            .iter()
-                            .skip(1)
-                            .all(|p| outgoing.get(p).and_then(|s| s.get(unit)) == Some(value))
-                    });
+    let mut pending = VecDeque::from([f.entry_block()]);
+    let mut queued = hashbrown::HashSet::<BlockId>::from([f.entry_block()]);
+    while let Some(block) = pending.pop_front() {
+        queued.remove(&block);
+        let mut state = Available::default();
+        if block != f.entry_block() {
+            // An unvisited predecessor is lattice top, not an unknown
+            // hardware value. This preserves values around loops that do
+            // not overwrite them. Entry contents remain genuinely unknown.
+            let mut preds = cfg.preds(block).iter().filter_map(|p| outgoing.get(p));
+            if let Some(first) = preds.next() {
+                state = first.clone();
+                for predecessor in preds {
+                    state.intersect(predecessor);
                 }
             }
-            incoming.insert(block, state.clone());
-            for id in f.block_insts(block) {
-                apply_repairs(f, values, repairs, id, &mut state);
-                transfer(f.inst(id), values, &mut state);
-            }
-            if outgoing.get(&block) != Some(&state) {
-                outgoing.insert(block, state);
-                changed = true;
-            }
         }
-        if !changed {
-            return incoming;
+        incoming.insert(block, state.clone());
+        for id in f.block_insts(block) {
+            apply_repairs(f, repairs, id, &mut state);
+            state.apply(f, f.inst(id));
+        }
+        if outgoing.get(&block) != Some(&state) {
+            outgoing.insert(block, state);
+            for &successor in cfg.succs(block) {
+                if queued.insert(successor) {
+                    pending.push_back(successor);
+                }
+            }
         }
     }
+    incoming
 }
 
-fn recipe(
-    f: &MachineFunction,
-    target: &dyn TargetInstructions,
-    values: &StateValues,
-    value: Reg,
-) -> Result<InstId> {
+fn recipe(f: &MachineFunction, target: &dyn TargetInstructions, value: Reg) -> Result<InstId> {
     let mut defs = f.defs(value);
     let id = defs
         .next()
@@ -205,11 +79,11 @@ fn recipe(
         ));
     };
     if !target.instruction_metadata(opcode).rematerializable
-        || inst.memory().is_some()
+        || inst.mem_flags().is_some()
         || inst
             .inputs()
             .iter()
-            .any(|v| v.is_preg() || values.location(*v).is_some())
+            .any(|v| v.is_preg() || f.state_unit(*v).is_some())
     {
         return Err(Error::codegen(
             "overwritten state requires a safe rematerialization recipe",
@@ -218,28 +92,24 @@ fn recipe(
     Ok(id)
 }
 
-fn plan(
-    f: &MachineFunction,
-    target: &dyn TargetInstructions,
-    values: &StateValues,
-) -> Result<Repairs> {
+fn plan(f: &MachineFunction, target: &dyn TargetInstructions, cfg: &CfgInfo) -> Result<Repairs> {
     let mut repairs = Repairs::new();
     loop {
-        let incoming = availability(f, target, values, &repairs);
+        let incoming = availability(f, cfg, &repairs);
         let mut changed = false;
         for block in f.blocks() {
-            let mut available = incoming[&block].clone();
+            let mut available = incoming.get(&block).cloned().unwrap_or_default();
             for id in f.block_insts(block) {
-                apply_repairs(f, values, &repairs, id, &mut available);
+                apply_repairs(f, &repairs, id, &mut available);
                 let inst = f.inst(id);
                 for &value in inst.inputs() {
-                    let Some(location) = values.location(value) else {
+                    let Some(location) = f.state_unit(value) else {
                         continue;
                     };
-                    if available.get(&location) == Some(&value) {
+                    if available.get(location) == Some(&value) {
                         continue;
                     }
-                    let producer = recipe(f, target, values, value)?;
+                    let producer = recipe(f, target, value)?;
                     let list = repairs.entry(id).or_default();
                     if list.contains(&producer) {
                         return Err(Error::codegen(
@@ -247,20 +117,19 @@ fn plan(
                         ));
                     }
                     list.push(producer);
-                    transfer(f.inst(producer), values, &mut available);
+                    available.apply(f, f.inst(producer));
                     changed = true;
                 }
                 // Recomputing one result may overwrite a different required bit.
                 if inst.inputs().iter().any(|v| {
-                    values
-                        .location(*v)
-                        .is_some_and(|p| available.get(&p) != Some(v))
+                    f.state_unit(*v)
+                        .is_some_and(|p| available.get(p) != Some(v))
                 }) {
                     return Err(Error::codegen(
                         "state inputs cannot coexist; materialize predicates before selection",
                     ));
                 }
-                transfer(inst, values, &mut available);
+                available.apply(f, inst);
             }
         }
         // Each iteration permanently adds a producer at a use; no arbitrary
@@ -282,11 +151,16 @@ impl FunctionPass for ResolveStatePass {
     }
     fn run(&self, cx: &mut FunctionSession<'_>) -> Result<()> {
         let f = cx.function();
-        let values = StateValues::collect(f, cx.target)?;
-        if values.locations.is_empty() {
+        if !f.vregs().values().any(|data| data.state_unit().is_some()) {
             return Ok(());
         }
-        let repairs = plan(f, cx.target, &values)?;
+        let cfg = cx.cfg().clone();
+        let f = cx.function();
+        let repairs = plan(f, cx.target, &cfg)?;
+        cx.profile.count(
+            "state_rematerializations",
+            repairs.values().map(|r| r.len() as u64).sum(),
+        );
         let ids: Vec<_> = f.blocks().flat_map(|b| f.block_insts(b)).collect();
         let mut f = cx.edit();
         // Insert all recipes while their SSA definitions are still intact.
@@ -296,13 +170,10 @@ impl FunctionPass for ResolveStatePass {
                 let opcode = source.opcode();
                 let inputs = source.inputs().to_vec();
                 let original_results = source.results().to_vec();
-                let fields: Vec<_> = (0..source.fields().len())
-                    .map(|i| source.fields().at(i))
-                    .collect();
                 let clobbers: Vec<_> = source.clobbers().collect();
                 let mut results = Vec::new();
                 for value in original_results {
-                    if let Some(location) = values.location(value) {
+                    if let Some(location) = f.state_unit(value) {
                         results.push(location);
                     } else if value.is_preg() {
                         return Err(Error::codegen(
@@ -313,11 +184,11 @@ impl FunctionPass for ResolveStatePass {
                         results.push(f.editor().alloc_vreg_data(data));
                     }
                 }
-                f.editor()
-                    .before(id)
-                    .writer()
-                    .with_clobbers(clobbers)
-                    .write(opcode, &results, &inputs, fields);
+                let mut editor = f.editor();
+                let mut cursor = editor.before(id);
+                let mut writer = cursor.writer().with_clobbers(clobbers);
+                let fields = writer.copy_fields(producer);
+                writer.write(opcode, &results, &inputs, fields);
             }
         }
         for id in ids {
@@ -327,14 +198,14 @@ impl FunctionPass for ResolveStatePass {
                 .iter()
                 .copied()
                 .enumerate()
-                .filter_map(|(i, v)| values.location(v).map(|p| (i, p)))
+                .filter_map(|(i, v)| f.state_unit(v).map(|p| (i, p)))
                 .collect();
             let results: Vec<_> = inst
                 .results()
                 .iter()
                 .copied()
                 .enumerate()
-                .filter_map(|(i, v)| values.location(v).map(|p| (i, p)))
+                .filter_map(|(i, v)| f.state_unit(v).map(|p| (i, p)))
                 .collect();
             let mut edit = f.editor();
             for (i, p) in inputs {

@@ -1,38 +1,40 @@
 import "../common.spec";
 
-expand Binary(RvAdd32, GprValue, GPR, 59, 0, 0, "addw", I, IntAlu);
+expand Binary(RvAdd32, GprValue, GPR, 59, 0, 0, "addw", I, IntAlu, true);
 
-expand Binary(RvAdd64, GprValue, GPR, 51, 0, 0, "add", I, IntAlu);
+expand Binary(RvAdd64, GprValue, GPR, 51, 0, 0, "add", I, IntAlu, true);
 
-expand Binary(RvSub32, GprValue, GPR, 59, 0, 32, "subw", I, IntAlu);
+expand Binary(RvSub32, GprValue, GPR, 59, 0, 32, "subw", I, IntAlu, true);
 
-expand Binary(RvSub64, GprValue, GPR, 51, 0, 32, "sub", I, IntAlu);
+expand Binary(RvSub64, GprValue, GPR, 51, 0, 32, "sub", I, IntAlu, true);
 
-expand Binary(RvShl32, GprValue, GPR, 59, 1, 0, "sllw", I, IntAlu);
+expand Binary(RvShl32, GprValue, GPR, 59, 1, 0, "sllw", I, IntAlu, true);
 
-expand Binary(RvShl64, GprValue, GPR, 51, 1, 0, "sll", I, IntAlu);
+expand Binary(RvShl64, GprValue, GPR, 51, 1, 0, "sll", I, IntAlu, true);
 
-expand Binary(RvLshr32, GprValue, GPR, 59, 5, 0, "srlw", I, IntAlu);
+expand Binary(RvLshr32, GprValue, GPR, 59, 5, 0, "srlw", I, IntAlu, true);
 
-expand Binary(RvLshr64, GprValue, GPR, 51, 5, 0, "srl", I, IntAlu);
+expand Binary(RvLshr64, GprValue, GPR, 51, 5, 0, "srl", I, IntAlu, true);
 
-expand Binary(RvAshr32, GprValue, GPR, 59, 5, 32, "sraw", I, IntAlu);
+expand Binary(RvAshr32, GprValue, GPR, 59, 5, 32, "sraw", I, IntAlu, true);
 
-expand Binary(RvAshr64, GprValue, GPR, 51, 5, 32, "sra", I, IntAlu);
+expand Binary(RvAshr64, GprValue, GPR, 51, 5, 32, "sra", I, IntAlu, true);
 
-expand Binary(RvAnd32, GprValue, GPR, 51, 7, 0, "and", I, IntAlu);
+expand Binary(RvAnd32, GprValue, GPR, 51, 7, 0, "and", I, IntAlu, true);
 
-expand Binary(RvAnd64, GprValue, GPR, 51, 7, 0, "and", I, IntAlu);
+expand Binary(RvAnd64, GprValue, GPR, 51, 7, 0, "and", I, IntAlu, true);
 
-expand Binary(RvOr32, GprValue, GPR, 51, 6, 0, "or", I, IntAlu);
+expand Binary(RvOr32, GprValue, GPR, 51, 6, 0, "or", I, IntAlu, true);
 
-expand Binary(RvOr64, GprValue, GPR, 51, 6, 0, "or", I, IntAlu);
+expand Binary(RvOr64, GprValue, GPR, 51, 6, 0, "or", I, IntAlu, true);
 
-expand Binary(RvXor32, GprValue, GPR, 51, 4, 0, "xor", I, IntAlu);
+expand Binary(RvXor32, GprValue, GPR, 51, 4, 0, "xor", I, IntAlu, true);
 
-expand Binary(RvXor64, GprValue, GPR, 51, 4, 0, "xor", I, IntAlu);
+expand Binary(RvXor64, GprValue, GPR, 51, 4, 0, "xor", I, IntAlu, true);
 
 op RvMove32(src: Value<ScalarValue>) -> (dst: Value<ScalarValue>) {
+    movable = true;
+    schedule = Copy;
     encoding = Emission::instructions([Instruction::Move(dst,src,32)]);
     registers = { dst: SCALAR, src: SCALAR };
     assembly = {
@@ -41,7 +43,9 @@ op RvMove32(src: Value<ScalarValue>) -> (dst: Value<ScalarValue>) {
 }
 
 op RvLi32(imm: i64) -> (dst: Value<GprValue>) {
-    encoding = Emission::instructions([Instruction::Constant(dst,imm), Instruction::I(27,dst,0,dst,0)]);
+    movable = true;
+    schedule = Constant32;
+    encoding = Emission::instructions([Instruction::Constant(dst,imm,32)]);
     registers = { dst: GPR };
     assembly = {
         lines: [{ mnemonic: "li32", operands: [reg(dst,32), imm(imm)] }]
@@ -49,6 +53,8 @@ op RvLi32(imm: i64) -> (dst: Value<GprValue>) {
 }
 
 op RvRotl32(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
+    movable = true;
+    schedule = IntRotate;
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(59,Reg::X29,1,lhs,rhs,0), Instruction::R(59,Reg::X30,5,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     clobbers = [X28,X29,X30];
@@ -58,6 +64,8 @@ op RvRotl32(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>
 }
 
 op RvRotr32(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
+    movable = true;
+    schedule = IntRotate;
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(59,Reg::X29,5,lhs,rhs,0), Instruction::R(59,Reg::X30,1,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     clobbers = [X28,X29,X30];
@@ -67,6 +75,8 @@ op RvRotr32(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>
 }
 
 op RvMove64(src: Value<ScalarValue>) -> (dst: Value<ScalarValue>) {
+    movable = true;
+    schedule = Copy;
     encoding = Emission::instructions([Instruction::Move(dst,src,64)]);
     registers = { dst: SCALAR, src: SCALAR };
     assembly = {
@@ -75,7 +85,9 @@ op RvMove64(src: Value<ScalarValue>) -> (dst: Value<ScalarValue>) {
 }
 
 op RvLi64(imm: i64) -> (dst: Value<GprValue>) {
-    encoding = Emission::instructions([Instruction::Constant(dst,imm)]);
+    movable = true;
+    schedule = Constant64;
+    encoding = Emission::instructions([Instruction::Constant(dst,imm,64)]);
     registers = { dst: GPR };
     assembly = {
         lines: [{ mnemonic: "li64", operands: [reg(dst,64), imm(imm)] }]
@@ -83,6 +95,8 @@ op RvLi64(imm: i64) -> (dst: Value<GprValue>) {
 }
 
 op RvRotl64(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
+    movable = true;
+    schedule = IntRotate;
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(51,Reg::X29,1,lhs,rhs,0), Instruction::R(51,Reg::X30,5,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     clobbers = [X28,X29,X30];
@@ -92,6 +106,8 @@ op RvRotl64(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>
 }
 
 op RvRotr64(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
+    movable = true;
+    schedule = IntRotate;
     encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(51,Reg::X29,5,lhs,rhs,0), Instruction::R(51,Reg::X30,1,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     clobbers = [X28,X29,X30];
@@ -104,12 +120,15 @@ op RvZext1(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,7,src,1)]);
     registers = { dst: GPR, src: GPR };
     schedule = IntAlu;
+    movable = true;
     assembly = {
         lines: [{ mnemonic: "zext1", operands: [] }]
     };
 }
 
 op RvSext1(src: Value<GprValue>) -> (dst: Value<GprValue>) {
+    movable = true;
+    schedule = IntPair;
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,63), Instruction::I(19,dst,5,dst,1087)]);
     registers = { dst: GPR, src: GPR };
     assembly = {
@@ -121,12 +140,15 @@ op RvZext8(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,7,src,255)]);
     registers = { dst: GPR, src: GPR };
     schedule = IntAlu;
+    movable = true;
     assembly = {
         lines: [{ mnemonic: "zext8", operands: [] }]
     };
 }
 
 op RvSext8(src: Value<GprValue>) -> (dst: Value<GprValue>) {
+    movable = true;
+    schedule = IntPair;
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,56), Instruction::I(19,dst,5,dst,1080)]);
     registers = { dst: GPR, src: GPR };
     assembly = {
@@ -135,6 +157,8 @@ op RvSext8(src: Value<GprValue>) -> (dst: Value<GprValue>) {
 }
 
 op RvZext16(src: Value<GprValue>) -> (dst: Value<GprValue>) {
+    movable = true;
+    schedule = IntPair;
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,48), Instruction::I(19,dst,5,dst,48)]);
     registers = { dst: GPR, src: GPR };
     assembly = {
@@ -143,6 +167,8 @@ op RvZext16(src: Value<GprValue>) -> (dst: Value<GprValue>) {
 }
 
 op RvSext16(src: Value<GprValue>) -> (dst: Value<GprValue>) {
+    movable = true;
+    schedule = IntPair;
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,48), Instruction::I(19,dst,5,dst,1072)]);
     registers = { dst: GPR, src: GPR };
     assembly = {
@@ -151,6 +177,8 @@ op RvSext16(src: Value<GprValue>) -> (dst: Value<GprValue>) {
 }
 
 op RvZext32(src: Value<GprValue>) -> (dst: Value<GprValue>) {
+    movable = true;
+    schedule = IntPair;
     encoding = Emission::instructions([Instruction::I(19,dst,1,src,32), Instruction::I(19,dst,5,dst,32)]);
     registers = { dst: GPR, src: GPR };
     assembly = {
@@ -162,12 +190,15 @@ op RvSext32(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(27,dst,0,src,0)]);
     registers = { dst: GPR, src: GPR };
     schedule = IntAlu;
+    movable = true;
     assembly = {
         lines: [{ mnemonic: "sext32", operands: [] }]
     };
 }
 
 op RvCmpEq(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
+    movable = true;
+    schedule = IntPair;
     encoding = Emission::instructions([Instruction::R(51,dst,4,lhs,rhs,0), Instruction::I(19,dst,3,dst,1)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     assembly = {
@@ -176,7 +207,9 @@ op RvCmpEq(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL
 }
 
 op RvCmpNe(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
-    encoding = Emission::instructions([Instruction::R(51,dst,4,lhs,rhs,0), Instruction::I(19,dst,3,dst,1), Instruction::I(19,dst,4,dst,1)]);
+    movable = true;
+    schedule = IntPair;
+    encoding = Emission::instructions([Instruction::R(51,dst,4,lhs,rhs,0), Instruction::R(51,dst,3,Reg::X0,dst,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     assembly = {
         lines: [{ mnemonic: "cmpne", operands: [] }]
@@ -184,6 +217,8 @@ op RvCmpNe(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL
 }
 
 op RvCmpLtS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
+    movable = true;
+    schedule = IntAlu;
     encoding = Emission::instructions([Instruction::R(51,dst,2,lhs,rhs,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     assembly = {
@@ -192,6 +227,8 @@ op RvCmpLtS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOO
 }
 
 op RvCmpGtS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
+    movable = true;
+    schedule = IntAlu;
     encoding = Emission::instructions([Instruction::R(51,dst,2,rhs,lhs,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     assembly = {
@@ -200,6 +237,8 @@ op RvCmpGtS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOO
 }
 
 op RvCmpLeS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
+    movable = true;
+    schedule = IntPair;
     encoding = Emission::instructions([Instruction::R(51,dst,2,rhs,lhs,0), Instruction::I(19,dst,4,dst,1)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     assembly = {
@@ -208,6 +247,8 @@ op RvCmpLeS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOO
 }
 
 op RvCmpGeS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
+    movable = true;
+    schedule = IntPair;
     encoding = Emission::instructions([Instruction::R(51,dst,2,lhs,rhs,0), Instruction::I(19,dst,4,dst,1)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     assembly = {
@@ -216,6 +257,8 @@ op RvCmpGeS(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOO
 }
 
 op RvCmpLtU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
+    movable = true;
+    schedule = IntAlu;
     encoding = Emission::instructions([Instruction::R(51,dst,3,lhs,rhs,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     assembly = {
@@ -224,6 +267,8 @@ op RvCmpLtU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOO
 }
 
 op RvCmpGtU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
+    movable = true;
+    schedule = IntAlu;
     encoding = Emission::instructions([Instruction::R(51,dst,3,rhs,lhs,0)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     assembly = {
@@ -232,6 +277,8 @@ op RvCmpGtU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOO
 }
 
 op RvCmpLeU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
+    movable = true;
+    schedule = IntPair;
     encoding = Emission::instructions([Instruction::R(51,dst,3,rhs,lhs,0), Instruction::I(19,dst,4,dst,1)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     assembly = {
@@ -240,6 +287,8 @@ op RvCmpLeU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOO
 }
 
 op RvCmpGeU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
+    movable = true;
+    schedule = IntPair;
     encoding = Emission::instructions([Instruction::R(51,dst,3,lhs,rhs,0), Instruction::I(19,dst,4,dst,1)]);
     registers = { dst: GPR, lhs: GPR, rhs: GPR };
     assembly = {
@@ -248,6 +297,8 @@ op RvCmpGeU(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<Type::BOO
 }
 
 op RvEqz(src: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
+    movable = true;
+    schedule = IntAlu;
     encoding = Emission::instructions([Instruction::I(19,dst,3,src,1)]);
     registers = { dst: GPR, src: GPR };
     assembly = {
@@ -255,7 +306,10 @@ op RvEqz(src: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
     };
 }
 
-op RvLoad8(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
+op RvLoad8(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value<GprValue>) {
+    clobbers = [X31];
+    movable = true;
+    schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },4)]);
     registers = { dst: GPR, base: GPR };
     memory = { kind: Read, bytes: 1 };
@@ -264,7 +318,9 @@ op RvLoad8(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
     };
 }
 
-op RvLoad8Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
+op RvLoad8Stack(slot: StackSlot, flags: MemFlags) -> (dst: Value<GprValue>) {
+    clobbers = [X31];
+    schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,slot,4)]);
     registers = { dst: GPR };
     memory = { kind: Read, bytes: 1 };
@@ -273,7 +329,10 @@ op RvLoad8Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     };
 }
 
-op RvStore8(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
+op RvStore8(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> () {
+    clobbers = [X31];
+    movable = true;
+    schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },0)]);
     registers = { src: GPR, base: GPR };
     memory = { kind: Write, bytes: 1 };
@@ -282,7 +341,9 @@ op RvStore8(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
     };
 }
 
-op RvStore8Stack(src: Value<GprValue>, slot: StackSlot) -> () {
+op RvStore8Stack(src: Value<GprValue>, slot: StackSlot, flags: MemFlags) -> () {
+    clobbers = [X31];
+    schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,slot,0)]);
     registers = { src: GPR };
     memory = { kind: Write, bytes: 1 };
@@ -291,7 +352,10 @@ op RvStore8Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     };
 }
 
-op RvLoad16(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
+op RvLoad16(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value<GprValue>) {
+    clobbers = [X31];
+    movable = true;
+    schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },5)]);
     registers = { dst: GPR, base: GPR };
     memory = { kind: Read, bytes: 2 };
@@ -300,7 +364,9 @@ op RvLoad16(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
     };
 }
 
-op RvLoad16Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
+op RvLoad16Stack(slot: StackSlot, flags: MemFlags) -> (dst: Value<GprValue>) {
+    clobbers = [X31];
+    schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,slot,5)]);
     registers = { dst: GPR };
     memory = { kind: Read, bytes: 2 };
@@ -309,7 +375,10 @@ op RvLoad16Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     };
 }
 
-op RvStore16(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
+op RvStore16(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> () {
+    clobbers = [X31];
+    movable = true;
+    schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },1)]);
     registers = { src: GPR, base: GPR };
     memory = { kind: Write, bytes: 2 };
@@ -318,7 +387,9 @@ op RvStore16(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
     };
 }
 
-op RvStore16Stack(src: Value<GprValue>, slot: StackSlot) -> () {
+op RvStore16Stack(src: Value<GprValue>, slot: StackSlot, flags: MemFlags) -> () {
+    clobbers = [X31];
+    schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,slot,1)]);
     registers = { src: GPR };
     memory = { kind: Write, bytes: 2 };
@@ -327,7 +398,10 @@ op RvStore16Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     };
 }
 
-op RvLoad32(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
+op RvLoad32(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value<GprValue>) {
+    clobbers = [X31];
+    movable = true;
+    schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },2)]);
     registers = { dst: GPR, base: GPR };
     memory = { kind: Read, bytes: 4 };
@@ -336,7 +410,9 @@ op RvLoad32(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
     };
 }
 
-op RvLoad32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
+op RvLoad32Stack(slot: StackSlot, flags: MemFlags) -> (dst: Value<GprValue>) {
+    clobbers = [X31];
+    schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,slot,2)]);
     registers = { dst: GPR };
     memory = { kind: Read, bytes: 4 };
@@ -345,7 +421,10 @@ op RvLoad32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     };
 }
 
-op RvStore32(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
+op RvStore32(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> () {
+    clobbers = [X31];
+    movable = true;
+    schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },2)]);
     registers = { src: GPR, base: GPR };
     memory = { kind: Write, bytes: 4 };
@@ -354,7 +433,9 @@ op RvStore32(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
     };
 }
 
-op RvStore32Stack(src: Value<GprValue>, slot: StackSlot) -> () {
+op RvStore32Stack(src: Value<GprValue>, slot: StackSlot, flags: MemFlags) -> () {
+    clobbers = [X31];
+    schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,slot,2)]);
     registers = { src: GPR };
     memory = { kind: Write, bytes: 4 };
@@ -363,7 +444,10 @@ op RvStore32Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     };
 }
 
-op RvLoad64(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
+op RvLoad64(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value<GprValue>) {
+    clobbers = [X31];
+    movable = true;
+    schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },3)]);
     registers = { dst: GPR, base: GPR };
     memory = { kind: Read, bytes: 8 };
@@ -372,7 +456,9 @@ op RvLoad64(base: Value<Type::PTR>, offset: i64) -> (dst: Value<GprValue>) {
     };
 }
 
-op RvLoad64Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
+op RvLoad64Stack(slot: StackSlot, flags: MemFlags) -> (dst: Value<GprValue>) {
+    clobbers = [X31];
+    schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,slot,3)]);
     registers = { dst: GPR };
     memory = { kind: Read, bytes: 8 };
@@ -381,7 +467,10 @@ op RvLoad64Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     };
 }
 
-op RvStore64(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
+op RvStore64(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> () {
+    clobbers = [X31];
+    movable = true;
+    schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },3)]);
     registers = { src: GPR, base: GPR };
     memory = { kind: Write, bytes: 8 };
@@ -390,7 +479,9 @@ op RvStore64(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64) -> () {
     };
 }
 
-op RvStore64Stack(src: Value<GprValue>, slot: StackSlot) -> () {
+op RvStore64Stack(src: Value<GprValue>, slot: StackSlot, flags: MemFlags) -> () {
+    clobbers = [X31];
+    schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,slot,3)]);
     registers = { src: GPR };
     memory = { kind: Write, bytes: 8 };
@@ -400,6 +491,8 @@ op RvStore64Stack(src: Value<GprValue>, slot: StackSlot) -> () {
 }
 
 op RvStackAddr(slot: StackSlot) -> (dst: Value<Type::PTR>) {
+    clobbers = [X31];
+    schedule = Address;
     encoding = Emission::instructions([Instruction::Address(dst,slot)]);
     registers = { dst: GPR };
     assembly = {
@@ -408,6 +501,9 @@ op RvStackAddr(slot: StackSlot) -> (dst: Value<Type::PTR>) {
 }
 
 op RvAddOffset(base: Value<GprValue>, offset: i64) -> (dst: Value<GprValue>) {
+    clobbers = [X31];
+    movable = true;
+    schedule = Address;
     encoding = Emission::instructions([Instruction::Address(dst,Address {base:base,offset:offset})]);
     registers = { dst: GPR, base: GPR };
     assembly = {
@@ -416,6 +512,7 @@ op RvAddOffset(base: Value<GprValue>, offset: i64) -> (dst: Value<GprValue>) {
 }
 
 op RvSelect32(cond: Value<Type::BOOL>, v1: Value<Type::I32 | Type::BOOL>, v2: Value<Type::I32 | Type::BOOL>) -> (dst: Value<Type::I32 | Type::BOOL>) {
+    schedule = Select;
     encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Move(dst,v1,32), Instruction::J(Reg::X0,8), Instruction::Move(dst,v2,32)]);
     registers = { dst: GPR, cond: GPR, v1: GPR, v2: GPR };
     assembly = {
@@ -424,6 +521,7 @@ op RvSelect32(cond: Value<Type::BOOL>, v1: Value<Type::I32 | Type::BOOL>, v2: Va
 }
 
 op RvSelect64(cond: Value<Type::BOOL>, v1: Value<Type::I64 | Type::PTR>, v2: Value<Type::I64 | Type::PTR>) -> (dst: Value<Type::I64 | Type::PTR>) {
+    schedule = Select;
     encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Move(dst,v1,64), Instruction::J(Reg::X0,8), Instruction::Move(dst,v2,64)]);
     registers = { dst: GPR, cond: GPR, v1: GPR, v2: GPR };
     assembly = {
@@ -432,6 +530,7 @@ op RvSelect64(cond: Value<Type::BOOL>, v1: Value<Type::I64 | Type::PTR>, v2: Val
 }
 
 op RvJump(target: Successor) -> () {
+    schedule = Branch;
     encoding = Emission::jump(target);
     registers = {  };
     flow = Jump;
@@ -441,6 +540,7 @@ op RvJump(target: Successor) -> () {
 }
 
 op RvBranch(cond: Value<Type::BOOL>, target: Successor) -> () {
+    schedule = Branch;
     encoding = Emission::branch(1,cond,Reg::X0,target);
     registers = { cond: GPR };
     flow = Branch;
@@ -450,6 +550,7 @@ op RvBranch(cond: Value<Type::BOOL>, target: Successor) -> () {
 }
 
 op RvCall(sp: Value<GprValue>, target: Global, info: CallInfo) -> () {
+    schedule = Call;
     encoding = Emission::call(target);
     registers = { sp: fixed(X2, GPR) };
     flow = Call;
@@ -459,6 +560,7 @@ op RvCall(sp: Value<GprValue>, target: Global, info: CallInfo) -> () {
 }
 
 op RvCallReg(sp: Value<GprValue>, target: Value<GprValue>, info: CallInfo) -> () {
+    schedule = Call;
     encoding = Emission::instructions([Instruction::I(103,Reg::X1,0,target,0)]);
     registers = { sp: fixed(X2, GPR), target: GPR };
     flow = Call;
@@ -468,6 +570,7 @@ op RvCallReg(sp: Value<GprValue>, target: Value<GprValue>, info: CallInfo) -> ()
 }
 
 op RvRet() -> () {
+    schedule = Return;
     encoding = Emission::instructions([Instruction::I(103,Reg::X0,0,Reg::X1,0)]);
     registers = {  };
     flow = Return;
@@ -477,6 +580,7 @@ op RvRet() -> () {
 }
 
 op RvTrap() -> () {
+    schedule = Trap;
     encoding = Emission::instructions([Instruction::I(115,Reg::X0,0,Reg::X0,1)]);
     registers = {  };
     flow = Trap;
@@ -491,6 +595,7 @@ template Immediate(Name: ident, Major: expr, F3: expr, Bias: expr, Mnemonic: exp
         encoding = Emission::instructions([Instruction::I(Major,dst,F3,src,imm | Bias)]);
         registers = { dst: GPR, src: GPR };
         schedule = IntAlu;
+        movable = true;
         requires = [I];
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst,64),reg(src,64),imm(imm)] }]
@@ -522,6 +627,7 @@ expand Immediate(RvAshr64Imm, 19, 5, 1024, "srai");
 
 template CompareBranch(Name: ident, F3: expr, Mnemonic: expr) {
     op Name(lhs: Value<GprValue>, rhs: Value<GprValue>, target: Successor) -> () {
+        schedule = Branch;
         encoding = Emission::branch(F3,lhs,rhs,target);
         registers = { lhs: GPR, rhs: GPR };
         flow = Branch;
@@ -605,6 +711,20 @@ template IntBranch(Condition: expr, Target: ident) {
             case {
                 let cmp = def<lir::Icmp<Type::I32 | Type::I64 | Type::PTR>>(n.cond);
                 require(matches(cmp.cc, Condition));
+                let zero = def<lir::Constant>(cmp.rhs);
+                require(matches(zero.imm, 0));
+                replace(n, [build(Target(cmp.lhs, reg(X0), n.then_blk)), build(RvJump(n.else_blk))]);
+            }
+            case {
+                let cmp = def<lir::Icmp<Type::I32 | Type::I64 | Type::PTR>>(n.cond);
+                require(matches(cmp.cc, Condition));
+                let zero = def<lir::Constant>(cmp.lhs);
+                require(matches(zero.imm, 0));
+                replace(n, [build(Target(reg(X0), cmp.rhs, n.then_blk)), build(RvJump(n.else_blk))]);
+            }
+            case {
+                let cmp = def<lir::Icmp<Type::I32 | Type::I64 | Type::PTR>>(n.cond);
+                require(matches(cmp.cc, Condition));
                 replace(n, [build(Target(cmp.lhs, cmp.rhs, n.then_blk)), build(RvJump(n.else_blk))]);
             }
         }
@@ -626,6 +746,20 @@ expand IntBranch(CC::AE, RvBranchGeU);
 template IntBranchReversed(Condition: expr, Target: ident) {
     select(n: lir::Brcond) {
         choose {
+            case {
+                let cmp = def<lir::Icmp<Type::I32 | Type::I64 | Type::PTR>>(n.cond);
+                require(matches(cmp.cc, Condition));
+                let zero = def<lir::Constant>(cmp.rhs);
+                require(matches(zero.imm, 0));
+                replace(n, [build(Target(reg(X0), cmp.lhs, n.then_blk)), build(RvJump(n.else_blk))]);
+            }
+            case {
+                let cmp = def<lir::Icmp<Type::I32 | Type::I64 | Type::PTR>>(n.cond);
+                require(matches(cmp.cc, Condition));
+                let zero = def<lir::Constant>(cmp.lhs);
+                require(matches(zero.imm, 0));
+                replace(n, [build(Target(cmp.rhs, reg(X0), n.then_blk)), build(RvJump(n.else_blk))]);
+            }
             case {
                 let cmp = def<lir::Icmp<Type::I32 | Type::I64 | Type::PTR>>(n.cond);
                 require(matches(cmp.cc, Condition));
@@ -947,19 +1081,19 @@ select(n: lir::Load) {
     choose {
         case {
             require(type_is<Type::BOOL | Type::I8>(n.dst));
-            replace(n, build(RvLoad8(n.base, n.offset)));
+            replace(n, build(RvLoad8(n.base, n.offset, n.flags)));
         }
         case {
             require(type_is<Type::I16>(n.dst));
-            replace(n, build(RvLoad16(n.base, n.offset)));
+            replace(n, build(RvLoad16(n.base, n.offset, n.flags)));
         }
         case {
             require(type_is<Type::I32>(n.dst));
-            replace(n, build(RvLoad32(n.base, n.offset)));
+            replace(n, build(RvLoad32(n.base, n.offset, n.flags)));
         }
         case {
             require(type_is<Type::I64 | Type::PTR>(n.dst));
-            replace(n, build(RvLoad64(n.base, n.offset)));
+            replace(n, build(RvLoad64(n.base, n.offset, n.flags)));
         }
     }
 }
@@ -968,19 +1102,19 @@ select(n: lir::Store) {
     choose {
         case {
             require(type_is<Type::BOOL | Type::I8>(n.src));
-            replace(n, build(RvStore8(n.src, n.base, n.offset)));
+            replace(n, build(RvStore8(n.src, n.base, n.offset, n.flags)));
         }
         case {
             require(type_is<Type::I16>(n.src));
-            replace(n, build(RvStore16(n.src, n.base, n.offset)));
+            replace(n, build(RvStore16(n.src, n.base, n.offset, n.flags)));
         }
         case {
             require(type_is<Type::I32>(n.src));
-            replace(n, build(RvStore32(n.src, n.base, n.offset)));
+            replace(n, build(RvStore32(n.src, n.base, n.offset, n.flags)));
         }
         case {
             require(type_is<Type::I64 | Type::PTR>(n.src));
-            replace(n, build(RvStore64(n.src, n.base, n.offset)));
+            replace(n, build(RvStore64(n.src, n.base, n.offset, n.flags)));
         }
     }
 }

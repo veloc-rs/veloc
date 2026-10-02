@@ -2,8 +2,7 @@
 use super::{FunctionPassContext, FunctionStage, PassSequence, run_function_pass};
 use crate::analysis::FunctionAnalysisCtx;
 use crate::passes::{
-    FrameFinalizePass, InstructionSelectionPass, LegalizePass, PostIselOptimizePass,
-    RemoveUnreachablePass,
+    FrameFinalizePass, InstructionSelectionPass, LegalizePass, RemoveUnreachablePass,
 };
 use crate::target::TargetMachine;
 use crate::{CodegenOptions, Error, OptLevel, Result};
@@ -32,7 +31,6 @@ impl<'a> FunctionPipeline<'a> {
         match level {
             OptLevel::None => {}
             OptLevel::Default => {
-                post_isel.push(Box::new(PostIselOptimizePass));
                 post_isel.push(Box::new(crate::passes::schedule::SchedulePass::new(
                     options.verify,
                 )));

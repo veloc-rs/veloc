@@ -60,14 +60,14 @@ impl<'a> PressureTracker<'a> {
     }
 
     fn in_set(&self, r: Reg, set: &RegClassInfo) -> bool {
-        if self.region.states.location(r).is_some() {
+        if self.region.function.state_unit(r).is_some() {
             return false;
         }
         if r.is_preg() {
             return set.allocatable.contains(&r);
         }
         let data = self.region.function.vreg_data(r);
-        self.target.reg_class_for_vreg(&data.ty, data.bank) == set.kind
+        self.target.reg_class_for_vreg(&data.ty, data.bank()) == set.kind
     }
 
     fn needed_after(&self, access: RegisterAccess<'_>, r: Reg) -> bool {

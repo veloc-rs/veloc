@@ -14,6 +14,7 @@ template GprBinary(Opcode: ident, Byte: expr, Wide: expr, Mnemonic: expr, Bits: 
         clobbers = [AF];
         rematerializable = true;
         schedule = IntAlu;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src2, Bits)] }]
         };
@@ -48,6 +49,7 @@ template GprBinaryImm(Opcode: ident, Wide: expr, Extension: expr, Imm: ident, Mn
         clobbers = [AF];
         rematerializable = true;
         schedule = IntAlu;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), imm(imm)] }]
         };
@@ -83,6 +85,7 @@ template GprMultiply(Opcode: ident, Wide: expr, Mnemonic: expr, Bits: expr) {
         clobbers = [PF, ZF, SF, AF];
         rematerializable = true;
         schedule = IntMul;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src2, Bits)] }]
         };
@@ -95,6 +98,7 @@ expand GprMultiply(X86IMul64, true, "imul", 64);
 
 template GprShiftCl(Opcode: ident, Wide: expr, Extension: expr, Mnemonic: expr, Bits: expr) {
     op Opcode(count: Value<GprValue>, src1: Value<GprValue>) -> (dst: Value<GprValue>) {
+        schedule = IntShift;
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xD3, wide: Wide },
             Form::ModRm(RegField::Extension(Extension), Rm::Register(dst)),
@@ -134,6 +138,7 @@ expand GprShiftCl(X86Sar64Cl, true, 7, "sar", 64);
 
 template GprShiftImm(Opcode: ident, Wide: expr, Extension: expr, Mnemonic: expr, Bits: expr) {
     op Opcode(imm: i64, src: Value<GprValue>) -> (dst: Value<GprValue>) {
+        schedule = IntAlu;
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xC1, wide: Wide },
             Form::ModRm(RegField::Extension(Extension), Rm::Register(dst)),
@@ -160,8 +165,9 @@ expand GprShiftImm(X86Sar64ri, true, 7, "sar", 64);
 
 // Hardware register operands remain SSA values until allocation. The low/high
 // inputs and quotient/remainder results occupy the same roots at different times.
-template Divide(Opcode: ident, Ty: expr, Wide: expr, Bits: expr, Extension: expr, Mnemonic: expr) {
+template Divide(Opcode: ident, Ty: expr, Wide: expr, Bits: expr, Extension: expr, Mnemonic: expr, Scheduling: ident) {
     op Opcode(low: Value<Ty>, high: Value<Ty>, divisor: Value<Ty>) -> (quotient: Value<Ty>, remainder: Value<Ty>) {
+        schedule = Scheduling;
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xF7, wide: Wide },
             Form::ModRm(RegField::Extension(Extension), Rm::Register(divisor)),
@@ -181,13 +187,14 @@ template Divide(Opcode: ident, Ty: expr, Wide: expr, Bits: expr, Extension: expr
     }
 }
 
-expand Divide(X86IDiv32, Type::I32, false, 32, 7, "idiv");
-expand Divide(X86IDiv64, Type::I64, true, 64, 7, "idiv");
-expand Divide(X86Div32, Type::I32, false, 32, 6, "div");
-expand Divide(X86Div64, Type::I64, true, 64, 6, "div");
+expand Divide(X86IDiv32, Type::I32, false, 32, 7, "idiv", IntDiv32);
+expand Divide(X86IDiv64, Type::I64, true, 64, 7, "idiv", IntDiv64);
+expand Divide(X86Div32, Type::I32, false, 32, 6, "div", IntDiv32);
+expand Divide(X86Div64, Type::I64, true, 64, 6, "div", IntDiv64);
 
 template SignExtendDividend(Opcode: ident, Ty: expr, Wide: expr, Mnemonic: expr) {
     op Opcode(low: Value<Ty>) -> (high: Value<Ty>) {
+        schedule = IntAlu;
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x99, wide: Wide },
             Form::None,

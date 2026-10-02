@@ -883,14 +883,31 @@ Hosts supply an error type, instruction ID type and output-register wrapper
 through associated types. No `InstRef`, `InstWriter` or `MachineOpcode` name
 is assumed by the operand generator.
 
+Operand hosts may also declare `payload`, `payload_host` (declared Rust types)
+and `field_layouts` to construct complete payloads directly. Each layout maps an
+attribute signature to a constructor expression:
+
+```text
+{ fields: [Imm, MemFlags],
+  value: payload::Memory { offset: field0, flags: field1 } }
+{ fields: [Call], value: host::call_fields(None, field0) }
+```
+
+`payload::` names the configured payload type; `host::` invokes its allocation
+trait. `fieldN` refers to the corresponding attribute, and `sequence(Edge)`
+matches an edge list. Generation checks layout coverage before emitting code.
+LIR and its target builders share these declarations. Hosts without payload
+layouts continue to receive attribute iterators. For dynamic rules, configured
+hosts also get opcode-directed `build_fields`; ordinary builders construct the
+payload directly.
+
 In operand-array storage, the storage declaration explicitly names the register
 type and the attribute enum. Enum payload types select codecs; there is no
 hardcoded type-name registry. Register fields bind named results or input
 parameters. Layout names, field names and field order need not match signatures.
 `optional(T)` uses `some(input)` or `none`; omitted fields need not be a suffix.
 `sequence(Reg)` binds a register slice, and `results()` binds the result slice.
-Each domain supports one trailing sequence after any fixed prefix; attribute
-sequences are not yet supported. Calls use these same rules, without a call-shape
+Each domain supports one trailing sequence after any fixed prefix. Calls use these same rules, without a call-shape
 adapter. Every input and fixed result must be mapped exactly once.
 Builders, direct views and the optional structural validator share the checked
 projection. Neither construction nor views automatically run validation.
@@ -1596,6 +1613,36 @@ for optional ISA features. Duplicate declarations, undeclared references and
 missing costs are rejected before generation. Generated `ScheduleClassId`s use
 the same declaration-name order for every CPU of a target; `ResourceId`s index
 each CPU's own resource table.
+
+Every non-pseudo target instruction must specify a scheduling category. Missing
+categories (including `schedule = None`) are rejected. Pseudo instructions omit
+the category: their costs belong to the instructions produced by expansion.
+Runtime metadata always has a `schedule_class`: either
+`ScheduleClass::Modeled(ScheduleClassId)` or `ScheduleClass::Pseudo`.
+
+Cost coverage does not grant permission to reorder. `movable = true` separately
+asserts that local reordering is safe when register, state and memory dependencies
+are preserved; absence defaults to false. The compiler rejects this assertion for
+control transfers, pseudo instructions and instructions with stack, global, call
+or successor attributes. The scheduler preserves source order between memory
+accesses, and treats volatile or unmodeled accesses as boundaries. No alias
+independence is assumed. Targets must declare hidden scratch-register clobbers,
+including scratch registers used by large-address expansion.
+
+The additional CPU costs are uncalibrated estimates, marked in the CPU tables.
+Load costs assume a cache hit, and call/trap costs cover only the transfer or
+issue, not the callee or exception handler. Emission sequences such as RISC-V
+constant materialization, rotates and selects have aggregate categories; those
+estimates do not model operand-dependent expansion or each internal resource.
+They are not hardware measurements or upper bounds. Calibrated integer costs
+are preserved; scheduling eligibility is controlled separately by `movable`.
+
+Concrete target memory operations declare `memory = { kind: Read, bytes: 8 };`
+(or `Write`) and exactly one `flags: MemFlags` parameter. The flags are an
+ordinary instruction field; selection rules pass them explicitly, for example
+`build(RvLoad64(n.base, n.offset, n.flags))`. Non-memory operations must not
+declare a `MemFlags` field. Generic loads/stores also require flags, so rewriting
+and copying use the same field machinery as other attributes.
 
 Instruction selection emits one `Program` per target. Its opcode-indexed entries
 hold bytecode offsets and per-entry scratch sizes; bytecode and constant tables

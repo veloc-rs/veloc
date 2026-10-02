@@ -483,14 +483,14 @@ pub(crate) fn generate_select_instruction(
     module: &crate::target::ast::Module,
     extractors: &HashMap<String, ExtractorDef>,
     final_inst_defs: &HashMap<String, FinalInstDef>,
-    _arch: &str,
     context: Option<&str>,
     layouts: &BTreeMap<String, crate::storage::operands::Projection>,
+    payloads: Option<&crate::storage::payload::Payloads>,
 ) {
     let regs = collect_reg_ids(module);
     let decls = collect_decl_map(module);
     let rules = collect_select_rules_by_opcode(module);
-    let mut adapters = matcher::Adapters::new(layouts);
+    let mut adapters = matcher::Adapters::new(layouts, payloads);
     let mut opcodes: Vec<_> = rules.keys().collect();
     opcodes.sort();
     let groups: Vec<_> = opcodes

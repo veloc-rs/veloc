@@ -1,11 +1,10 @@
 //! Function-owned instruction storage. IDs are stable; operand ranges and cold
 //! payloads belong directly to InstId. Operand ranges are recycled on replacement.
-use crate::FieldValue;
 use crate::use_def::{Owner, References};
-use crate::{InstId, InstRef, MachineOpcode, MemoryAccess};
+use crate::{InstId, InstRef, MachineOpcode};
 use crate::{OperandId, RefRole, Reg, RegRefs, VReg};
 use alloc::vec::Vec;
-use cranelift_entity::{PrimaryMap, SecondaryMap};
+use cranelift_entity::PrimaryMap;
 use smallvec::SmallVec;
 use veloc_collections::LinkId;
 
@@ -74,12 +73,24 @@ impl OperandStorage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct StoredInst {
     opcode: MachineOpcode,
     inputs: Range,
     fields: crate::Fields,
     results: Range,
+}
+
+// Pool handles can be duplicated only as part of a full InstStore clone.
+impl Clone for StoredInst {
+    fn clone(&self) -> Self {
+        Self {
+            opcode: self.opcode,
+            inputs: self.inputs,
+            fields: self.fields.clone_handle(),
+            results: self.results,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,8 +105,6 @@ pub struct InstStore {
     instructions: PrimaryMap<InstId, StoredInst>,
     registers: OperandStorage,
     fields: crate::FieldPools,
-    // Access facts are directly indexed; call contracts live in common fields.
-    memory: SecondaryMap<InstId, Option<MemoryAccess>>,
     constraints: hashbrown::HashMap<InstId, Vec<crate::OperandConstraint>>,
     clobbers: hashbrown::HashMap<InstId, SmallVec<[Reg; 4]>>,
     edges: PrimaryMap<crate::EdgeId, Option<StoredEdge>>,
@@ -108,7 +117,6 @@ impl InstStore {
             instructions: PrimaryMap::with_capacity(insts),
             registers: OperandStorage::default(),
             fields: crate::FieldPools::default(),
-            memory: SecondaryMap::with_capacity(insts),
             constraints: hashbrown::HashMap::new(),
             clobbers: hashbrown::HashMap::new(),
             edges: PrimaryMap::new(),
@@ -116,11 +124,26 @@ impl InstStore {
         }
     }
 
-    pub(crate) fn pack_fields(
+    pub(crate) fn call_fields(
         &mut self,
-        fields: impl IntoIterator<Item = FieldValue>,
+        target: Option<crate::SymbolId>,
+        info: crate::CallInfo,
     ) -> crate::Fields {
-        self.fields.pack(fields)
+        self.fields.call(target, info)
+    }
+
+    pub(crate) fn switch_fields(&mut self, edges: &[crate::EdgeId]) -> crate::Fields {
+        self.fields.switch(edges)
+    }
+
+    pub(crate) fn copy_fields(&mut self, id: InstId) -> crate::Fields {
+        let mut fields = self.fields.copy(&self.instructions[id].fields);
+        let edges = self.fields.view(&fields).successors().to_vec();
+        for (index, edge) in edges.into_iter().enumerate() {
+            let copy = self.clone_edge(edge);
+            self.fields.successors_mut(&mut fields)[index] = copy;
+        }
+        fields
     }
 
     pub fn len(&self) -> usize {
@@ -192,16 +215,12 @@ impl InstStore {
         self.release_registers(self.instructions[id].inputs);
         self.instructions[id].inputs = self.alloc_registers(id, RefRole::Use, inputs);
     }
-    pub fn memory(&self, id: InstId) -> Option<MemoryAccess> {
-        self.memory[id]
-    }
     pub(crate) fn write_full(
         &mut self,
         opcode: MachineOpcode,
         results: &[Reg],
         inputs: &[Reg],
         fields: crate::Fields,
-        memory: Option<MemoryAccess>,
         clobbers: &[Reg],
     ) -> InstId {
         let id = self.instructions.next_key();
@@ -215,9 +234,6 @@ impl InstStore {
             fields,
             results,
         });
-        if memory.is_some() {
-            self.memory[id] = memory;
-        }
         self.set_clobbers(id, clobbers);
         id
     }
@@ -234,10 +250,6 @@ impl InstStore {
             results: Range::default(),
         };
         self.instructions[id] = core::mem::replace(&mut self.instructions[source], empty);
-        if let Some(access) = self.memory[source] {
-            self.memory[source] = None;
-            self.memory[id] = Some(access);
-        }
         if let Some(constraints) = self.constraints.remove(&source) {
             self.constraints.insert(id, constraints);
         }
@@ -265,7 +277,6 @@ impl InstStore {
             &[],
             &[],
             crate::Fields::None,
-            None,
             &[],
         );
     }
@@ -276,7 +287,6 @@ impl InstStore {
         results: &[Reg],
         inputs: &[Reg],
         fields: crate::Fields,
-        memory: Option<MemoryAccess>,
         clobbers: &[Reg],
     ) {
         self.check_edges(id, &fields);
@@ -296,7 +306,6 @@ impl InstStore {
         self.instructions[id].results = self.alloc_registers(id, RefRole::Def, results);
         self.instructions[id].fields = fields;
         self.set_clobbers(id, clobbers);
-        self.set_memory(id, memory);
         self.instructions[id].opcode = opcode;
         self.constraints.remove(&id);
     }
@@ -308,11 +317,6 @@ impl InstStore {
             self.constraints.remove(&id);
         } else {
             self.constraints.insert(id, constraints);
-        }
-    }
-    pub fn set_memory(&mut self, id: InstId, access: Option<MemoryAccess>) {
-        if access.is_some() || self.memory[id].is_some() {
-            self.memory[id] = access;
         }
     }
     pub fn clobbers(&self, id: InstId) -> &[Reg] {
@@ -358,7 +362,7 @@ impl InstStore {
             self.call_info(id).expect("call fields").frame.is_none(),
             "call already lowered"
         );
-        // These updates preserve instruction clobbers and memory facts.
+        // These updates preserve instruction clobbers and memory attributes.
         self.set_inputs(id, inputs);
         let info = self.fields.call_info_mut(&self.instructions[id].fields);
         info.frame = Some(frame);
@@ -632,7 +636,7 @@ impl InstStore {
 mod tests {
     use super::*;
     use crate::InstBuild;
-    use crate::{MachineFunction, MemoryKind, Reg};
+    use crate::{MachineFunction, MemFlags, Reg};
 
     #[test]
     fn storage_preserves_views_and_transfers_instruction_properties() {
@@ -650,17 +654,11 @@ mod tests {
         let view = f.inst(id);
         assert_eq!(view.inputs().as_ptr(), f.inst(id).inputs().as_ptr());
         for _ in 0..100 {
-            let access = MemoryAccess::new(MemoryKind::Read, 8);
-            assert_eq!(
-                f.editor()
-                    .replace(id)
-                    .with_memory(access)
-                    .load(reg, reg, 16),
-                id
-            );
-            assert_eq!(f.inst(id).memory(), Some(access));
+            let flags = MemFlags::new().with_alignment(8);
+            assert_eq!(f.editor().replace(id).load(reg, reg, 16, flags), id);
+            assert_eq!(f.inst(id).mem_flags(), Some(flags));
             assert_eq!(f.editor().replace(id).constant(reg, 42), id);
-            assert!(f.inst(id).memory().is_none());
+            assert!(f.inst(id).mem_flags().is_none());
             assert!(f.try_call_info(id).is_none());
         }
         // The generic and target namespaces use the exact same store.
@@ -668,23 +666,18 @@ mod tests {
             .editor()
             .at_end(crate::BlockId::from_u32(0))
             .writer()
-            .write(MachineOpcode::Target(7), &[], &[reg], []);
+            .write(MachineOpcode::Target(7), &[], &[reg], crate::Fields::None);
 
         assert!(f.inst(id).is_generic());
         assert!(f.inst(target).is_target());
-        let access = MemoryAccess::new(MemoryKind::Read, 8);
-        let replacement = f
-            .editor()
-            .at_end(entry)
-            .writer()
-            .with_memory(access)
-            .load(reg, reg, 0);
+        let flags = MemFlags::new().with_alignment(8);
+        let replacement = f.editor().at_end(entry).writer().load(reg, reg, 0, flags);
         let operands = f.inst(replacement).inputs().as_ptr();
         f.editor().replace_inst(id, replacement);
         assert_eq!(f.inst(id).inputs().as_ptr(), operands);
-        assert_eq!(f.inst(id).memory(), Some(access));
+        assert_eq!(f.inst(id).mem_flags(), Some(flags));
         assert!(f.inst(replacement).is_invalid());
-        assert!(f.inst(replacement).memory().is_none());
+        assert!(f.inst(replacement).mem_flags().is_none());
         assert!(f.try_call_info(replacement).is_none());
         // Moving instructions preserves their IDs and data.
         for id in f.block_insts(block).collect::<Vec<_>>() {
@@ -696,7 +689,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             &[id, target]
         );
-        assert_eq!(f.inst(id).memory(), Some(access));
+        assert_eq!(f.inst(id).mem_flags(), Some(flags));
         let mut cloned = f.clone();
         cloned.editor().set_inst_inputs(target, &[Reg::new_preg(1)]);
         assert_eq!(f.inst(target).uses().collect::<Vec<_>>(), [reg]);
@@ -722,24 +715,24 @@ mod tests {
             &[],
             &[],
             crate::Fields::default(),
-            None,
             &[],
         );
         for n in 0..100 {
-            let fields = store.pack_fields([FieldValue::Imm(n)]);
-            store.write_full_at(id, MachineOpcode::Target(1), &[], &[reg], fields, None, &[]);
-            store.set_memory(id, Some(MemoryAccess::new(MemoryKind::Read, 8)));
+            let fields = crate::Fields::Memory {
+                offset: n,
+                flags: MemFlags::new(),
+            };
+            store.write_full_at(id, MachineOpcode::Target(1), &[], &[reg], fields, &[]);
             store.clear(id);
         }
         assert!(store.fields(id).is_empty());
-        assert!(store.memory(id).is_none());
+        assert!(store.fields(id).mem_flags().is_none());
         assert!(store.clobbers(id).is_empty());
         let source = store.write_full(
             MachineOpcode::Target(2),
             &[],
             &[],
             crate::Fields::default(),
-            None,
             &[],
         );
         store.set_inputs(source, &[Reg::new_preg(1)]);
@@ -762,7 +755,6 @@ mod tests {
             &[output],
             &[input, physical],
             crate::Fields::default(),
-            None,
             &[physical],
         );
         assert_eq!(store.inputs(combined), &[input, physical]);
@@ -788,7 +780,6 @@ mod tests {
             &[],
             &[physical],
             crate::Fields::None,
-            None,
             &[physical],
         );
         assert!(store.results(combined).is_empty());

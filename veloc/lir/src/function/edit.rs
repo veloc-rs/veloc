@@ -192,15 +192,15 @@ impl FuncEditor<'_> {
     }
 
     /// Rebuild one instruction in place, retaining its ID and layout position.
-    /// Unspecified memory facts and instruction clobbers are cleared.
+    /// Fields and clobbers are replaced with the new instruction.
     pub fn replace(&mut self, id: InstId) -> InstWriter<'_> {
         assert_ne!(self.inst(id).opcode(), crate::MachineOpcode::Invalid);
         InstWriter {
             store: &mut self.function.body.store,
+            vregs: &mut self.function.body.vregs,
             layout: &mut self.function.body.layout,
             changes: self.changes.as_deref_mut(),
             position: Position::Replace(id),
-            memory: None,
             clobbers: smallvec::SmallVec::new(),
             constraints: Vec::new(),
         }
@@ -214,13 +214,16 @@ impl FuncEditor<'_> {
     pub fn alloc_vreg_in_bank(&mut self, ty: Type, bank: RegisterBank) -> Reg {
         self.alloc_vreg_data(VRegData {
             ty,
-            bank: Some(bank),
+            kind: crate::VRegKind::Register(Some(bank)),
         })
     }
 
     /// Create a typed virtual register without prescribing a register bank.
     pub fn alloc_vreg(&mut self, ty: Type) -> Reg {
-        self.alloc_vreg_data(VRegData { ty, bank: None })
+        self.alloc_vreg_data(VRegData {
+            ty,
+            kind: crate::VRegKind::Register(None),
+        })
     }
 
     /// Replace instruction-local destruction effects. A call's ABI mask is
@@ -230,7 +233,7 @@ impl FuncEditor<'_> {
         self.changed_inst(id);
     }
     /// Set complete call inputs, including the indirect callee, and record stack
-    /// arguments and frame effects. Results, signature and memory facts remain intact.
+    /// arguments and frame effects. Results, signature and memory attributes remain intact.
     /// Register placement requirements are attached separately.
     pub fn set_call_abi(
         &mut self,
@@ -276,11 +279,6 @@ impl FuncEditor<'_> {
             );
         }
         self.function.body.store.replace_uses(old, new)
-    }
-
-    pub fn set_inst_memory(&mut self, id: InstId, access: Option<crate::MemoryAccess>) {
-        self.function.body.store.set_memory(id, access);
-        self.changed_inst(id);
     }
 
     pub fn alloc_stack_object(&mut self, object: StackObject, size: u32, align: u32) -> StackSlot {
@@ -430,9 +428,6 @@ impl InstInserter<'_> {
     }
 
     /// Configure one complete instruction before committing it at this gap.
-    pub fn with_memory(&mut self, access: crate::MemoryAccess) -> InstWriter<'_> {
-        self.writer().with_memory(access)
-    }
 
     pub fn edge(&mut self, block: crate::BlockId, args: &[Reg]) -> crate::EdgeId {
         self.editor.create_edge(block, args)
@@ -450,13 +445,13 @@ impl InstInserter<'_> {
         let body = &mut self.editor.function.body;
         InstWriter {
             store: &mut body.store,
+            vregs: &mut body.vregs,
             changes: self.editor.changes.as_deref_mut(),
             layout: &mut body.layout,
             position: Position::Insert {
                 block: self.block,
                 before: self.before,
             },
-            memory: None,
             clobbers: smallvec::SmallVec::new(),
             constraints: Vec::new(),
         }
@@ -468,22 +463,33 @@ impl InstInserter<'_> {
         opcode: crate::MachineOpcode,
         results: &[Reg],
         inputs: &[Reg],
-        fields: impl IntoIterator<Item = crate::FieldValue>,
+        fields: crate::Fields,
     ) -> InstId {
         self.writer().write(opcode, results, inputs, fields)
     }
 }
 
 // Reborrow the cursor for each instruction so repeated emission keeps its gap.
+impl crate::FieldBuild for &mut InstInserter<'_> {
+    fn call_fields(
+        &mut self,
+        target: Option<crate::SymbolId>,
+        info: crate::CallInfo,
+    ) -> crate::Fields {
+        self.writer().call_fields(target, info)
+    }
+    fn switch_fields(&mut self, edges: &[crate::EdgeId]) -> crate::Fields {
+        self.writer().switch_fields(edges)
+    }
+}
 impl crate::InstBuild for &mut InstInserter<'_> {
     type Inst = InstId;
-
     fn write(
         self,
         opcode: crate::GenericOpcode,
         results: &[Reg],
         inputs: &[Reg],
-        fields: impl IntoIterator<Item = crate::FieldValue>,
+        fields: crate::Fields,
     ) -> InstId {
         self.writer().write(
             crate::MachineOpcode::Generic(opcode),
@@ -499,14 +505,54 @@ impl crate::InstBuild for &mut InstInserter<'_> {
 pub struct InstWriter<'a> {
     changes: Option<&'a mut crate::EditChanges>,
     store: &'a mut crate::InstStore,
+    vregs: &'a mut PrimaryMap<VReg, VRegData>,
     layout: &'a mut crate::layout::Layout,
     position: Position,
-    memory: Option<crate::MemoryAccess>,
     clobbers: smallvec::SmallVec<[Reg; 4]>,
     constraints: Vec<crate::OperandConstraint>,
 }
 
 impl<'a> InstWriter<'a> {
+    /// Target builders declare state categories at the defining instruction.
+    /// Consumers validate this information; they never infer or change it.
+    pub fn with_state_results(
+        self,
+        results: &[Reg],
+        state_operands: &[crate::StateOperand],
+    ) -> Self {
+        for &crate::StateOperand { operand, unit } in state_operands {
+            let crate::OperandRef::Result(index) = operand else {
+                continue;
+            };
+            if let Some(value) = results[index].as_vreg() {
+                let data = &mut self.vregs[value];
+                match data.kind {
+                    crate::VRegKind::Register(None) => data.kind = crate::VRegKind::State(unit),
+                    crate::VRegKind::State(old) if old == unit => {}
+                    _ => panic!("incompatible state definition"),
+                }
+            }
+        }
+        self
+    }
+
+    pub fn call_fields(
+        &mut self,
+        target: Option<crate::SymbolId>,
+        info: crate::CallInfo,
+    ) -> crate::Fields {
+        self.store.call_fields(target, info)
+    }
+
+    pub fn switch_fields(&mut self, edges: &[crate::EdgeId]) -> crate::Fields {
+        self.store.switch_fields(edges)
+    }
+
+    /// Copy the payload and its edges into independent, unowned storage.
+    pub fn copy_fields(&mut self, id: InstId) -> crate::Fields {
+        self.store.copy_fields(id)
+    }
+
     pub fn edge(&mut self, block: crate::BlockId, args: &[Reg]) -> crate::EdgeId {
         assert!(self.layout.contains_block(block), "unknown successor");
         self.store.create_edge(block, args)
@@ -522,10 +568,6 @@ impl<'a> InstWriter<'a> {
         }
         self
     }
-    pub fn with_memory(mut self, access: crate::MemoryAccess) -> Self {
-        self.memory = Some(access);
-        self
-    }
 
     /// Attach occurrence constraints using the new instruction's operand layout.
     pub fn with_constraints(mut self, constraints: Vec<crate::OperandConstraint>) -> Self {
@@ -533,42 +575,29 @@ impl<'a> InstWriter<'a> {
         self
     }
 
-    /// Convert transient positional fields at a low-level adapter boundary.
+    /// Commit an already constructed instruction payload.
     pub fn write(
         self,
         opcode: crate::MachineOpcode,
         results: &[Reg],
         inputs: &[Reg],
-        fields: impl IntoIterator<Item = crate::FieldValue>,
+        fields: crate::Fields,
     ) -> InstId {
         assert_ne!(
             opcode,
             crate::MachineOpcode::Invalid,
             "cannot construct an invalid instruction"
         );
-        let fields = self.store.pack_fields(fields);
         let id = match self.position {
             Position::Replace(id) => {
-                self.store.write_full_at(
-                    id,
-                    opcode,
-                    results,
-                    inputs,
-                    fields,
-                    self.memory,
-                    &self.clobbers,
-                );
+                self.store
+                    .write_full_at(id, opcode, results, inputs, fields, &self.clobbers);
                 id
             }
             Position::Insert { block, before } => {
-                let id = self.store.write_full(
-                    opcode,
-                    results,
-                    inputs,
-                    fields,
-                    self.memory,
-                    &self.clobbers,
-                );
+                let id = self
+                    .store
+                    .write_full(opcode, results, inputs, fields, &self.clobbers);
                 if let Some(anchor) = before {
                     self.layout.insert_before(anchor, id);
                 } else {
@@ -587,6 +616,18 @@ impl<'a> InstWriter<'a> {
 
 // The generated contract owns generic builders; this adapter owns storage and
 // the conversion from generic to machine opcodes.
+impl crate::FieldBuild for InstWriter<'_> {
+    fn call_fields(
+        &mut self,
+        target: Option<crate::SymbolId>,
+        info: crate::CallInfo,
+    ) -> crate::Fields {
+        self.call_fields(target, info)
+    }
+    fn switch_fields(&mut self, edges: &[crate::EdgeId]) -> crate::Fields {
+        self.switch_fields(edges)
+    }
+}
 impl crate::InstBuild for InstWriter<'_> {
     type Inst = InstId;
     fn write(
@@ -594,7 +635,7 @@ impl crate::InstBuild for InstWriter<'_> {
         opcode: crate::GenericOpcode,
         results: &[Reg],
         inputs: &[Reg],
-        fields: impl IntoIterator<Item = crate::FieldValue>,
+        fields: crate::Fields,
     ) -> InstId {
         self.write(
             crate::MachineOpcode::Generic(opcode),

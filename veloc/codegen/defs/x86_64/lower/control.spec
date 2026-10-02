@@ -1,6 +1,7 @@
 import "../common.spec";
 
 op X86Call(sp: Value<AddressValue>, target: Global, info: CallInfo) -> () {
+    schedule = Call;
     encoding = Emission::relative(target, Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xE8, wide: false }, Form::None, 0);
     registers = { sp: fixed(RSP, GPR64) };
     clobbers = [CF, PF, ZF, SF, OF, AF];
@@ -11,6 +12,7 @@ op X86Call(sp: Value<AddressValue>, target: Global, info: CallInfo) -> () {
 }
 
 op X86CallReg(sp: Value<AddressValue>, target: Value<AddressValue>, info: CallInfo) -> () {
+    schedule = Call;
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xFF, wide: false },
         Form::ModRm(RegField::Extension(2), Rm::Register(target)),
@@ -28,6 +30,7 @@ op X86CallReg(sp: Value<AddressValue>, target: Value<AddressValue>, info: CallIn
 }
 
 op X86Ret() -> () {
+    schedule = Return;
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xC3, wide: false },
         Form::None,
@@ -40,6 +43,7 @@ op X86Ret() -> () {
 }
 
 op X86Ud2() -> () {
+    schedule = Trap;
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xB, wide: false },
         Form::None,
@@ -52,6 +56,7 @@ op X86Ud2() -> () {
 }
 
 op X86Jmp(target: Successor) -> () {
+    schedule = Branch;
     encoding = Emission::branch(
         target,
         Branch { map: OpcodeMap::Primary, near: 0xE9, short: 0xEB },
@@ -64,6 +69,7 @@ op X86Jmp(target: Successor) -> () {
 
 template ConditionalBranch1(Opcode: ident, Near: expr, Short: expr, Mnemonic: expr, Flag0: type) {
     op Opcode(f0: Value<Flag0>, target: Successor) -> () {
+        schedule = Branch;
         encoding = Emission::branch(target, Branch { map: OpcodeMap::Map0F, near: Near, short: Short });
         flow = Branch;
         assembly = { lines: [{ mnemonic: Mnemonic, operands: [target(target)] }] };
@@ -72,6 +78,7 @@ template ConditionalBranch1(Opcode: ident, Near: expr, Short: expr, Mnemonic: ex
 
 template ConditionalBranch2(Opcode: ident, Near: expr, Short: expr, Mnemonic: expr, Flag0: type, Flag1: type) {
     op Opcode(f0: Value<Flag0>, f1: Value<Flag1>, target: Successor) -> () {
+        schedule = Branch;
         encoding = Emission::branch(target, Branch { map: OpcodeMap::Map0F, near: Near, short: Short });
         flow = Branch;
         assembly = { lines: [{ mnemonic: Mnemonic, operands: [target(target)] }] };
@@ -80,6 +87,7 @@ template ConditionalBranch2(Opcode: ident, Near: expr, Short: expr, Mnemonic: ex
 
 template ConditionalBranch3(Opcode: ident, Near: expr, Short: expr, Mnemonic: expr, Flag0: type, Flag1: type, Flag2: type) {
     op Opcode(f0: Value<Flag0>, f1: Value<Flag1>, f2: Value<Flag2>, target: Successor) -> () {
+        schedule = Branch;
         encoding = Emission::branch(target, Branch { map: OpcodeMap::Map0F, near: Near, short: Short });
         flow = Branch;
         assembly = { lines: [{ mnemonic: Mnemonic, operands: [target(target)] }] };
@@ -107,6 +115,7 @@ expand ConditionalBranch3(X86Jle, 0x8E, 0x7E, "jle", ZERO, SIGN, OVERFLOW);
 expand ConditionalBranch3(X86Jg, 0x8F, 0x7F, "jg", ZERO, SIGN, OVERFLOW);
 
 op X86PushRbp(rbp: Value<GprValue>) -> () {
+    schedule = Push;
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x50, wide: false },
         Form::OpcodeReg(rbp),
@@ -121,6 +130,7 @@ op X86PushRbp(rbp: Value<GprValue>) -> () {
 }
 
 op X86PopRbp() -> (rbp: Value<GprValue>) {
+    schedule = Pop;
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x58, wide: false },
         Form::OpcodeReg(rbp),
@@ -135,6 +145,7 @@ op X86PopRbp() -> (rbp: Value<GprValue>) {
 }
 
 op X86MovRbpRsp(rsp: Value<GprValue>) -> (rbp: Value<GprValue>) {
+    schedule = Copy;
     encoding = legacy_rr(0x89, true, rsp, rbp);
     registers = {
         rbp: fixed(RBP, GPR64),

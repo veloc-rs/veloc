@@ -10,6 +10,7 @@ template GprCompare(Opcode: ident, Byte: expr, Wide: expr, Mnemonic: expr, Bits:
         clobbers = [AF];
         rematerializable = true;
         schedule = IntAlu;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(lhs, Bits), reg(rhs, Bits)] }]
         };
@@ -30,6 +31,7 @@ op X86Cmp32ri(src: Value<GprValue>, imm: i64) -> (cf: Value<CARRY>, pf: Value<PA
     clobbers = [AF];
         rematerializable = true;
     schedule = IntAlu;
+    movable = true;
     assembly = {
         lines: [{ mnemonic: "cmp", operands: [reg(src, 32), imm(imm)] }]
     };
@@ -39,6 +41,7 @@ expand GprCompare(X86Test32, 0x85, false, "test", 32);
 
 template FloatCompare(Opcode: ident, Prefix: expr, Ty: expr, Mnemonic: expr) {
     op Opcode(lhs: Value<Ty>, rhs: Value<Ty>) -> (cf: Value<CARRY>, pf: Value<PARITY>, zf: Value<ZERO>, sf: Value<SIGN>, of: Value<OVERFLOW>) {
+        schedule = FloatCompare;
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x2E, wide: false },
             Form::ModRm(RegField::Register(lhs), Rm::Register(rhs)),
@@ -72,6 +75,7 @@ template SetCondition1(Opcode: ident, Byte: expr, Mnemonic: expr, Flag0: type) {
         );
         registers = { dst: GPR64, };
         schedule = IntAlu;
+        movable = true;
         assembly = { lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 8)] }] };
     }
 }
@@ -84,6 +88,7 @@ template SetCondition2(Opcode: ident, Byte: expr, Mnemonic: expr, Flag0: type, F
         );
         registers = { dst: GPR64, };
         schedule = IntAlu;
+        movable = true;
         assembly = { lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 8)] }] };
     }
 }
@@ -96,6 +101,7 @@ template SetCondition3(Opcode: ident, Byte: expr, Mnemonic: expr, Flag0: type, F
         );
         registers = { dst: GPR64, };
         schedule = IntAlu;
+        movable = true;
         assembly = { lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 8)] }] };
     }
 }

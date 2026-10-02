@@ -88,7 +88,30 @@ impl Plan {
                     evaluation,
                 })
             }
-            Strategy::Operands(_) => {
+            Strategy::Operands(storage) => {
+                if let Some(payloads) = &storage.payloads {
+                    for op in &definitions.ops {
+                        let fields: Vec<_> = op
+                            .operands()
+                            .members
+                            .iter()
+                            .filter(|m| {
+                                m.domain == crate::storage::operands::Domain::Attribute
+                                    && m.binding.is_some()
+                            })
+                            .map(|m| {
+                                (
+                                    m.field.codec.as_ref().unwrap().rsplit_once("::").unwrap().1,
+                                    String::new(),
+                                    m.field.shape,
+                                )
+                            })
+                            .collect();
+                        payloads
+                            .construct(&fields, "writer", &payloads.rust)
+                            .map_err(|e| Error::at(source, op.offset, e))?;
+                    }
+                }
                 Output::Operands(crate::text::Plan::prepare(&definitions, &[], &[], source)?)
             }
         };

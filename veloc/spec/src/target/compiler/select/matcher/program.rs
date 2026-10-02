@@ -2,19 +2,23 @@
 //! Matching uses tables; schema-generated constructors install complete instructions.
 use super::*;
 use crate::bytecode::intern;
+use crate::target::AttributeKind;
 use veloc_bytecode::{Lebs, Reader, selection::Instruction as Op};
 
 pub(in super::super) struct Adapters<'a> {
     layouts: &'a BTreeMap<String, crate::storage::operands::Projection>,
+    payloads: Option<&'a crate::storage::payload::Payloads>,
     predicates: Vec<String>,
     builders: BTreeMap<String, String>,
 }
 impl<'a> Adapters<'a> {
     pub(in super::super) fn new(
         layouts: &'a BTreeMap<String, crate::storage::operands::Projection>,
+        payloads: Option<&'a crate::storage::payload::Payloads>,
     ) -> Self {
         Self {
             layouts,
+            payloads,
             predicates: Vec::new(),
             builders: BTreeMap::new(),
         }
@@ -24,7 +28,7 @@ impl<'a> Adapters<'a> {
         let call = definition
             .operands
             .iter()
-            .any(|op| matches!(op, OperandConstraint::Call(_)));
+            .any(|op| matches!(op, OperandConstraint::Attribute(_, AttributeKind::Call)));
         let build = format!("build_{}", opcode.to_ascii_lowercase());
         let adapter = if call {
             format!(
@@ -38,29 +42,28 @@ impl<'a> Adapters<'a> {
         if self.builders.contains_key(&adapter) {
             return adapter;
         }
-        let mut params = vec!["writer: veloc_lir::InstWriter<'_>".to_owned()];
+        let mut params = vec![format!(
+            "{}writer: veloc_lir::InstWriter<'_>",
+            if call { "mut " } else { "" }
+        )];
         let mut args = Vec::new();
         let mut results = Vec::new();
         let mut inputs = Vec::new();
         let mut fields = Vec::new();
         let mut reads = String::new();
         for op in &definition.operands {
-            let (name, ty, variant) = match op {
-                OperandConstraint::Def(name) | OperandConstraint::Use(name) => (name, "Reg", None),
-                OperandConstraint::Imm(name) => (name, "i64", Some("Imm")),
-                OperandConstraint::Block(name) => (name, "veloc_lir::EdgeId", Some("Edge")),
-                OperandConstraint::Global(name) => (name, "veloc_lir::SymbolId", Some("Global")),
-                OperandConstraint::StackSlot(name) => {
-                    (name, "veloc_lir::StackSlot", Some("StackSlot"))
-                }
-                OperandConstraint::Call(name) => (name, "veloc_lir::CallInfo", Some("Call")),
+            let attribute = match op {
+                OperandConstraint::Attribute(_, kind) => Some(kind.description()),
+                OperandConstraint::Def(_) | OperandConstraint::Use(_) => None,
             };
-            let name = format!("operand_{}", sanitize_ident(name));
+            let ty = attribute.as_ref().map_or("Reg", |ty| ty.rust_type);
+            let name = format!("operand_{}", sanitize_ident(op.name()));
             params.push(format!("{name}: {ty}"));
             args.push(name.clone());
-            if let Some(variant) = variant {
+            if let Some(attribute) = attribute {
+                let variant = attribute.field_variant;
                 writeln!(reads, "let FieldValue::{variant}({name}) = fields.next().expect(\"generated field\") else {{ unreachable!(\"generated field type\") }};").unwrap();
-                fields.push(format!("FieldValue::{variant}({name})"));
+                fields.push((variant, name, Shape::One));
             } else {
                 let (domain, list) = if matches!(op, OperandConstraint::Def(_)) {
                     ("results", &mut results)
@@ -86,30 +89,33 @@ impl<'a> Adapters<'a> {
                 params.join(", ")
             )
             .unwrap();
+            let payload = self
+                .payloads
+                .expect("selection requires field layouts")
+                .construct(&fields, "writer", "veloc_lir::Fields")
+                .expect("checked target field layout");
+            writeln!(body, "let fields = {payload};").unwrap();
             if call {
                 writeln!(body, "let mut inputs = smallvec::SmallVec::<[Reg; 8]>::from_slice(&[{}]); inputs.extend_from_slice(abi_args);", inputs.join(", ")).unwrap();
                 writeln!(body, "let mut results = smallvec::SmallVec::<[Reg; 4]>::from_slice(&[{}]); results.extend_from_slice(abi_results);", results.join(", ")).unwrap();
                 writeln!(
                     body,
-                    "TargetInst::{opcode}.write(writer, &results, &inputs, [{}])",
-                    fields.join(", ")
+                    "TargetInst::{opcode}.write(writer, &results, &inputs, fields)"
                 )
                 .unwrap();
             } else if returns {
                 writeln!(
                     body,
-                    "TargetInst::{opcode}.write(writer, &[{}], abi_uses, [{}])",
-                    results.join(", "),
-                    fields.join(", ")
+                    "TargetInst::{opcode}.write(writer, &[{}], abi_uses, fields)",
+                    results.join(", ")
                 )
                 .unwrap();
             } else {
                 writeln!(
                     body,
-                    "TargetInst::{opcode}.write(writer, &[{}], &[{}], [{}])",
+                    "TargetInst::{opcode}.write(writer, &[{}], &[{}], fields)",
                     results.join(", "),
-                    inputs.join(", "),
-                    fields.join(", ")
+                    inputs.join(", ")
                 )
                 .unwrap();
             }

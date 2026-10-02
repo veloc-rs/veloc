@@ -36,9 +36,7 @@ pub(crate) fn validate(
             .get(inst.inputs(), inst.results())
             .ok_or_else(|| Error::codegen("constraint refers to a missing operand"))?;
         let accepts = match constraint.placement {
-            Placement::Fixed(reg) | Placement::State(reg) => {
-                reg.is_preg() && (!allocated || value == reg)
-            }
+            Placement::Fixed(reg) => reg.is_preg() && (!allocated || value == reg),
             Placement::Registers(regs) => {
                 !regs.is_empty()
                     && regs.iter().all(Reg::is_preg)

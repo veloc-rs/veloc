@@ -289,7 +289,7 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
                     f.editor().at_end(block).writer(),
                     &[regs[dst]],
                     &[regs[src]],
-                    [],
+                    veloc_lir::Fields::None,
                 );
                 opcode.emit(&mut emitter, &f.inst(inst), &f).unwrap();
             }
@@ -1018,7 +1018,7 @@ int main(void) {
                 veloc_lir::MachineOpcode::Target(TargetInst::X86Popcnt64 as u32),
                 &[REG_RAX],
                 &[REG_RDI],
-                [],
+                veloc_lir::Fields::None,
             );
             assert_eq!(
                 target

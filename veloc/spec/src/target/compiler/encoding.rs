@@ -1,7 +1,7 @@
 //! Bind instruction fields to the encoder's declared types. Expression syntax,
 //! constructors and field checking belong to OpSpec, not this target adapter.
 use super::{FinalInstDef, generate::find_operand_info};
-use crate::target::OperandConstraint;
+use crate::target::{AttributeKind, OperandConstraint};
 use crate::{
     Source,
     syntax::{DeclKind, Kind, Node},
@@ -39,36 +39,26 @@ pub(super) fn compile(
         }
         let mut bindings = BTreeMap::new();
         for operand in &inst.operands {
-            let name = match operand {
-                OperandConstraint::Def(n)
-                | OperandConstraint::Use(n)
-                | OperandConstraint::Imm(n)
-                | OperandConstraint::StackSlot(n)
-                | OperandConstraint::Block(n)
-                | OperandConstraint::Global(n)
-                | OperandConstraint::Call(n) => n,
-            };
+            let name = operand.name();
             let (index, _) = find_operand_info(name, &inst.operands).unwrap();
             let (ty, rust) = match operand {
                 OperandConstraint::Def(_) => ("Reg", format!("register(inst.results()[{index}])?")),
                 OperandConstraint::Use(_) => ("Reg", format!("register(inst.inputs()[{index}])?")),
-                OperandConstraint::Imm(_) => ("i64", field(index, "Imm")),
-                OperandConstraint::StackSlot(_) => (
-                    "Address",
-                    format!(
-                        "stack_address(&mfunc.stack_frame, {})?",
-                        field(index, "StackSlot")
-                    ),
-                ),
-                OperandConstraint::Block(_) => (
-                    "Block",
-                    format!("inst.edge({}).block", field(index, "Edge")),
-                ),
-                OperandConstraint::Global(_) => ("Global", field(index, "Global")),
-                OperandConstraint::Call(_) => ("CallInfo", field(index, "Call")),
+                OperandConstraint::Attribute(_, kind) => {
+                    let attribute = kind.description();
+                    let value = field(index, attribute.field_variant);
+                    match kind {
+                        AttributeKind::StackSlot => (
+                            "Address",
+                            format!("stack_address(&mfunc.stack_frame, {value})?"),
+                        ),
+                        AttributeKind::Block => ("Block", format!("inst.edge({value}).block")),
+                        _ => (attribute.spec_type, value),
+                    }
+                }
             };
             bindings.insert(
-                name.clone(),
+                name.to_owned(),
                 (
                     Node {
                         offset: node.offset,

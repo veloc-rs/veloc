@@ -15,7 +15,7 @@ impl ScheduleTiming {
         let model = target.schedule_model();
         let mut timing = Self {
             costs: (0..region.insts.len())
-                .map(|i| model.cost(region.schedule_info(i, target).class))
+                .map(|i| model.cost(region.schedule_class(i, target)))
                 .collect(),
             height: vec![0; region.insts.len()],
         };
@@ -40,7 +40,7 @@ impl ScheduleTiming {
         match dependency.kind {
             // The current CPU model gives all results the same latency.
             DependencyKind::Data(_) => self.costs[producer].latency,
-            DependencyKind::Anti(_) | DependencyKind::Output(_) => 0,
+            DependencyKind::Anti(_) | DependencyKind::Output(_) | DependencyKind::Memory => 0,
         }
     }
 }

@@ -27,6 +27,7 @@ pub(super) struct Trigger {
     scan: Option<usize>, // Generated plan identity, never a bytecode address.
     pub path: PathId,
     types: usize,
+    requires_constant: bool,
     constants: &'static [(usize, bool)],
 }
 
@@ -37,7 +38,7 @@ impl Trigger {
         if !PROGRAM.types[self.types].contains(&body.dfg().value_type(class.value())) {
             return false;
         }
-        if self.constants.is_empty() {
+        if !self.requires_constant && self.constants.is_empty() {
             return true;
         }
         let Some(value) = body.dfg().as_scalar_const(class.value()) else {
@@ -380,6 +381,15 @@ impl Machine {
                     otherwise,
                 } => {
                     if self.slots[lhs] != self.slots[rhs] {
+                        reader.pc = otherwise;
+                    }
+                }
+                Op::CheckIsConstant { value, otherwise } => {
+                    if body
+                        .dfg()
+                        .as_scalar_const(self.slots[value].value())
+                        .is_none()
+                    {
                         reader.pc = otherwise;
                     }
                 }

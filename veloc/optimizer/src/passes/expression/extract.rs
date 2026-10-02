@@ -507,9 +507,17 @@ impl Planner<'_> {
             &draft.steps,
             model,
         );
+        self.graph
+            .profile
+            .count("egraph.original_cost", original_cost as u64);
+        self.graph
+            .profile
+            .count("egraph.proposed_cost", analysis.cost as u64);
         if analysis.cost > original_cost {
+            self.graph.profile.count("egraph.rejected_plans", 1);
             return Extraction::default();
         }
+        self.graph.profile.count("egraph.accepted_plans", 1);
 
         let rewrites = draft
             .uses

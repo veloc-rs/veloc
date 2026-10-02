@@ -55,10 +55,12 @@ fn workload(ty: Type, comparisons: bool) -> MachineFunction {
     }
     // An already selected sink keeps the result alive without ABI lowering.
     // This selector-only fixture is never encoded as an executable function.
-    let _ = e
-        .at_end(block)
-        .writer()
-        .write(MachineOpcode::Target(0), &[], &[value], []);
+    let _ = e.at_end(block).writer().write(
+        MachineOpcode::Target(0),
+        &[],
+        &[value],
+        veloc_lir::Fields::None,
+    );
 
     f
 }
@@ -91,15 +93,16 @@ fn memory_workload(stack: bool) -> MachineFunction {
         let _ = e
             .at_end(block)
             .writer()
-            .with_memory(veloc_lir::MemoryAccess::new(veloc_lir::MemoryKind::Read, 8))
-            .load(value, address, 0);
+            .load(value, address, 0, veloc_lir::MemFlags::new());
 
         live.push(value);
     }
-    let _ = e
-        .at_end(block)
-        .writer()
-        .write(MachineOpcode::Target(0), &[], &live, []);
+    let _ = e.at_end(block).writer().write(
+        MachineOpcode::Target(0),
+        &[],
+        &live,
+        veloc_lir::Fields::None,
+    );
 
     f
 }

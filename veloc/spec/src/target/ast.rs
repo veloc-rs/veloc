@@ -182,21 +182,69 @@ pub struct RegClassDef {
     pub regs: Vec<String>,
 }
 
+/// Operand domains are kept separate from the storage type of an attribute.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OperandConstraint {
-    /// 普通使用: (use $name)
     Use(String),
-    /// 普通定义: (def $name)
     Def(String),
-    /// 立即数使用: (imm $name)
-    Imm(String),
-    /// 基本块目标: (block $name)
-    Block(String),
-    /// 全局符号目标: (global $name)
-    Global(String),
-    /// 栈槽目标: (stackslot $name)
-    StackSlot(String),
-    Call(String),
+    Attribute(String, AttributeKind),
+}
+
+impl OperandConstraint {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Use(name) | Self::Def(name) | Self::Attribute(name, _) => name,
+        }
+    }
+}
+
+/// Machine attribute types shared by contract checking and code generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttributeKind {
+    Imm,
+    MemFlags,
+    Block,
+    Global,
+    StackSlot,
+    Call,
+}
+
+pub struct AttributeType {
+    pub spec_type: &'static str,
+    pub rust_type: &'static str,
+    pub field_variant: &'static str,
+}
+
+impl AttributeKind {
+    pub fn from_spec(ty: &str) -> Option<Self> {
+        [
+            Self::Imm,
+            Self::MemFlags,
+            Self::Block,
+            Self::Global,
+            Self::StackSlot,
+            Self::Call,
+        ]
+        .into_iter()
+        .find(|kind| kind.description().spec_type == ty)
+    }
+
+    /// The Spec type, constructor parameter and stored field describe one type.
+    pub fn description(self) -> AttributeType {
+        let (spec_type, rust_type, field_variant) = match self {
+            Self::Imm => ("i64", "i64", "Imm"),
+            Self::MemFlags => ("MemFlags", "veloc_lir::MemFlags", "MemFlags"),
+            Self::Block => ("Successor", "veloc_lir::EdgeId", "Edge"),
+            Self::Global => ("Global", "veloc_lir::SymbolId", "Global"),
+            Self::StackSlot => ("StackSlot", "veloc_lir::StackSlot", "StackSlot"),
+            Self::Call => ("CallInfo", "veloc_lir::CallInfo", "Call"),
+        };
+        AttributeType {
+            spec_type,
+            rust_type,
+            field_variant,
+        }
+    }
 }
 
 /// 操作码模式参数

@@ -20,6 +20,7 @@ crate::bytecode! {
         OpenScan { scan: u32, cursor: u32, source: u32, opcode: u32, bindings: u32 },
         ScanNext { cursor: u32, exhausted: u32 },
         CheckEqual { lhs: u32, rhs: u32, otherwise: u32 },
+        CheckIsConstant { value: u32, otherwise: u32 },
         CheckConstantEq { value: u32, constant: u32, otherwise: u32 },
         CheckConstantNe { value: u32, constant: u32, otherwise: u32 },
         Capture { rule: u32 },

@@ -10,6 +10,8 @@ pub(super) enum DependencyKind {
     Data(Reg),
     Anti(Reg),
     Output(Reg),
+    /// Preserve observable memory and trap order; register operands carry data latency.
+    Memory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,20 +27,29 @@ pub(super) struct DependencyGraph {
 }
 
 impl DependencyGraph {
-    pub fn build(region: Region<'_>, live_out: &RegSet) -> Self {
+    pub fn build(region: Region<'_>, live_out: &RegSet, flexible: &RegSet) -> Self {
         let mut graph = Self {
             edges: vec![SmallVec::new(); region.insts.len()],
             indegree: vec![0; region.insts.len()],
         };
         let mut definitions = HashMap::<Reg, usize>::new();
         let mut resources = HashMap::<Reg, ResourceAccess>::new();
+        let mut last_memory = None;
         for i in 0..region.insts.len() {
+            // Until alias analysis proves independence, keep all accesses in
+            // source order. Pure computations may still fill load latency gaps.
+            if region.inst(i).mem_flags().is_some() {
+                if let Some(previous) = last_memory {
+                    graph.edge(previous, i, DependencyKind::Memory);
+                }
+                last_memory = Some(i);
+            }
             let access = region.inst(i).register_access();
             for value in access.reads() {
                 if let Some(&producer) = definitions.get(&value) {
                     graph.edge(producer, i, DependencyKind::Data(value));
                 }
-                let unit = region.states.physical(value);
+                let unit = region.function.register_unit(value);
                 if unit.is_preg() {
                     let resource = resources.entry(unit).or_default();
                     let writer = resource.writes.last().copied();
@@ -49,7 +60,7 @@ impl DependencyGraph {
                 if value.is_vreg() {
                     definitions.insert(value, i);
                 }
-                let unit = region.states.physical(value);
+                let unit = region.function.register_unit(value);
                 if unit.is_preg() {
                     let writes = &mut resources.entry(unit).or_default().writes;
                     if writes.last() != Some(&i) {
@@ -60,10 +71,14 @@ impl DependencyGraph {
         }
         let mut live_units = RegSet::default();
         for value in live_out.iter() {
-            live_units.insert(region.states.physical(value));
+            live_units.insert(region.function.register_unit(value));
         }
         for (unit, resource) in resources {
-            graph.protect_resource(unit, resource, live_units.contains(&unit));
+            // Symbolic state lifetimes can be ordered by the scheduler. Actual
+            // physical reads and all other resources keep their fixed hazards.
+            if !flexible.contains(&unit) {
+                graph.protect_resource(unit, resource, live_units.contains(&unit));
+            }
         }
         graph
     }

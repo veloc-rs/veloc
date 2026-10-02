@@ -1,7 +1,8 @@
 import "../common.spec";
 
-template FloatBinary(Opcode: ident, Prefix: expr, Byte: expr, Ty: expr, Mnemonic: expr) {
+template FloatBinary(Opcode: ident, Prefix: expr, Byte: expr, Ty: expr, Mnemonic: expr, Scheduling: ident) {
     op Opcode(rhs: Value<Ty>, lhs: Value<Ty>) -> (dst: Value<Ty>) {
+        schedule = Scheduling;
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: Byte, wide: false },
             Form::ModRm(RegField::Register(dst), Rm::Register(rhs)),
@@ -18,21 +19,21 @@ template FloatBinary(Opcode: ident, Prefix: expr, Byte: expr, Ty: expr, Mnemonic
     }
 }
 
-expand FloatBinary(X86FAdd32, Prefix::F3, 0x58, Type::F32, "addss");
+expand FloatBinary(X86FAdd32, Prefix::F3, 0x58, Type::F32, "addss", FloatAdd);
 
-expand FloatBinary(X86FAdd64, Prefix::F2, 0x58, Type::F64, "addsd");
+expand FloatBinary(X86FAdd64, Prefix::F2, 0x58, Type::F64, "addsd", FloatAdd);
 
-expand FloatBinary(X86FSub32, Prefix::F3, 0x5C, Type::F32, "subss");
+expand FloatBinary(X86FSub32, Prefix::F3, 0x5C, Type::F32, "subss", FloatAdd);
 
-expand FloatBinary(X86FSub64, Prefix::F2, 0x5C, Type::F64, "subsd");
+expand FloatBinary(X86FSub64, Prefix::F2, 0x5C, Type::F64, "subsd", FloatAdd);
 
-expand FloatBinary(X86FMul32, Prefix::F3, 0x59, Type::F32, "mulss");
+expand FloatBinary(X86FMul32, Prefix::F3, 0x59, Type::F32, "mulss", FloatMul);
 
-expand FloatBinary(X86FMul64, Prefix::F2, 0x59, Type::F64, "mulsd");
+expand FloatBinary(X86FMul64, Prefix::F2, 0x59, Type::F64, "mulsd", FloatMul);
 
-expand FloatBinary(X86FDiv32, Prefix::F3, 0x5E, Type::F32, "divss");
+expand FloatBinary(X86FDiv32, Prefix::F3, 0x5E, Type::F32, "divss", FloatDiv);
 
-expand FloatBinary(X86FDiv64, Prefix::F2, 0x5E, Type::F64, "divsd");
+expand FloatBinary(X86FDiv64, Prefix::F2, 0x5E, Type::F64, "divsd", FloatDiv);
 
 template IntToFloat(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: expr, Mnemonic: expr, Bits: expr) {
     op Opcode(src: Value<Src>) -> (dst: Value<Dst>) {
@@ -46,6 +47,7 @@ template IntToFloat(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: exp
             src: GPR64,
         };
         schedule = IntToFloat;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 128), reg(src, Bits)] }]
         };
@@ -72,6 +74,7 @@ template FloatToInt(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: exp
             src: FPR128,
         };
         schedule = FloatToInt;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, Bits), reg(src, 128)] }]
         };
@@ -98,6 +101,7 @@ template FloatUnary(Opcode: ident, Prefix: expr, Byte: expr, Src: expr, Dst: exp
             src: FPR128,
         };
         schedule = Scheduling;
+        movable = true;
         assembly = {
             lines: [{ mnemonic: Mnemonic, operands: [reg(dst, 128), reg(src, 128)] }]
         };
