@@ -1,5 +1,70 @@
 # Operation definitions
 
+## Target storage layouts
+
+Target `layout.spec` files declare storage separately from logical types and
+calling conventions. Multiple ABIs can reference one layout:
+
+```text
+data_layout Rv64 {
+    endian = little;
+    pointer = { size: 8, align: 8 };
+    types = [
+        { types: Type::BOOL | Type::I8, size: 1, align: 1 },
+        { types: Type::I16, size: 2, align: 2 },
+        { types: Type::I32 | Type::F32, size: 4, align: 4 },
+        { types: Type::I64 | Type::F64, size: 8, align: 8 },
+    ];
+}
+```
+
+Sizes and alignments are in bytes. The pointer field defines both pointer size
+and the `PTR` storage entry; it must not be repeated in `types`. Each entry names
+`types`, `size`, and `align`. The `types` field accepts concrete types or type sets,
+with duplicate logical types rejected even through
+aliases. Storage must fit the logical value, alignment must be a power of two,
+and padded allocation size must fit in `u32`. This syntax currently describes
+fixed storage; scalable types cannot be assigned a fixed size.
+
+## ABI allocation rules
+
+Calling conventions are shared signature data. `TargetMachine::resolve_abi`
+maps them to a generated `AbiDescriptor`; `Platform` selects the target default
+(currently x86-64 System V or RISC-V LP64D). Explicit conventions are accepted
+only by targets implementing them. The descriptor's `plan(signature, actual_args)`
+checks the fixed prefix and allocates the complete argument list.
+Frame lowering consumes the same resolved descriptor for preserved registers.
+
+An `abi` declaration binds a layout with `layout = Rv64;`, supplies ordered
+`args` and `returns` rules and may supply
+`variadic` rules for unnamed arguments. Omitting `variadic` means that variadic
+calls are unsupported, including calls without extra arguments. Named and
+unnamed arguments share register occupancy and the outgoing stack area.
+
+Rules match the original value type. `assign`, `shadow`, and `stack` preserve
+that type; `bitcast(type, allocation)` selects a bit-preserving transport type:
+
+```text
+bitcast(Type::I64, assign(Type::F64, [X10,X11,X12,X13,X14,X15,X16,X17]))
+bitcast(Type::I64, stack(Type::F64, 8, 8))
+```
+
+An exhausted register rule falls through to the next rule without changing the
+source type or allocation state. Each successful rule returns both its transport
+type and location. Spec compilation checks bitcasts against logical bit widths
+for every source type in the rule. Representation changes support numeric
+scalars, pointers, and fixed numeric vectors; predicate and scalable-vector
+conversions are rejected. Pointer widths come from the referenced layout.
+
+The same compilation checks that every ABI source and transport type has a
+layout and that stack slots provide sufficient size and alignment. The generated
+descriptor retains that layout; call planning cannot substitute another one.
+Runtime allocation still checks stack-offset overflow. ABI lowering inserts
+bitcasts at caller/callee boundaries, including returns.
+Language-level promotions such as C `float` to `double` remain frontend work.
+
+## Instruction definitions
+
 `veloc-spec` is the build-time definition compiler. It is independent of runtime
 IR containers and `veloc-types` (including test dependencies); `veloc-mir/build.rs` uses its MIR emitter. HIR is reserved
 for a future structured representation. The machine-facing IR is LIR, in

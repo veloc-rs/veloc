@@ -130,7 +130,7 @@ impl FunctionType {
             vec![self.result.abi_type().mir()?]
         };
         Ok(
-            veloc_mir::Signature::new(params, returns, veloc_mir::CallConv::SystemV)
+            veloc_mir::Signature::new(params, returns, veloc_mir::CallConv::Platform)
                 .with_variadic(self.variadic),
         )
     }

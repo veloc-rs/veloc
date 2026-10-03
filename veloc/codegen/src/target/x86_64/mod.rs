@@ -19,12 +19,12 @@ pub use frame::X86_64FrameLowering;
 pub use pass_config::X86_64PassConfig;
 
 use crate::target::{
-    RegClass, RegClassInfo, RegisterFile, SpecialRegs, SpillKind, TargetConfig, TargetDescription,
-    TargetEmitter, TargetFrameLowering, TargetInfo, TargetInstructions, TargetMachine,
-    TargetPassConfig, TargetRegalloc, TargetSchedule, ValidationMode,
+    AbiDescriptor, CallConv, RegClass, RegClassInfo, RegisterFile, SpecialRegs, SpillKind,
+    TargetConfig, TargetDescription, TargetEmitter, TargetFrameLowering, TargetInfo,
+    TargetInstructions, TargetMachine, TargetPassConfig, TargetRegalloc, TargetSchedule,
+    ValidationMode,
 };
 use veloc_lir::RegisterBank;
-use veloc_types::{DataLayout, Type, TypeLayout};
 
 const X86_64_GPR_ALLOCATABLE: &[veloc_lir::Reg] = &[
     inst::REG_RAX,
@@ -79,26 +79,7 @@ static X86_64_REGISTER_FILE: RegisterFile = RegisterFile {
         frame_pointer: Some(inst::SPECIAL_REG_FRAME_POINTER),
     },
 };
-pub const DATA_LAYOUT: DataLayout = DataLayout {
-    types: &[
-        (Type::BOOL, TypeLayout::fixed(1, 1)),
-        (Type::I8, TypeLayout::fixed(1, 1)),
-        (Type::I16, TypeLayout::fixed(2, 2)),
-        (Type::I32, TypeLayout::fixed(4, 4)),
-        (Type::I64, TypeLayout::fixed(8, 8)),
-        (Type::F32, TypeLayout::fixed(4, 4)),
-        (Type::F64, TypeLayout::fixed(8, 8)),
-        (Type::PTR, TypeLayout::fixed(8, 8)),
-        (Type::I8X16, TypeLayout::fixed(16, 16)),
-        (Type::I16X8, TypeLayout::fixed(16, 16)),
-        (Type::I32X4, TypeLayout::fixed(16, 16)),
-        (Type::I64X2, TypeLayout::fixed(16, 16)),
-        (Type::F32X4, TypeLayout::fixed(16, 16)),
-        (Type::F64X2, TypeLayout::fixed(16, 16)),
-    ],
-    pointer_size: 8,
-    little_endian: true,
-};
+pub use inst::DATA_LAYOUT_X86_64 as DATA_LAYOUT;
 
 /// x86_64 目标机器实现
 pub struct X86_64TargetMachine {
@@ -233,6 +214,13 @@ impl TargetInfo for X86_64TargetMachine {
 }
 
 impl TargetMachine for X86_64TargetMachine {
+    fn resolve_abi(&self, convention: CallConv) -> crate::Result<&'static AbiDescriptor> {
+        Ok(match convention {
+            CallConv::Platform | CallConv::SystemV => &inst::ABI_X86_64SYSTEMV,
+            CallConv::WindowsFastcall => &inst::ABI_X86_64WINDOWSFASTCALL,
+        })
+    }
+
     fn config(&self) -> &TargetConfig {
         &self.config
     }

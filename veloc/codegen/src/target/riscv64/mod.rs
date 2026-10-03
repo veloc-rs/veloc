@@ -15,23 +15,9 @@ mod zero;
 
 use crate::target::*;
 use veloc_lir::{MachineOpcode, RegisterBank};
-use veloc_types::{DataLayout, TypeLayout};
 
-pub const DATA_LAYOUT: DataLayout = DataLayout {
-    types: &[
-        (Type::BOOL, TypeLayout::fixed(1, 1)),
-        (Type::I8, TypeLayout::fixed(1, 1)),
-        (Type::I16, TypeLayout::fixed(2, 2)),
-        (Type::I32, TypeLayout::fixed(4, 4)),
-        (Type::I64, TypeLayout::fixed(8, 8)),
-        (Type::PTR, TypeLayout::fixed(8, 8)),
-        (Type::F32, TypeLayout::fixed(4, 4)),
-        (Type::F64, TypeLayout::fixed(8, 8)),
-    ],
-    pointer_size: 8,
-    little_endian: true,
-};
 pub use inst::ABI_RV64LP64D as ABI;
+pub use inst::DATA_LAYOUT_RV64 as DATA_LAYOUT;
 fn metadata(op: u32) -> &'static TargetInstMetadata {
     inst::target_inst_metadata(inst::TargetInst::from_u32(op))
 }
@@ -261,6 +247,15 @@ impl TargetPassConfig for Passes {
     }
 }
 impl TargetMachine for Riscv64TargetMachine {
+    fn resolve_abi(&self, convention: CallConv) -> crate::Result<&'static AbiDescriptor> {
+        match convention {
+            CallConv::Platform => Ok(&ABI),
+            _ => Err(crate::Error::codegen(format!(
+                "unsupported RISC-V calling convention {convention}"
+            ))),
+        }
+    }
+
     fn config(&self) -> &TargetConfig {
         &self.config
     }
@@ -297,14 +292,9 @@ mod tests {
     fn lp64d_assigns_banks_and_stack_independently() {
         let mut args = vec![Type::I64; 9];
         args.extend([Type::F64; 9]);
-        let plan = CallConv::RiscvABI
-            .plan(
-                TargetArch::Riscv64,
-                &DATA_LAYOUT,
-                &args,
-                &[Type::I32, Type::F64],
-            )
-            .unwrap();
+        let signature =
+            veloc_mir::Signature::new(&args, [Type::I32, Type::F64], CallConv::Platform);
+        let plan = ABI.plan(&signature, &args).unwrap();
         assert_eq!(plan.args[7].loc, AbiLocation::Reg(Reg(17)));
         assert_eq!(
             plan.args[8].loc,
@@ -330,7 +320,7 @@ mod tests {
     fn objects_use_riscv_architecture_and_absolute_call_relocations() {
         use veloc_mir::{Linkage, ModuleBuilder};
         let mut mb = ModuleBuilder::new();
-        let sig = mb.make_signature(vec![], vec![], veloc_mir::CallConv::SystemV);
+        let sig = mb.make_signature(vec![], vec![], veloc_mir::CallConv::Platform);
         let ext = mb.declare_function("host".into(), sig, Linkage::Import);
         let main = mb.declare_function("main".into(), sig, Linkage::Export);
         {

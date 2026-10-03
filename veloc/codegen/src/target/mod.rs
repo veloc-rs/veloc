@@ -6,7 +6,6 @@ pub mod riscv64;
 pub mod x86_64;
 
 mod abi;
-mod callconv;
 mod features;
 mod types;
 
@@ -18,12 +17,12 @@ pub use veloc_lir::{InstId, MachineFunction, Reg, VReg};
 use veloc_mir::Type;
 
 pub use abi::{AbiAssignment, AbiDescriptor, AbiLocation, AbiPlan, AbiState, StackArea};
-pub use callconv::CallConv;
 pub use features::{FeatureSetRef, TargetCapabilities, capabilities};
 pub use types::{
     ExternalCalls, RegClass, RegClassInfo, RegInfo, RegisterFile, RegisterView, RegisterWrite,
     SpecialRegs, TargetArch, TargetConfig, TargetDescription,
 };
+pub use veloc_types::CallConv;
 
 /// Operand rendering and symbol naming belong to the assembly host. Instruction
 /// mnemonics, widths and operand order come from the target definition schema.
@@ -126,6 +125,9 @@ pub trait TargetRegalloc: TargetInfo + TargetInstructions {
 
 /// Backend composition root. Consumers accept narrower supertraits.
 pub trait TargetMachine: TargetRegalloc + TargetSchedule {
+    /// Resolve a shared calling convention to this target's ABI rules.
+    fn resolve_abi(&self, convention: CallConv) -> crate::Result<&'static AbiDescriptor>;
+
     /// 获取架构配置
     fn config(&self) -> &TargetConfig;
 
@@ -274,7 +276,7 @@ pub trait TargetFrameLowering: Send + Sync {
     fn finalize_stack_frame(
         &self,
         mfunc: &mut veloc_lir::FuncEditor<'_>,
-        call_conv: CallConv,
+        abi: &'static AbiDescriptor,
     ) -> crate::Result<()>;
 
     /// 插入函数序言和尾声 (Prologue/Epilogue Insertion)

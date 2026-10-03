@@ -31,6 +31,7 @@ op ClosureNew(func_id: FuncId, move captures: sequence(Value), cleanup: FuncId) 
         require(func.is_variadic() == sig.is_variadic(), "callable variadic signature mismatch");
         require(!cleanup_sig.is_variadic(), "cleanup must have a fixed signature");
         require(result.is_owned(), "callable ownership kind mismatch");
+        require(func.same_call_conv(sig), "callable calling convention mismatch");
         require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
         require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| !v.ty().is_local() && !v.ty().is_ptr()), "capture would escape a borrow or duplicate an owned environment");
@@ -48,6 +49,7 @@ op ClosureLocal(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Ca
         let func = ctx.function_signature(func_id)?;
         let sig = ctx.signature(result.signature()?)?;
         require(result.is_local(), "callable ownership kind mismatch");
+        require(func.same_call_conv(sig), "callable calling convention mismatch");
         require(func.is_variadic() == sig.is_variadic(), "callable variadic signature mismatch");
         require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
         require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");
@@ -65,6 +67,7 @@ op ClosureShared(func_id: FuncId, captures: sequence(Value)) -> (result: Value<C
         let func = ctx.function_signature(func_id)?;
         let sig = ctx.signature(result.signature()?)?;
         require(result.is_shared(), "callable ownership kind mismatch");
+        require(func.same_call_conv(sig), "callable calling convention mismatch");
         require(func.is_variadic() == sig.is_variadic(), "callable variadic signature mismatch");
         require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
         require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");

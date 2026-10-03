@@ -30,7 +30,10 @@ pub(crate) fn check(
                     Space::Function
                 }
                 DeclKind::Fields(kind)
-                    if matches!(kind.as_str(), "feature" | "cpu" | "schedule_class") =>
+                    if matches!(
+                        kind.as_str(),
+                        "feature" | "cpu" | "schedule_class" | "data_layout"
+                    ) =>
                 {
                     Space::Value
                 }

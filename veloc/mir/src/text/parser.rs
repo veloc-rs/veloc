@@ -794,7 +794,22 @@ fn parse_signature(input: &mut Cursor<'_>, module: &mut Module) -> ParseResult<S
     } else {
         alloc::vec![parse_type(input, module)?]
     };
-    Ok(Signature::new(params, returns, CallConv::SystemV).with_variadic(variadic))
+    let convention = parse_call_conv(input)?;
+    Ok(Signature::new(params, returns, convention).with_variadic(variadic))
+}
+
+fn parse_call_conv(input: &mut Cursor<'_>) -> ParseResult<CallConv> {
+    if !input.is("cc") {
+        return Ok(CallConv::Platform);
+    }
+    input.advance();
+    input.expect(Kind::Equal)?;
+    input.atom(|name| match name {
+        "platform" => Ok(CallConv::Platform),
+        "system_v" => Ok(CallConv::SystemV),
+        "windows_fastcall" => Ok(CallConv::WindowsFastcall),
+        _ => Err(format!("unknown calling convention `{name}`")),
+    })
 }
 
 fn parse_linkage(input: &mut Cursor<'_>) -> ParseResult<Linkage> {
@@ -822,10 +837,11 @@ fn parse_function_header(
     } else {
         Vec::new()
     };
+    let convention = parse_call_conv(input)?;
     Ok(FunctionHeader {
         name,
         linkage,
-        signature: Signature::new(params, returns, CallConv::SystemV).with_variadic(variadic),
+        signature: Signature::new(params, returns, convention).with_variadic(variadic),
     })
 }
 

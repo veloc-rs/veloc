@@ -1528,7 +1528,7 @@ mod tests {
         let sig = module.make_signature(
             vec![veloc_mir::Type::I32X4],
             vec![veloc_mir::Type::I32X4],
-            CallConv::SystemV,
+            CallConv::Platform,
         );
         let func = module.declare_function("vector_identity".into(), sig, Linkage::Local);
         {
@@ -1551,7 +1551,7 @@ mod tests {
         const BLOCKS: usize = 64;
 
         let mut module = ModuleBuilder::new();
-        let sig = module.make_signature(Vec::new(), vec![Type::I32], CallConv::SystemV);
+        let sig = module.make_signature(Vec::new(), vec![Type::I32], CallConv::Platform);
         let func = module.declare_function("block_params".into(), sig, Linkage::Local);
 
         {

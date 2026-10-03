@@ -10,7 +10,7 @@ fn shuffle_uses_constant_operand() {
     let sig = module.make_signature(
         vec![Type::PTR, veloc_mir::Type::I32X4],
         vec![veloc_mir::Type::I32X4],
-        CallConv::SystemV,
+        CallConv::Platform,
     );
     let func = module.declare_function("pooled".into(), sig, Linkage::Local);
     {
@@ -40,7 +40,7 @@ fn shuffle_uses_constant_operand() {
 #[test]
 fn test_simple_vector_add_fixed() {
     let mut mb = ModuleBuilder::new();
-    let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
+    let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
     let func_id = mb.declare_function("test_vadd".to_string(), sig_id, Linkage::Export);
     let mut builder = mb.define(func_id);
 
@@ -66,7 +66,7 @@ fn test_simple_vector_add_fixed() {
 #[test]
 fn test_vector_splat() {
     let mut mb = ModuleBuilder::new();
-    let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
+    let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
     let func_id = mb.declare_function("test_splat".to_string(), sig_id, Linkage::Export);
     let mut builder = mb.define(func_id);
 
@@ -99,7 +99,7 @@ fn test_vector_splat() {
 #[test]
 fn test_vector_reduction_ops() {
     let mut mb = ModuleBuilder::new();
-    let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
+    let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
     let func_id = mb.declare_function("test_reduction".to_string(), sig_id, Linkage::Export);
     let mut builder = mb.define(func_id);
 
@@ -129,7 +129,7 @@ fn test_vector_reduction_ops() {
 #[test]
 fn test_vector_extract_insert() {
     let mut mb = ModuleBuilder::new();
-    let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
+    let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
     let func_id = mb.declare_function("test_extract_insert".to_string(), sig_id, Linkage::Export);
     let mut builder = mb.define(func_id);
 
@@ -156,7 +156,7 @@ fn test_vector_extract_insert() {
 #[test]
 fn test_vector_with_mask_evl() {
     let mut mb = ModuleBuilder::new();
-    let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
+    let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
     let func_id = mb.declare_function("test_masked".to_string(), sig_id, Linkage::Export);
     let mut builder = mb.define(func_id);
 
@@ -196,7 +196,7 @@ fn test_vector_with_mask_evl() {
 #[test]
 fn test_gather_load() {
     let mut mb = ModuleBuilder::new();
-    let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
+    let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
     let func_id = mb.declare_function("test_gather".to_string(), sig_id, Linkage::Export);
     let mut builder = mb.define(func_id);
 
@@ -240,7 +240,7 @@ fn test_gather_load() {
 #[test]
 fn test_strided_load_store() {
     let mut mb = ModuleBuilder::new();
-    let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
+    let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
     let func_id = mb.declare_function("test_strided".to_string(), sig_id, Linkage::Export);
     let mut builder = mb.define(func_id);
 

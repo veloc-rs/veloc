@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn compile_single_function_to_object() {
         let mut mb = ModuleBuilder::new();
-        let sig = mb.make_signature(vec![], vec![], CallConv::SystemV);
+        let sig = mb.make_signature(vec![], vec![], CallConv::Platform);
         let func_id = mb.declare_function("main".into(), sig, Linkage::Export);
         {
             let mut fb = mb.define(func_id);
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn compile_module_to_object_keeps_defined_and_imported_symbols() {
         let mut mb = ModuleBuilder::new();
-        let sig = mb.make_signature(vec![], vec![], CallConv::SystemV);
+        let sig = mb.make_signature(vec![], vec![], CallConv::Platform);
         mb.declare_function("ext_func".into(), sig, Linkage::Import);
         let main_id = mb.declare_function("main".into(), sig, Linkage::Export);
         let local_id = mb.declare_function("helper".into(), sig, Linkage::Local);
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn compile_module_to_object_emits_call_relocation() {
         let mut mb = ModuleBuilder::new();
-        let sig = mb.make_signature(vec![], vec![], CallConv::SystemV);
+        let sig = mb.make_signature(vec![], vec![], CallConv::Platform);
         let ext_id = mb.declare_function("ext_func".into(), sig, Linkage::Import);
         let main_id = mb.declare_function("main".into(), sig, Linkage::Export);
         {

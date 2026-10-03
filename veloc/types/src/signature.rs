@@ -26,12 +26,17 @@ impl fmt::Debug for SigId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CallConv {
+    /// The target's default native calling convention.
+    Platform,
     SystemV,
+    WindowsFastcall,
 }
 impl fmt::Display for CallConv {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Platform => f.write_str("platform"),
             Self::SystemV => f.write_str("system_v"),
+            Self::WindowsFastcall => f.write_str("windows_fastcall"),
         }
     }
 }

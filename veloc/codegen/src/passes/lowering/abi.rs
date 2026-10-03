@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
-use crate::target::{AbiLocation, AbiPlan, CallConv, TargetMachine};
+use crate::target::{AbiLocation, AbiPlan, TargetMachine};
 use smallvec::SmallVec;
 use veloc_lir::MemFlags;
 use veloc_lir::{GenericOpcode, InstId, MachineOpcode, Reg, StackObject, StackSlot, Type};
@@ -20,24 +20,8 @@ fn plan_signature(
     sig: &veloc_mir::Signature,
     params: &[Type],
 ) -> Result<AbiPlan> {
-    if !params.starts_with(sig.params()) || (!sig.variadic && params.len() != sig.params().len()) {
-        return Err(Error::codegen(
-            "call arguments do not match the declared signature",
-        ));
-    }
-    let desc = target.desc();
-    let convention = CallConv::from(sig.call_conv);
-    let plan = if sig.variadic {
-        convention.plan_variadic(
-            desc.arch,
-            &desc.data_layout,
-            params,
-            sig.returns(),
-            sig.params().len(),
-        )?
-    } else {
-        convention.plan(desc.arch, &desc.data_layout, params, sig.returns())?
-    };
+    let abi = target.resolve_abi(sig.call_conv)?;
+    let plan = abi.plan(sig, params)?;
     if plan
         .returns
         .iter()
@@ -86,11 +70,18 @@ fn lower_formal_arguments(mfunc: &mut veloc_lir::FuncEditor<'_>, plan: &AbiPlan)
     let params = mfunc.take_params();
     let mut bindings = Vec::new();
     for (dst, assignment) in params.into_iter().zip(&plan.args) {
+        let incoming = if mfunc.vreg_data(dst).ty != assignment.ty {
+            let incoming = mfunc.alloc_vreg(assignment.ty);
+            mfunc.at_start(entry).bitcast(dst, incoming);
+            incoming
+        } else {
+            dst
+        };
         match assignment.loc {
             AbiLocation::Reg(reg) => {
-                mfunc.append_param(dst);
+                mfunc.append_param(incoming);
                 bindings.push(veloc_lir::EntryBinding {
-                    value: dst,
+                    value: incoming,
                     location: reg.as_preg().expect("physical ABI location"),
                 });
             }
@@ -102,7 +93,7 @@ fn lower_formal_arguments(mfunc: &mut veloc_lir::FuncEditor<'_>, plan: &AbiPlan)
                 let mut insert = mfunc.at_start(entry);
                 let (address, _, flags) =
                     stack_access(&mut insert, StackObject::Incoming { offset }, size, align);
-                insert.load(dst, address, 0, flags);
+                insert.load(incoming, address, 0, flags);
             }
         }
     }
@@ -131,7 +122,7 @@ pub(super) fn emit_libcall(
         args.iter().map(|&reg| mfunc.vreg_data(reg).ty).collect();
     let returns: SmallVec<[veloc_mir::Type; 2]> =
         results.iter().map(|&reg| mfunc.vreg_data(reg).ty).collect();
-    let sig = veloc_mir::Signature::new(params, returns, veloc_types::CallConv::SystemV);
+    let sig = veloc_mir::Signature::new(params, returns, veloc_types::CallConv::Platform);
     // Diagnose unsupported ABI representations before replacing the operation.
     let plan = plan_signature(target, &sig, sig.params())?;
     let callee = symbols.get_or_create_function(symbol, veloc_mir::Linkage::Import);
@@ -181,6 +172,7 @@ fn apply_call_abi(mfunc: &mut veloc_lir::FuncEditor<'_>, id: InstId, plan: &AbiP
         "call result count mismatch"
     );
 
+    let logical_results = SmallVec::<[Reg; 2]>::from_slice(results);
     let mut logical_args = SmallVec::<[Reg; 8]>::from_slice(args);
     // Some ABIs transfer unnamed floats through integer registers. Keep the
     // language type intact until this boundary, then reinterpret its bits.
@@ -230,6 +222,13 @@ fn apply_call_abi(mfunc: &mut veloc_lir::FuncEditor<'_>, id: InstId, plan: &AbiP
     // Keep SSA definitions and uses; physical locations are requirements at this call.
     mfunc.set_call_abi(id, &inputs, frame, plan.abi.clobbers, stack_args);
     mfunc.set_inst_constraints(id, constraints);
+    for (index, (&dst, assignment)) in logical_results.iter().zip(&plan.returns).enumerate() {
+        if mfunc.vreg_data(dst).ty != assignment.ty {
+            let incoming = mfunc.alloc_vreg(assignment.ty);
+            mfunc.set_inst_result(id, index, incoming);
+            mfunc.after(id).bitcast(dst, incoming);
+        }
+    }
     mfunc.after(id).call_frame_destroy(frame);
 }
 
@@ -242,6 +241,14 @@ fn lower_return(mfunc: &mut veloc_lir::FuncEditor<'_>, id: InstId, plan: &AbiPla
         plan.returns.len(),
         "return value count mismatch"
     );
+    let values = SmallVec::<[Reg; 2]>::from_slice(ret.values);
+    for (index, (&src, assignment)) in values.iter().zip(&plan.returns).enumerate() {
+        if mfunc.vreg_data(src).ty != assignment.ty {
+            let outgoing = mfunc.alloc_vreg(assignment.ty);
+            mfunc.before(id).bitcast(outgoing, src);
+            mfunc.set_inst_input(id, index, outgoing);
+        }
+    }
     mfunc.set_inst_constraints(id, return_constraints(plan, OperandRef::Input).collect());
 }
 

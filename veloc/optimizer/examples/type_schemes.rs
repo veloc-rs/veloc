@@ -8,7 +8,7 @@ use veloc_optimizer::passes::expression::{Budget, run};
 
 fn module() -> Module {
     let mut module = ModuleBuilder::new();
-    let sig = module.make_signature(vec![], vec![Type::I32], CallConv::SystemV);
+    let sig = module.make_signature(vec![], vec![Type::I32], CallConv::Platform);
     let id = module.declare_function("arithmetic".into(), sig, Linkage::Local);
     {
         let mut builder = module.define(id);

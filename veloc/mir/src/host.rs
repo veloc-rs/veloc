@@ -18,6 +18,9 @@ impl SignatureInfo for veloc_types::Signature {
     fn is_variadic(&self) -> bool {
         self.variadic
     }
+    fn same_call_conv(&self, other: &veloc_types::Signature) -> bool {
+        self.call_conv == other.call_conv
+    }
 }
 
 pub struct VerifyContext<'a> {

@@ -1,5 +1,5 @@
 use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
-use crate::target::{CallConv, TargetFrameLowering};
+use crate::target::TargetFrameLowering;
 
 pub struct FrameFinalizePass<'a> {
     frame_lowering: &'a dyn TargetFrameLowering,
@@ -24,10 +24,10 @@ impl<'a> FunctionPass for FrameFinalizePass<'a> {
     }
     fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
         crate::verify::verify_call_frames(cx.function(), cx.target)?;
-        let convention = CallConv::from(cx.signature.call_conv);
+        let abi = cx.target.resolve_abi(cx.signature.call_conv)?;
         let mut function = cx.edit();
         self.frame_lowering
-            .finalize_stack_frame(&mut function, convention)?;
+            .finalize_stack_frame(&mut function, abi)?;
         self.frame_lowering.insert_prologue_epilogue(&mut function);
         Ok(())
     }

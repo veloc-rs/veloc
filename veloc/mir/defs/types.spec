@@ -20,6 +20,7 @@ type Signature = rust("veloc_types::Signature") {
     fn returns(&self) -> sequence(Type);
     fn types(&self) -> sequence(Type);
     fn is_variadic(&self) -> bool;
+    fn same_call_conv(&self, other: &Signature) -> bool;
 }
 
 type VerifyContext = rust("crate::host::VerifyContext") {

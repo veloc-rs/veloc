@@ -5,7 +5,11 @@ impl TargetFrameLowering for Frame {
     fn stack_alignment(&self) -> u32 {
         16
     }
-    fn finalize_stack_frame(&self, f: &mut FuncEditor<'_>, _: CallConv) -> crate::Result<()> {
+    fn finalize_stack_frame(
+        &self,
+        f: &mut FuncEditor<'_>,
+        abi: &'static AbiDescriptor,
+    ) -> crate::Result<()> {
         let mut saved = Vec::new();
         let mut outgoing = 0u32;
         for block in f.blocks() {
@@ -24,7 +28,7 @@ impl TargetFrameLowering for Frame {
                     outgoing = outgoing.max(area.size);
                 }
                 for r in f.inst(id).register_access().writes() {
-                    if (r == Reg(1) || ABI.preserved.contains(&r)) && !saved.contains(&r) {
+                    if (r == Reg(1) || abi.preserved.contains(&r)) && !saved.contains(&r) {
                         saved.push(r);
                     }
                 }

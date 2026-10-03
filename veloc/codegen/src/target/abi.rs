@@ -2,7 +2,8 @@ use super::Reg;
 use super::types::TargetArch;
 use smallvec::SmallVec;
 use std::vec::Vec;
-use veloc_mir::Type;
+use veloc_mir::{Signature, Type};
+use veloc_types::DataLayout;
 
 /// Locations are relative to the ABI argument area, not a concrete frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,15 +36,19 @@ pub use veloc_lir::StackArea;
 pub struct AbiDescriptor {
     pub name: &'static str,
     pub arch: TargetArch,
+    /// Storage layout checked together with the allocation rules.
+    pub layout: &'static DataLayout,
     pub stack: StackArea,
     pub args: AbiAssignFn,
+    /// Rules for unnamed arguments. None means variadic calls are unsupported.
+    pub variadic: Option<AbiAssignFn>,
     pub returns: AbiAssignFn,
     pub preserved: &'static [Reg],
     pub clobbers: veloc_lir::RegMask,
 }
 
 /// Generated argument/return rules share this interface; neither edits LIR.
-pub type AbiAssignFn = fn(Type, &mut AbiState) -> Result<AbiLocation, crate::error::Error>;
+pub type AbiAssignFn = fn(Type, &mut AbiState) -> Result<AbiAssignment, crate::error::Error>;
 
 /// Occupancy is shared across all type domains. Register IDs identify root
 /// storage (register views must resolve to their root before allocation).
@@ -92,6 +97,51 @@ impl AbiState {
             offset,
             size,
             align,
+        })
+    }
+}
+
+impl AbiDescriptor {
+    /// Plan a declaration or call using the same rules and argument state.
+    /// `actual_args` contains the complete argument list, including varargs.
+    pub fn plan(
+        &'static self,
+        signature: &Signature,
+        actual_args: &[Type],
+    ) -> Result<AbiPlan, crate::Error> {
+        let fixed = signature.params();
+        if !actual_args.starts_with(fixed)
+            || (!signature.variadic && actual_args.len() != fixed.len())
+        {
+            return Err(crate::Error::codegen(
+                "call arguments do not match the declared signature",
+            ));
+        }
+        let mut state = AbiState::new(self.stack);
+        let mut args = Vec::with_capacity(actual_args.len());
+        let (named, extra) = actual_args.split_at(fixed.len());
+        for &ty in named {
+            args.push((self.args)(ty, &mut state)?);
+        }
+        if signature.variadic {
+            let unnamed = self.variadic.ok_or_else(|| {
+                crate::Error::codegen(format!("ABI {} does not support variadic calls", self.name))
+            })?;
+            for &ty in extra {
+                args.push(unnamed(ty, &mut state)?);
+            }
+        }
+        let mut ret_state = AbiState::new(StackArea { size: 0, align: 1 });
+        let returns = signature
+            .returns()
+            .iter()
+            .map(|&ty| (self.returns)(ty, &mut ret_state))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(AbiPlan {
+            abi: self,
+            args,
+            returns,
+            stack: state.stack,
         })
     }
 }

@@ -7,14 +7,14 @@ use veloc_mir::{Block, EdgeRef, ModuleParser, TypeInfo, Value};
 fn generated_callable_builders_share_ssa_storage_and_explicit_validation() {
     use veloc_mir::{CallConv, CallableKind, Linkage, ModuleBuilder, Type};
     let mut module = ModuleBuilder::new();
-    let sig = module.make_signature(vec![Type::I32], vec![Type::I32], CallConv::SystemV);
+    let sig = module.make_signature(vec![Type::I32], vec![Type::I32], CallConv::Platform);
     let ty = Type::callable(sig, CallableKind::Owned);
     assert!(ty.as_scalar().is_none());
     assert!(ty.as_vector().is_none());
     assert!(!ty.is_integer());
     assert_eq!(ty.bit_size(), None);
     let body = module.declare_function("body".into(), sig, Linkage::Local);
-    let empty = module.make_signature(vec![], vec![], CallConv::SystemV);
+    let empty = module.make_signature(vec![], vec![], CallConv::Platform);
     let cleanup = module.declare_function("cleanup".into(), empty, Linkage::Local);
     let entry = module.declare_function("entry".into(), sig, Linkage::Local);
     {
@@ -60,11 +60,11 @@ fn deeply_nested_callable_signatures_validate_without_recursive_stack_growth() {
         let params = vec![Type::callable(SigId(index + 1), CallableKind::Shared)];
         module
             .types_mut()
-            .insert_signature(Signature::new(params, vec![], CallConv::SystemV));
+            .insert_signature(Signature::new(params, vec![], CallConv::Platform));
     }
     module
         .types_mut()
-        .insert_signature(Signature::new(vec![], vec![], CallConv::SystemV));
+        .insert_signature(Signature::new(vec![], vec![], CallConv::Platform));
     module.validate().unwrap();
 }
 
@@ -75,7 +75,7 @@ fn callable_signature_diagnostics_identify_cycles_and_unknown_references() {
     let sig = module.types_mut().insert_signature(Signature::new(
         vec![Type::callable(SigId(1), CallableKind::Shared)],
         vec![],
-        CallConv::SystemV,
+        CallConv::Platform,
     ));
     let error = module.validate().unwrap_err().to_string();
     assert!(error.contains("signature sig0, parameter 0"), "{error}");
@@ -84,7 +84,7 @@ fn callable_signature_diagnostics_identify_cycles_and_unknown_references() {
     module.types_mut().insert_signature(Signature::new(
         vec![],
         vec![Type::callable(sig, CallableKind::Owned)],
-        CallConv::SystemV,
+        CallConv::Platform,
     ));
     let error = module.validate().unwrap_err().to_string();
     assert!(error.contains("recursive callable signature"), "{error}");
@@ -170,7 +170,7 @@ fn validator_rejects_detached_targets_and_unknown_values_without_panicking() {
     // A detached but allocated block is not a valid destination. Construction
     // accepts handles and leaves this structural contract to validation.
     let mut builder = veloc_mir::ModuleBuilder::new();
-    let sig = builder.make_signature(vec![], vec![], veloc_mir::CallConv::SystemV);
+    let sig = builder.make_signature(vec![], vec![], veloc_mir::CallConv::Platform);
     let id = builder.declare_function("bad".into(), sig, veloc_mir::Linkage::Local);
     let mut f = builder.define(id);
     let detached = f.create_block();
@@ -274,7 +274,7 @@ fn modules_share_types_but_detach_before_extending_them() {
     use veloc_types::TypeContext;
 
     let mut types = TypeContext::default();
-    let signature = types.intern_signature(&[Type::I32], &[Type::I32], CallConv::SystemV);
+    let signature = types.intern_signature(&[Type::I32], &[Type::I32], CallConv::Platform);
     let shared = Arc::new(types);
     let mut left = ModuleBuilder::with_types(shared.clone());
     let id = left.declare_function("identity".into(), signature, Linkage::Local);
@@ -291,7 +291,7 @@ fn modules_share_types_but_detach_before_extending_them() {
     assert!(right.decls().is_empty());
 
     let old = left.clone();
-    let added = left.intern_signature(Signature::new([Type::F64], [], CallConv::SystemV));
+    let added = left.intern_signature(Signature::new([Type::F64], [], CallConv::Platform));
     assert!(!Arc::ptr_eq(&left.shared_types(), &right.shared_types()));
     assert!(Arc::ptr_eq(&old.shared_types(), &right.shared_types()));
     assert!(right.signatures().get(added).is_none());
@@ -299,7 +299,7 @@ fn modules_share_types_but_detach_before_extending_them() {
     assert_eq!(left.signatures()[signature].params(), &[Type::I32]);
 
     let mut destination = TypeContext::default();
-    destination.intern_signature(&[], &[], CallConv::SystemV);
+    destination.intern_signature(&[], &[], CallConv::Platform);
     let map = destination.import(left.types()).unwrap();
     let right_map = destination.import(right.types()).unwrap();
     assert_eq!(map[signature.0 as usize], right_map[signature.0 as usize]);

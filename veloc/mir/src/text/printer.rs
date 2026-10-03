@@ -178,7 +178,11 @@ impl TypePrinter<'_> {
         f.write_char('(')?;
         self.fmt_parameters(f, sig)?;
         f.write_str(") -> ")?;
-        self.fmt_ret_types(f, sig.returns())
+        self.fmt_ret_types(f, sig.returns())?;
+        if sig.call_conv != crate::CallConv::Platform {
+            write!(f, " cc={}", sig.call_conv)?;
+        }
+        Ok(())
     }
 
     fn fmt_parameters(&self, f: &mut dyn Write, sig: &Signature) -> Result {
@@ -256,16 +260,14 @@ impl<'a> FuncPrinter<'a> {
     fn fmt_signature(&self, f: &mut dyn Write) -> Result {
         write!(
             f,
-            "{} function {}(",
+            "{} function {}",
             self.func.decl.linkage, self.func.decl.name
         )?;
         let sig = &self.module.signatures()[self.func.decl.signature];
         let printer = TypePrinter {
             module: Some(self.module),
         };
-        printer.fmt_parameters(f, sig)?;
-        f.write_str(") -> ")?;
-        printer.fmt_ret_types(f, sig.returns())
+        printer.fmt_signature(f, sig)
     }
 
     fn fmt_block(&self, f: &mut dyn Write, body: &crate::FuncBody, block: crate::Block) -> Result {

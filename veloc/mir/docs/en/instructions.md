@@ -274,6 +274,10 @@ for lifetime, resource-exhaustion and optimization rules.
 ### 7. Function Call Instructions
 
 #### `Call` (Direct Call)
+
+Signatures default to the target's `Platform` calling convention. An explicit
+convention uses a suffix such as `(i64) -> i64 cc=system_v` or
+`(i64) -> i64 cc=windows_fastcall`; it is part of signature identity.
 | Attribute | Description |
 |-----------|-------------|
 | **Operands** | `func_id: FuncId`, `args: ValueList` |

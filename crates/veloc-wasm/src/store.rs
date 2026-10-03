@@ -194,7 +194,7 @@ where
 {
     let args = params.len();
     let has_result = !results.is_empty();
-    let signature = Signature::new(params.to_vec(), results.to_vec(), CallConv::SystemV);
+    let signature = Signature::new(params.to_vec(), results.to_vec(), CallConv::Platform);
     HostFunction::new(signature, move |values| {
         let result = func(&values[..args]);
         if has_result {

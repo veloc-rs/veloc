@@ -256,6 +256,20 @@ impl Reader<'_> {
     }
     fn abi_rules(&self, n: &Node) -> Result<Vec<AbiRuleDef>, Error> {
         self.list(n)?.iter().map(|node| {
+            let (node, transport) = if let Kind::Call(name, args) = &node.kind
+                && name == "bitcast"
+            {
+                let [ty, action] = args.as_slice() else {
+                    return Err(self.error(node, "expected bitcast(type, allocation)"));
+                };
+                let types = self.selection_domain(ty)?;
+                if types.len() != 1 {
+                    return Err(self.error(ty, "ABI transport must be one concrete type"));
+                }
+                (action, types.into_iter().next())
+            } else {
+                (node, None)
+            };
             let Kind::Call(name, args) = &node.kind else {
                 return Err(self.error(node, "expected an ABI allocation action"));
             };
@@ -274,7 +288,7 @@ impl Reader<'_> {
                 },
                 _ => return Err(self.error(node, "expected assign(types, regs), shadow(types, regs, shadows), or stack(types, size, align)")),
             };
-            Ok(AbiRuleDef { types: self.selection_domain(&args[0])?, action })
+            Ok(AbiRuleDef { types: self.selection_domain(&args[0])?, transport, action })
         }).collect()
     }
     fn selection_domain(&self, node: &Node) -> Result<Vec<String>, Error> {
@@ -423,8 +437,62 @@ impl Reader<'_> {
                         .unwrap_or_default(),
                 })
             }
+            "data_layout" => {
+                self.fields(d, &["endian", "pointer", "types"])?;
+                let endian = self.required(d, "endian")?;
+                let little_endian = match self.name(endian)?.as_str() {
+                    "little" => true,
+                    "big" => false,
+                    _ => return Err(self.error(endian, "expected little or big endianness")),
+                };
+                let number = |n: &Node| -> Result<u32, Error> {
+                    u32::try_from(self.number(n)?)
+                        .map_err(|_| self.error(n, "layout size exceeds u32"))
+                };
+                let pointer_node = self.required(d, "pointer")?;
+                let pointer = self.record(pointer_node)?;
+                if pointer.len() != 2
+                    || !pointer.contains_key("size")
+                    || !pointer.contains_key("align")
+                {
+                    return Err(self.error(pointer_node, "pointer layout requires size and align"));
+                }
+                let mut types = Vec::new();
+                for node in self.list(self.required(d, "types")?)? {
+                    let fields = self.record(node)?;
+                    if fields.len() != 3
+                        || !fields.contains_key("types")
+                        || !fields.contains_key("size")
+                        || !fields.contains_key("align")
+                    {
+                        return Err(self.error(node, "type layout requires types, size and align"));
+                    }
+                    let (size, align) = (number(&fields["size"])?, number(&fields["align"])?);
+                    for ty in self.selection_domain(&fields["types"])? {
+                        types.push(TypeLayoutDef { ty, size, align });
+                    }
+                }
+                Def::DataLayout(DataLayoutDef {
+                    name: d.name.clone(),
+                    little_endian,
+                    pointer_size: number(&pointer["size"])?,
+                    pointer_align: number(&pointer["align"])?,
+                    types,
+                })
+            }
             "abi" => {
-                self.fields(d, &["arch", "stack", "args", "returns", "preserved"])?;
+                self.fields(
+                    d,
+                    &[
+                        "arch",
+                        "layout",
+                        "stack",
+                        "args",
+                        "variadic",
+                        "returns",
+                        "preserved",
+                    ],
+                )?;
                 let mut stack = AbiStackDef::default();
                 for (field, n) in self.record(self.required(d, "stack")?)? {
                     match field.as_str() {
@@ -444,8 +512,14 @@ impl Reader<'_> {
                 Def::Abi(AbiDef {
                     name: d.name.clone(),
                     arch: self.name(self.required(d, "arch")?)?,
+                    layout: self.name(self.required(d, "layout")?)?,
                     stack,
                     args: self.abi_rules(self.required(d, "args")?)?,
+                    variadic: d
+                        .fields
+                        .get("variadic")
+                        .map(|n| self.abi_rules(n))
+                        .transpose()?,
                     returns: self.abi_rules(self.required(d, "returns")?)?,
                     preserved: self.names(self.required(d, "preserved")?)?,
                 })

@@ -627,7 +627,7 @@ fn variable_views_preserve_call_and_return_operands() {
         sig: veloc_mir::Signature::new(
             vec![Type::I64; args.len()],
             vec![Type::I64; results.len()],
-            veloc_mir::CallConv::SystemV,
+            veloc_mir::CallConv::Platform,
         ),
         frame: None,
         stack_args: Default::default(),
@@ -770,7 +770,7 @@ fn optional_validation_is_separate_from_direct_views() {
     assert!(function.inst(cmp).validate().is_err());
     let info = veloc_lir::CallInfo {
         clobbers: Default::default(),
-        sig: veloc_mir::Signature::new([Type::I64], [Type::I64], veloc_mir::CallConv::SystemV),
+        sig: veloc_mir::Signature::new([Type::I64], [Type::I64], veloc_mir::CallConv::Platform),
         frame: None,
         stack_args: Default::default(),
     };

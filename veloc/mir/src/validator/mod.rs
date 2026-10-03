@@ -232,7 +232,7 @@ mod tests {
             Type::BOOL,
         ];
         let mut module = ModuleBuilder::new();
-        let sig = module.make_signature(types.to_vec(), types.to_vec(), CallConv::SystemV);
+        let sig = module.make_signature(types.to_vec(), types.to_vec(), CallConv::Platform);
         let callee = module.declare_function("callee".into(), sig, Linkage::Local);
         {
             let mut builder = module.define(callee);
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn branch_tables_require_a_default_destination() {
         let mut module = ModuleBuilder::new();
-        let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
+        let sig = module.make_signature(vec![], vec![], CallConv::Platform);
         let func = module.declare_function("empty-table".into(), sig, Linkage::Local);
         {
             let mut builder = module.define(func);
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn explicit_ssa_does_not_require_builder_sealing() {
         let mut module = ModuleBuilder::new();
-        let signature = module.make_signature(vec![], vec![], CallConv::SystemV);
+        let signature = module.make_signature(vec![], vec![], CallConv::Platform);
         let function = module.declare_function("test".to_string(), signature, Linkage::Export);
         let mut builder = module.define(function);
 
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn constant_validation_reports_invalid_size_without_panicking() {
         let mut module = ModuleBuilder::new();
-        let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
+        let sig = module.make_signature(vec![], vec![], CallConv::Platform);
         let id = module.declare_function("invalid-size".into(), sig, Linkage::Local);
         {
             let mut builder = module.define(id);

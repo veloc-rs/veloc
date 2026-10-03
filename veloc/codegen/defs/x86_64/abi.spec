@@ -1,5 +1,6 @@
 import "../../../defs/type_sets.spec";
 import "registers.spec";
+import "layout.spec";
 
 // Ordered actions: exhausted register lists fall through to the next rule.
 // Domains reuse ordinary Spec typesets; there is no ABI classifier registry.
@@ -9,6 +10,7 @@ typeset AbiVector = Type::I8X16 | Type::I16X8 | Type::I32X4 | Type::I64X2 | Type
 
 abi X86_64SystemV {
     arch = X86_64;
+    layout = X86_64;
     stack = { align: 16 };
     args = [
         assign(AbiWord, [RDI, RSI, RDX, RCX, R8, R9]),
@@ -25,6 +27,7 @@ abi X86_64SystemV {
 
 abi X86_64WindowsFastcall {
     arch = X86_64;
+    layout = X86_64;
     stack = { align: 16, reserved: 32 };
     args = [
         shadow(AbiWord, [RCX, RDX, R8, R9], [XMM0, XMM1, XMM2, XMM3]),

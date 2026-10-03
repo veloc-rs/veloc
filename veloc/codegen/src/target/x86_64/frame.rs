@@ -1,5 +1,5 @@
 use super::inst as generated;
-use crate::target::{CallConv as TargetCallConv, TargetArch, TargetFrameLowering};
+use crate::target::{AbiDescriptor, TargetFrameLowering};
 use std::vec::Vec;
 use veloc_lir::FuncEditor;
 
@@ -14,9 +14,9 @@ impl TargetFrameLowering for X86_64FrameLowering {
     fn finalize_stack_frame(
         &self,
         mfunc: &mut FuncEditor<'_>,
-        call_conv: TargetCallConv,
+        abi: &'static AbiDescriptor,
     ) -> crate::Result<()> {
-        let preserved_regs = call_conv.preserved_regs(TargetArch::X86_64);
+        let preserved_regs = abi.preserved;
         let mut used_callee_saved = Vec::new();
         let align = self.stack_alignment();
         let mut outgoing = 0;

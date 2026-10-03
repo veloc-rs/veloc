@@ -273,6 +273,9 @@ Veloc IR（Intermediate Representation）是一种面向栈式虚拟机和寄存
 ### 7. 函数调用指令
 
 #### `Call`（直接调用）
+
+签名默认使用目标的 `Platform` 调用约定。显式约定写在签名后缀中，例如
+`(i64) -> i64 cc=system_v` 或 `(i64) -> i64 cc=windows_fastcall`；调用约定参与签名身份比较。
 | 属性 | 说明 |
 |------|------|
 | **操作数** | `func_id: FuncId`, `args: ValueList` |

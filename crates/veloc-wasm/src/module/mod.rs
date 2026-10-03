@@ -96,7 +96,7 @@ impl RuntimeFunctions {
 
         let sig =
             |ir: &mut veloc::mir::ModuleBuilder, params: Vec<VelocType>, ret: Vec<VelocType>| {
-                ir.make_signature(params, ret, CallConv::SystemV)
+                ir.make_signature(params, ret, CallConv::Platform)
             };
 
         let trap_handler_sig = sig(ir, vec![p, i], vec![]);
@@ -706,7 +706,7 @@ fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmM
             // 多返回值通过隐藏 results buffer 传递。
             let tramp_params = vec![VelocType::PTR, VelocType::PTR, VelocType::PTR];
             let tramp_sig_id =
-                ir.make_signature(tramp_params, vec![VelocType::I64], CallConv::SystemV);
+                ir.make_signature(tramp_params, vec![VelocType::I64], CallConv::Platform);
             let tramp_id = ir.declare_function(tramp_name, tramp_sig_id, Linkage::Export);
 
             let sig = &metadata.signatures[ty_idx as usize];
@@ -778,7 +778,7 @@ fn generate_veloc_init(
     offsets: &VMOffsets,
     runtime: &RuntimeFunctions,
 ) -> veloc::mir::FuncId {
-    let init_sig_id = ir.make_signature(vec![veloc::mir::Type::PTR], vec![], CallConv::SystemV);
+    let init_sig_id = ir.make_signature(vec![veloc::mir::Type::PTR], vec![], CallConv::Platform);
     let init_func_id =
         ir.declare_function("__veloc_init".to_string(), init_sig_id, Linkage::Export);
 

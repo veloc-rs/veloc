@@ -24,6 +24,8 @@ pub enum Def {
     Cpu(CpuDef),
     /// Target calling convention metadata.
     Abi(AbiDef),
+    /// Target storage representation shared by calling conventions.
+    DataLayout(DataLayoutDef),
     /// Explicit predicate signature implemented by the selection host.
     Decl(DeclDef),
 }
@@ -89,10 +91,28 @@ pub struct ScheduleCost {
 pub struct AbiDef {
     pub name: String,
     pub arch: String,
+    pub layout: String,
     pub stack: AbiStackDef,
     pub args: Vec<AbiRuleDef>,
+    pub variadic: Option<Vec<AbiRuleDef>>,
     pub returns: Vec<AbiRuleDef>,
     pub preserved: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataLayoutDef {
+    pub name: String,
+    pub little_endian: bool,
+    pub pointer_size: u32,
+    pub pointer_align: u32,
+    pub types: Vec<TypeLayoutDef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeLayoutDef {
+    pub ty: String,
+    pub size: u32,
+    pub align: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -104,6 +124,7 @@ pub struct AbiStackDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbiRuleDef {
     pub types: Vec<String>,
+    pub transport: Option<String>,
     pub action: AbiActionDef,
 }
 

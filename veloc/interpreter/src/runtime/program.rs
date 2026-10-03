@@ -458,7 +458,7 @@ mod tests {
         returns: Vec<Type>,
     ) -> (Module, FuncId) {
         let mut module = ModuleBuilder::new();
-        let signature = module.make_signature(params, returns, CallConv::SystemV);
+        let signature = module.make_signature(params, returns, CallConv::Platform);
         let function = module.declare_function(name.into(), signature, linkage);
         if linkage != Linkage::Import {
             let mut builder = module.define(function);
@@ -546,14 +546,14 @@ mod tests {
         let wrong = program.register_host(
             "wrong".into(),
             HostFunction::new(
-                Signature::new(vec![Type::F32], vec![Type::I32], CallConv::SystemV),
+                Signature::new(vec![Type::F32], vec![Type::I32], CallConv::Platform),
                 |_| {},
             ),
         );
         let host = program.register_host(
             "host".into(),
             HostFunction::new(
-                Signature::new(vec![Type::I32], vec![Type::I32], CallConv::SystemV),
+                Signature::new(vec![Type::I32], vec![Type::I32], CallConv::Platform),
                 |values| values[0] = InterpreterValue::i32(values[0].unwrap_i32() + 1),
             ),
         );
@@ -576,7 +576,7 @@ mod tests {
         let first = program.register_host(
             "host".into(),
             HostFunction::new(
-                Signature::new(Vec::new(), vec![Type::I32], CallConv::SystemV),
+                Signature::new(Vec::new(), vec![Type::I32], CallConv::Platform),
                 |values| values[0] = InterpreterValue::i32(1),
             ),
         );
@@ -584,7 +584,7 @@ mod tests {
         let second = program.register_host(
             "host".into(),
             HostFunction::new(
-                Signature::new(Vec::new(), vec![Type::I32], CallConv::SystemV),
+                Signature::new(Vec::new(), vec![Type::I32], CallConv::Platform),
                 |values| values[0] = InterpreterValue::i32(2),
             ),
         );

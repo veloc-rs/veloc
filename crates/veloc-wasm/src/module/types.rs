@@ -44,7 +44,7 @@ impl WasmSignature {
         } else {
             self.results.iter().map(|&t| valtype_to_veloc(t)).collect()
         };
-        ir.make_signature(params, ret, CallConv::SystemV)
+        ir.make_signature(params, ret, CallConv::Platform)
     }
 }
 

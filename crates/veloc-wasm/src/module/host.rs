@@ -8,7 +8,7 @@ pub(super) fn generate(ir: &mut veloc::mir::ModuleBuilder, meta: &WasmMetadata) 
     let sig = ir.make_signature(
         vec![VelocType::PTR, VelocType::I32, VelocType::PTR],
         vec![],
-        CallConv::SystemV,
+        CallConv::Platform,
     );
     let dispatch = ir.declare_function("wasm_host_call".into(), sig, Linkage::Import);
     for i in 0..meta.num_imported_funcs {

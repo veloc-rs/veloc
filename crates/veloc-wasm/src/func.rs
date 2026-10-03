@@ -157,7 +157,7 @@ macro_rules! impl_into_func {
                     .copied()
                     .map(crate::module::types::valtype_to_veloc)
                     .collect::<Vec<_>>();
-                let signature = Signature::new(ir_params, ir_results, CallConv::SystemV);
+                let signature = Signature::new(ir_params, ir_results, CallConv::Platform);
                 let args = signature.params().len();
                 let has_result = !signature.returns().is_empty();
                 let host_fn = HostFunction::new(signature, move |values| {

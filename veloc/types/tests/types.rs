@@ -58,7 +58,7 @@ fn shared_encoding_and_checked_views_roundtrip() {
     }
 }
 
-const CC: CallConv = CallConv::SystemV;
+const CC: CallConv = CallConv::Platform;
 
 #[test]
 fn interning_preserves_payload_and_parameter_result_boundary() {

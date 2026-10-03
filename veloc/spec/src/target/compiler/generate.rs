@@ -49,7 +49,7 @@ pub(crate) fn generate_header(output: &mut String, arch: &str) {
         output,
         r#"use veloc_lir::{{FieldValue, Reg, OperandRef, OperandConstraint, Placement}};
 use crate::target::{{
-    AbiDescriptor, StackArea, AbiState, AbiLocation,
+    AbiDescriptor, AbiAssignment, StackArea, AbiState,
     RegInfo,
     TargetArch, TargetInstMetadata,
 }};
@@ -667,7 +667,11 @@ pub(crate) fn generate_register_descriptors(
     }
 }
 
-pub(crate) fn check_abi_descriptors(module: &crate::target::ast::Module) -> Result<(), String> {
+pub(crate) fn check_abi_descriptors(
+    module: &crate::target::ast::Module,
+    types: &crate::types::Types,
+    layouts: &super::layout::Plan,
+) -> Result<(), String> {
     let registers = collect_reg_ids(module);
     let mut names = std::collections::BTreeSet::new();
     for def in &module.defs {
@@ -678,9 +682,41 @@ pub(crate) fn check_abi_descriptors(module: &crate::target::ast::Module) -> Resu
             return Err(format!("duplicate ABI {}", abi.name));
         }
         abi_arch_expr(&abi.arch)?;
-        for rule in abi.args.iter().chain(&abi.returns) {
+        let layout = layouts.get(&abi.layout)?;
+        for rule in abi
+            .args
+            .iter()
+            .chain(abi.variadic.iter().flatten())
+            .chain(&abi.returns)
+        {
             if rule.types.is_empty() {
                 return Err(format!("ABI {} has an empty type domain", abi.name));
+            }
+            for source in &rule.types {
+                let transport = rule.transport.as_ref().unwrap_or(source);
+                let error = |reason: String| {
+                    format!("ABI {} ({source} -> {transport}): {reason}", abi.name)
+                };
+                layout.slot(types, source).map_err(&error)?;
+                let (size, align) = layout.slot(types, transport).map_err(&error)?;
+                if source != transport {
+                    let a = layout.bitcast_width(types, source).map_err(&error)?;
+                    let b = layout.bitcast_width(types, transport).map_err(&error)?;
+                    if a != b {
+                        return Err(error(format!("bitcast widths differ ({a} and {b})")));
+                    }
+                }
+                if let crate::target::ast::AbiActionDef::Stack {
+                    size: slot_size,
+                    align: slot_align,
+                } = &rule.action
+                {
+                    if *slot_size < size || *slot_align < align {
+                        return Err(error(format!(
+                            "stack slot ({slot_size} bytes, alignment {slot_align}) cannot hold storage ({size} bytes, alignment {align})"
+                        )));
+                    }
+                }
             }
             match &rule.action {
                 crate::target::ast::AbiActionDef::Reg { regs, shadows } => {
@@ -701,6 +737,7 @@ pub(crate) fn check_abi_descriptors(module: &crate::target::ast::Module) -> Resu
         for reg in abi
             .args
             .iter()
+            .chain(abi.variadic.iter().flatten())
             .chain(&abi.returns)
             .flat_map(|rule| match &rule.action {
                 crate::target::ast::AbiActionDef::Reg { regs, shadows } => {
@@ -764,6 +801,13 @@ pub(crate) fn generate_abi_descriptors(output: &mut String, module: &crate::targ
         let preserved_name = format!("{}_PRESERVED", prefix);
 
         generate_abi_assignment(output, &args_name, &abi.args, &reg_map);
+        let variadic = if let Some(rules) = &abi.variadic {
+            let name = format!("{prefix}_VARIADIC");
+            generate_abi_assignment(output, &name, rules, &reg_map);
+            format!("Some({name})")
+        } else {
+            "None".into()
+        };
         generate_abi_assignment(output, &returns_name, &abi.returns, &reg_map);
         generate_abi_preserved_array(output, &preserved_name, &abi.preserved, &reg_map);
 
@@ -786,6 +830,7 @@ pub(crate) fn generate_abi_descriptors(output: &mut String, module: &crate::targ
         }
         writeln!(output, "static {prefix}_CLOBBERS: &[u64] = &{words:?};").unwrap();
         let arch = abi_arch_expr(&abi.arch).expect("checked ABI architecture");
+        let layout = super::layout::symbol(&abi.layout);
         let align = abi.stack.align.unwrap_or(16);
         let reserved = abi.stack.reserved;
 
@@ -795,11 +840,13 @@ pub(crate) fn generate_abi_descriptors(output: &mut String, module: &crate::targ
 pub static {prefix}: AbiDescriptor = AbiDescriptor {{
     name: "{name}",
     arch: {arch},
+    layout: &{layout},
     stack: StackArea {{
         align: {align},
         size: {reserved},
     }},
     args: {args_name},
+    variadic: {variadic},
     returns: {returns_name},
     preserved: {preserved_name},
     clobbers: veloc_lir::RegMask::from_static({prefix}_CLOBBERS),
@@ -824,8 +871,9 @@ fn generate_abi_assignment(
     rules: &[crate::target::ast::AbiRuleDef],
     reg_map: &HashMap<String, u32>,
 ) {
-    writeln!(output, "#[allow(non_snake_case)]\nfn {name}(ty: veloc_mir::Type, state: &mut AbiState) -> Result<AbiLocation, crate::error::Error> {{").unwrap();
+    writeln!(output, "#[allow(non_snake_case)]\nfn {name}(ty: veloc_mir::Type, state: &mut AbiState) -> Result<AbiAssignment, crate::error::Error> {{").unwrap();
     for rule in rules {
+        let transport = rule.transport.as_deref().unwrap_or("ty");
         writeln!(output, "    if matches!(ty, {}) {{", rule.types.join(" | ")).unwrap();
         match &rule.action {
             crate::target::ast::AbiActionDef::Reg { regs, shadows } => {
@@ -837,14 +885,14 @@ fn generate_abi_assignment(
                 };
                 writeln!(
                     output,
-                    "        if let Some(loc) = state.assign(&[{}], &[{}]) {{ return Ok(loc); }}",
+                    "        if let Some(loc) = state.assign(&[{}], &[{}]) {{ return Ok(AbiAssignment {{ ty: {transport}, loc }}); }}",
                     render(regs),
                     render(shadows)
                 )
                 .unwrap();
             }
             crate::target::ast::AbiActionDef::Stack { size, align } => {
-                writeln!(output, "        return state.stack({size}, {align});").unwrap();
+                writeln!(output, "        return Ok(AbiAssignment {{ ty: {transport}, loc: state.stack({size}, {align})? }});").unwrap();
             }
         }
         writeln!(output, "    }}").unwrap();

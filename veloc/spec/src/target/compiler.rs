@@ -3,6 +3,7 @@ mod contracts;
 mod cpu;
 mod encoding;
 mod generate;
+mod layout;
 mod select;
 mod selection;
 
@@ -52,6 +53,7 @@ pub(crate) struct Plan {
     arch: String,
     context: Option<String>,
     cpu: cpu::Plan,
+    layouts: layout::Plan,
     input_layouts: std::collections::BTreeMap<String, crate::storage::operands::Projection>,
     payloads: Option<crate::storage::payload::Payloads>,
 }
@@ -223,7 +225,8 @@ impl Plan {
             }
         }
         let cpu = cpu::Plan::prepare(&module, &classes).map_err(&error)?;
-        generate::check_abi_descriptors(&module).map_err(&error)?;
+        let layouts = layout::Plan::prepare(&module, &types).map_err(&error)?;
+        generate::check_abi_descriptors(&module, &types, &layouts).map_err(&error)?;
         Ok(Self {
             module,
             extractors,
@@ -231,6 +234,7 @@ impl Plan {
             arch: arch.into(),
             context: context.map(str::to_owned),
             cpu,
+            layouts,
             input_layouts,
             payloads,
         })
@@ -265,6 +269,7 @@ impl Plan {
         output.push_str("\n// Registers, CPU features and ABI descriptors.\n");
         generate::generate_register_descriptors(&mut output, &module);
         self.cpu.generate(&mut output);
+        self.layouts.generate(&mut output);
         generate::generate_abi_descriptors(&mut output, &module);
         output.push_str("\n// Target opcodes, metadata and validation.\n");
         generate::generate_enum(&mut output, &final_inst_defs);

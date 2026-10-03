@@ -40,7 +40,7 @@ impl Fixture {
         let host = program.register_host(
             "cleanup".into(),
             HostFunction::new(
-                Signature::new(vec![Type::I32], vec![], CallConv::SystemV),
+                Signature::new(vec![Type::I32], vec![], CallConv::Platform),
                 move |values| {
                     assert_eq!(values[0].unwrap_i32(), 40);
                     count.fetch_add(1, Ordering::Relaxed);
@@ -51,7 +51,7 @@ impl Fixture {
         let host_empty = program.register_host(
             "cleanup_empty".into(),
             HostFunction::new(
-                Signature::new(vec![], vec![], CallConv::SystemV),
+                Signature::new(vec![], vec![], CallConv::Platform),
                 move |_| {
                     count.fetch_add(1, Ordering::Relaxed);
                 },
@@ -63,7 +63,7 @@ impl Fixture {
                 Signature::new(
                     vec![Type::I32, Type::I32],
                     vec![Type::I32, Type::I64],
-                    CallConv::SystemV,
+                    CallConv::Platform,
                 ),
                 |values| {
                     let captured = values[0].unwrap_i32();

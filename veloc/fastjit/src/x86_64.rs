@@ -10,7 +10,7 @@ impl image::Target for Target {
     const ENDIAN: object::Endianness = object::Endianness::Little;
 
     fn compile<'a>(module: &'a Module, body: &'a FuncBody, sig: &Signature) -> Result<Code<'a>> {
-        if sig.call_conv != CallConv::SystemV {
+        if !matches!(sig.call_conv, CallConv::Platform | CallConv::SystemV) {
             return Err(unsupported("calling convention"));
         }
         if sig.variadic {

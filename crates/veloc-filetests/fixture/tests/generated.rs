@@ -589,12 +589,12 @@ fn construction_does_not_validate_type_contracts() {
         ("table", "Pattern { results: false, index: 0"),
     ] {
         let mut module = ModuleBuilder::new();
-        let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
+        let sig = module.make_signature(vec![], vec![], CallConv::Platform);
         let id = module.declare_function(case.into(), sig, Linkage::Local);
         let callee_sig = module.make_signature(
             vec![Type::F32],
             vec![Type::I64, Type::I32],
-            CallConv::SystemV,
+            CallConv::Platform,
         );
         let callee = module.declare_function("callee".into(), callee_sig, Linkage::Import);
         let mut builder = module.define(id);
@@ -693,7 +693,7 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
     let sig = module.make_signature(
         vec![Type::I32, Type::I32, Type::PTR],
         vec![Type::I32],
-        CallConv::SystemV,
+        CallConv::Platform,
     );
     let id = module.declare_function("builders".into(), sig, Linkage::Local);
     let mut builder = module.define(id);
