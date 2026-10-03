@@ -1,5 +1,6 @@
 //! RV64 fixed-width instruction formats. Register operands are hardware numbers.
 use crate::Error;
+pub mod compressed;
 pub fn r(op: u32, rd: u32, funct3: u32, rs1: u32, rs2: u32, funct7: u32) -> u32 {
     assert!(rd < 32 && rs1 < 32 && rs2 < 32 && funct3 < 8 && funct7 < 128);
     op | rd << 7 | funct3 << 12 | rs1 << 15 | rs2 << 20 | funct7 << 25
@@ -256,10 +257,12 @@ pub fn encode(instruction: Instruction) -> Result<crate::Encoded<128>, Error> {
             };
             e.constant(d.hardware(), value)?;
         }
-        Instruction::Move(d, a, bits) => {
+        Instruction::Copy(d, a, bits) => {
             let (rd, rs) = (d.hardware(), a.hardware());
             let word = match (d.is_float(), a.is_float()) {
-                (false, false) => i(if bits == 32 { 0x1b } else { 0x13 }, rd, 0, rs, 0),
+                // Copies preserve the register representation. Integer width
+                // normalization belongs to the producing operation or cast.
+                (false, false) => i(0x13, rd, 0, rs, 0),
                 (true, true) => r(0x53, rd, 0, rs, rs, if bits == 32 { 0x10 } else { 0x11 }),
                 (true, false) => r(0x53, rd, 0, rs, 0, if bits == 32 { 0x78 } else { 0x79 }),
                 (false, true) => r(0x53, rd, 0, rs, 0, if bits == 32 { 0x70 } else { 0x71 }),

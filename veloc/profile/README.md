@@ -71,7 +71,7 @@ IR formatting is diagnostic work and should be disabled for timing comparisons.
 For example:
 
 ```sh
-cargo run --release -p veloc-wasm --bin veloc-wasm -- \
+cargo run --release -p veloc-wasm --bin veloc-wasm -- run \
   crates/veloc-wasm/tests/wasm/coremark.wasm --strategy jit \
   --print-stats --trace-file compile.json
 ```

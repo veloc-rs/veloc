@@ -27,7 +27,7 @@ Veloc IR (Intermediate Representation) is a low-level intermediate representatio
 | `Block` | Basic block identifier |
 | `FuncId` | Function identifier |
 | `SigId` | Function signature identifier |
-| `BlockCall` | Block call (with arguments) |
+| `Successor` | Successor edge (with arguments) |
 | `JumpTable` | Jump table identifier |
 
 ---
@@ -158,7 +158,7 @@ for lifetime, resource-exhaustion and optimization rules.
 #### `Jump`
 | Attribute | Description |
 |-----------|-------------|
-| **Operands** | `dest: BlockCall` |
+| **Operands** | `dest: Successor` |
 | **Return Type** | `Void` |
 | **Description** | Unconditional jump to target basic block |
 
@@ -172,7 +172,7 @@ for lifetime, resource-exhaustion and optimization rules.
 #### `Br` (Conditional Branch)
 | Attribute | Description |
 |-----------|-------------|
-| **Operands** | `condition: Value`, `then_dest: BlockCall`, `else_dest: BlockCall` |
+| **Operands** | `condition: Value`, `then_dest: Successor`, `else_dest: Successor` |
 | **Return Type** | `Void` |
 | **Description** | Jump to `then_dest` if `condition` is true, otherwise to `else_dest` |
 
@@ -282,7 +282,9 @@ for lifetime, resource-exhaustion and optimization rules.
 
 **Constraints:**
 - `func_id` must be a valid function declared in the module
-- Count and types of `args` must match the callee's signature
+- Fixed signatures require an exact argument count and matching types. Variadic
+  signatures require the declared fixed prefix; extra arguments carry their
+  types in SSA. For example, `(ptr, ...) -> i32` declares one fixed parameter.
 - Return type is determined by the function signature
 
 ---
@@ -297,7 +299,7 @@ for lifetime, resource-exhaustion and optimization rules.
 **Constraints:**
 - `ptr` must be of `Ptr` type
 - `sig_id` must be a valid signature declared in the module
-- Count and types of `args` must match the signature
+- Argument checking follows `Call`, including the fixed prefix of a variadic signature
 - At runtime, `ptr` must point to a function compatible with the signature
 
 ---

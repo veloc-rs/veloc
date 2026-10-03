@@ -15,14 +15,29 @@ impl AbiLoweringPass {
 }
 
 // Reject transfer modes that this lowering does not implement yet.
-fn plan_signature(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Result<AbiPlan> {
+fn plan_signature(
+    target: &dyn TargetMachine,
+    sig: &veloc_mir::Signature,
+    params: &[Type],
+) -> Result<AbiPlan> {
+    if !params.starts_with(sig.params()) || (!sig.variadic && params.len() != sig.params().len()) {
+        return Err(Error::codegen(
+            "call arguments do not match the declared signature",
+        ));
+    }
     let desc = target.desc();
-    let plan = CallConv::from(sig.call_conv).plan(
-        desc.arch,
-        &desc.data_layout,
-        sig.params(),
-        sig.returns(),
-    )?;
+    let convention = CallConv::from(sig.call_conv);
+    let plan = if sig.variadic {
+        convention.plan_variadic(
+            desc.arch,
+            &desc.data_layout,
+            params,
+            sig.returns(),
+            sig.params().len(),
+        )?
+    } else {
+        convention.plan(desc.arch, &desc.data_layout, params, sig.returns())?
+    };
     if plan
         .returns
         .iter()
@@ -118,7 +133,7 @@ pub(super) fn emit_libcall(
         results.iter().map(|&reg| mfunc.vreg_data(reg).ty).collect();
     let sig = veloc_mir::Signature::new(params, returns, veloc_types::CallConv::SystemV);
     // Diagnose unsupported ABI representations before replacing the operation.
-    let plan = plan_signature(target, &sig)?;
+    let plan = plan_signature(target, &sig, sig.params())?;
     let callee = symbols.get_or_create_function(symbol, veloc_mir::Linkage::Import);
     mfunc.replace(id).call(
         &results,
@@ -140,7 +155,14 @@ fn lower_call(
     mfunc: &mut veloc_lir::FuncEditor<'_>,
     id: InstId,
 ) -> Result<()> {
-    let plan = plan_signature(target, &mfunc.call_info(id).sig)?;
+    let info = mfunc.call_info(id);
+    let args = match mfunc.inst(id).view() {
+        veloc_lir::InstView::Call(call) => call.args,
+        veloc_lir::InstView::CallIndirect(call) => call.args,
+        _ => unreachable!("callsite lowering"),
+    };
+    let params: SmallVec<[Type; 8]> = args.iter().map(|&arg| mfunc.vreg_data(arg).ty).collect();
+    let plan = plan_signature(target, &info.sig, &params)?;
     apply_call_abi(mfunc, id, &plan);
     Ok(())
 }
@@ -159,7 +181,16 @@ fn apply_call_abi(mfunc: &mut veloc_lir::FuncEditor<'_>, id: InstId, plan: &AbiP
         "call result count mismatch"
     );
 
-    let logical_args = SmallVec::<[Reg; 8]>::from_slice(args);
+    let mut logical_args = SmallVec::<[Reg; 8]>::from_slice(args);
+    // Some ABIs transfer unnamed floats through integer registers. Keep the
+    // language type intact until this boundary, then reinterpret its bits.
+    for (src, assignment) in logical_args.iter_mut().zip(&plan.args) {
+        if mfunc.vreg_data(*src).ty != assignment.ty {
+            let converted = mfunc.alloc_vreg(assignment.ty);
+            mfunc.before(id).bitcast(converted, *src);
+            *src = converted;
+        }
+    }
     let frame = mfunc.alloc_call_frame(plan.stack);
     mfunc.before(id).call_frame_setup(frame);
 
@@ -224,7 +255,7 @@ impl FunctionPass for AbiLoweringPass {
     }
     fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
         let target = cx.target;
-        let plan = plan_signature(target, cx.signature)?;
+        let plan = plan_signature(target, cx.signature, cx.signature.params())?;
         let mut mfunc = cx.edit();
         lower_formal_arguments(&mut mfunc.editor(), &plan);
         let mut cursor = veloc_lir::InstCursor::new(&mfunc);

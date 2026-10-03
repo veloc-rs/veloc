@@ -149,7 +149,7 @@ impl FunctionRef<'_> {
             context,
         )?;
 
-        data.try_visit_successors(|call| self.validate_block_call(call, spec.mnemonic))
+        data.try_visit_successors(|call| self.validate_successor(call, spec.mnemonic))
     }
 
     #[cold]
@@ -170,9 +170,10 @@ impl FunctionRef<'_> {
         role: &str,
         values: &[Value],
         expected: impl ExactSizeIterator<Item = Type>,
+        variadic: bool,
     ) -> Result<()> {
         let body = self.body.expect("defined function");
-        if values.len() != expected.len() {
+        if values.len() < expected.len() || (!variadic && values.len() != expected.len()) {
             return self.fail(alloc::format!(
                 "{} {} count mismatch: expected {}, got {}",
                 name,
@@ -197,7 +198,7 @@ impl FunctionRef<'_> {
         Ok(())
     }
 
-    fn validate_block_call(&self, call: Successor<'_>, kind: &str) -> Result<()> {
+    fn validate_successor(&self, call: Successor<'_>, kind: &str) -> Result<()> {
         let body = self.body.expect("defined function");
         let params = &body.dfg().blocks[call.block].params;
         self.validate_values(
@@ -205,6 +206,7 @@ impl FunctionRef<'_> {
             "value",
             call.args,
             params.iter().map(|&value| body.dfg().value_type(value)),
+            false,
         )
     }
 
@@ -276,7 +278,7 @@ mod tests {
         let entry = func.entry_block();
         let jump = func.layout().last_inst(entry).unwrap();
         let args = func.params()[..6].to_vec();
-        let edge = crate::BlockCall::new(target, &args);
+        let edge = crate::SuccessorData::new(target, &args);
         func.edit()
             .replace_inst(jump, |writer| writer.jump(edge.as_view()));
         let error = module.validate().unwrap_err().to_string();
@@ -294,7 +296,7 @@ mod tests {
         {
             let mut builder = module.define(func);
             let entry = builder.func().entry_block();
-            let default = crate::BlockCall::new(entry, &[]);
+            let default = crate::SuccessorData::new(entry, &[]);
             let index = builder.ins().i32const(0);
             builder.ins().br_table(index, default, &[]);
         }

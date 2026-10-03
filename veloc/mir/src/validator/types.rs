@@ -17,6 +17,25 @@ pub(super) fn validate(module: &Module) -> Result<()> {
     }
     check_cycles(module)?;
     for global in &module.globals {
+        if let Some(data) = &global.data {
+            if !data.align.is_power_of_two() {
+                return Err(crate::Error::Message(format!(
+                    "global {}: invalid data alignment",
+                    global.name
+                )));
+            }
+            // Global pointer relocations currently use the native 64-bit object model.
+            if data.relocations.iter().any(|r| {
+                r.offset
+                    .checked_add(8)
+                    .is_none_or(|end| end > data.bytes.len() as u64)
+            }) {
+                return Err(crate::Error::Message(format!(
+                    "global {}: relocation outside data",
+                    global.name
+                )));
+            }
+        }
         check_type(module, global.ty)
             .map_err(|error| crate::Error::Message(format!("global {}: {error}", global.name)))?;
         if global.ty.is_callable() {

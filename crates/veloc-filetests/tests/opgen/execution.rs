@@ -369,8 +369,8 @@ op Invoke(sig: SigId, args: sequence(Value)) -> signature {
         fn fields(self) -> FieldView<'a> { FieldView(self.fields) }
         fn error(self, message: &str) -> String { message.into() }
         fn value_type(self, value: Cell) -> Type { value }
-        fn signature(self, id: SigId) -> Option<(&'a [Type], &'a [Type])> {
-            (id == 0).then_some((&[1], &[2]))
+        fn signature(self, id: SigId) -> Option<(&'a [Type], &'a [Type], bool)> {
+            (id == 0).then_some((&[1], &[2], false))
         }
     }
     pub fn check() {

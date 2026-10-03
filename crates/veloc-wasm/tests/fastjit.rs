@@ -36,7 +36,8 @@ fn fast_jit_executes_integer_control_flow() {
     let engine = Engine::with_config(Config {
         strategy: Strategy::FastJit,
         ..Config::default()
-    });
+    })
+    .unwrap();
     let module = Module::new(&engine, &wasm).unwrap();
     let mut store = Store::new();
     let instance = Linker::new().instantiate(&mut store, module).unwrap();
@@ -73,7 +74,8 @@ fn fast_jit_handles_mixed_register_and_stack_arguments() {
     let engine = Engine::with_config(Config {
         strategy: Strategy::FastJit,
         ..Config::default()
-    });
+    })
+    .unwrap();
     let module = Module::new(&engine, &wasm).unwrap();
     let mut store = Store::new();
     let instance = Linker::new().instantiate(&mut store, module).unwrap();

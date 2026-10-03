@@ -1,5 +1,9 @@
 import "../../defs/type_sets.spec";
 
+select<T: ScalarInteger>(inst: lir::Neg<T>) {
+    replace(inst, build(lir::Sub<T>(lir::Constant<T>(0), inst.src)));
+}
+
 // Legalization policy domains, not alternative definitions of common types.
 typeset Narrow = Type::I8 | Type::I16;
 typeset Word = Type::I32 | Type::I64;
@@ -7,6 +11,18 @@ typeset IntOrPtr = ScalarInteger | Type::PTR;
 typeset WordValue = Type::BOOL | Word | ScalarFloat | Type::PTR;
 typeset WordOrPtr = Word | Type::PTR;
 typeset SmallInt = Narrow | Type::I32;
+
+select<T: Narrow>(inst: lir::Select<T>) {
+    replace(inst, build(lir::Trunc<T>(lir::Select<Type::I32>(
+        inst.cond, lir::Zext<Type::I32>(inst.v1), lir::Zext<Type::I32>(inst.v2)
+    ))));
+}
+
+// Sign extension preserves both signed order and unsigned order within the
+// original width, so every comparison predicate can use the same widening.
+select<T: Narrow>(inst: lir::Icmp<T>) {
+    replace(inst, build(inst { lhs: lir::Sext<Type::I32>(inst.lhs), rhs: lir::Sext<Type::I32>(inst.rhs) }));
+}
 
 type Value = rust("veloc_lir::Reg") {
     fn ty(&self) -> Type = vm("type");

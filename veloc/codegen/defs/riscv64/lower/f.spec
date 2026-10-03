@@ -56,7 +56,7 @@ op RvStoreF32Stack(src: Value<Type::F32>, slot: StackSlot, flags: MemFlags) -> (
 
 op RvSelectF32(cond: Value<Type::BOOL>, v1: Value<Type::F32>, v2: Value<Type::F32>) -> (dst: Value<Type::F32>) {
     schedule = Select;
-    encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Move(dst,v1,32), Instruction::J(Reg::X0,8), Instruction::Move(dst,v2,32)]);
+    encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Copy(dst,v1,32), Instruction::J(Reg::X0,8), Instruction::Copy(dst,v2,32)]);
     registers = { dst: FPR, cond: GPR, v1: FPR, v2: FPR };
     assembly = {
         lines: [{ mnemonic: "selectf32", operands: [] }]

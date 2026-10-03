@@ -53,16 +53,31 @@ pub(super) fn compile(
                             format!("stack_address(&mfunc.stack_frame, {value})?"),
                         ),
                         AttributeKind::Block => ("Block", format!("inst.edge({value}).block")),
+                        AttributeKind::Blocks => ("Block", "&inst.fields().successors().iter().map(|&edge| inst.edge(edge).block).collect::<Vec<_>>()".into()),
                         _ => (attribute.spec_type, value),
                     }
                 }
+            };
+            let kind = if matches!(
+                operand,
+                OperandConstraint::Attribute(_, AttributeKind::Blocks)
+            ) {
+                Kind::Call(
+                    "sequence".into(),
+                    vec![Node {
+                        offset: node.offset,
+                        kind: Kind::Name("Block".into()),
+                    }],
+                )
+            } else {
+                Kind::Name(ty.into())
             };
             bindings.insert(
                 name.to_owned(),
                 (
                     Node {
                         offset: node.offset,
-                        kind: Kind::Name(ty.into()),
+                        kind,
                     },
                     rust,
                 ),
@@ -87,12 +102,16 @@ pub(super) fn compile(
 }
 
 pub(super) fn generate(out: &mut String, arch: &str, instructions: &HashMap<String, FinalInstDef>) {
-    writeln!(out, "impl TargetInst {{ pub fn emit(&self, emitter: &mut crate::Emitter, inst: &veloc_lir::InstRef<'_>, mfunc: &veloc_lir::MachineFunction) -> crate::Result<()> {{").unwrap();
-    writeln!(out, "use crate::target::{arch}::emitter::{{register, stack_address, encode_instruction}}; match self {{").unwrap();
+    writeln!(out, "impl TargetInst {{ pub(crate) fn emission(&self, inst: &veloc_lir::InstRef<'_>, mfunc: &veloc_lir::MachineFunction) -> crate::Result<crate::target::{arch}::emitter::Emission> {{").unwrap();
+    writeln!(
+        out,
+        "use crate::target::{arch}::emitter::{{register, stack_address}}; match self {{"
+    )
+    .unwrap();
     for (name, inst) in instructions.iter().collect::<BTreeMap<_, _>>() {
         writeln!(out, "Self::{name} => {{").unwrap();
         if let Some(encoding) = &inst.encoding {
-            writeln!(out, "encode_instruction(emitter, {encoding})").unwrap();
+            writeln!(out, "Ok({encoding})").unwrap();
         } else {
             writeln!(
                 out,

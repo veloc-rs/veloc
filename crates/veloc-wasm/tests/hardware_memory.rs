@@ -1,4 +1,8 @@
-#![cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#![cfg(all(
+    any(target_arch = "x86_64", target_arch = "riscv64"),
+    target_os = "linux",
+    target_env = "gnu"
+))]
 
 use veloc_wasm::engine::{Config, Strategy};
 use veloc_wasm::error::Error;
@@ -7,11 +11,27 @@ use veloc_wasm::{Engine, Linker, Module, Store, Val};
 
 fn engine(hardware_memory_checks: bool, opt_level: u8) -> Engine {
     Engine::with_config(Config {
-        strategy: Strategy::Interpreter,
-        hardware_memory_checks,
-        opt_level,
+        strategy: if cfg!(target_arch = "riscv64") {
+            Strategy::Jit
+        } else {
+            Strategy::Interpreter
+        },
+        memory_checks: if hardware_memory_checks {
+            veloc_wasm::engine::MemoryChecks::Guarded
+        } else {
+            veloc_wasm::engine::MemoryChecks::Software
+        },
+        codegen: veloc_wasm::veloc::codegen::CodegenOptions {
+            opt_level: if opt_level == 0 {
+                veloc_wasm::engine::OptLevel::None
+            } else {
+                veloc_wasm::engine::OptLevel::Default
+            },
+            ..Default::default()
+        },
         ..Config::default()
     })
+    .unwrap()
 }
 
 fn out_of_bounds(result: Result<Vec<Val>, Error>) {
@@ -127,20 +147,6 @@ fn software_mode_keeps_wasm_bounds_checks() {
     let instance = Linker::new().instantiate(&mut store, module).unwrap();
     let load = instance.get_func(&store, "load").unwrap();
     assert!(load.call(&mut store, &[]).is_err());
-}
-
-#[test]
-fn unsupported_strategy_reports_an_error() {
-    let wasm = wat::parse_str("(module (memory 1))").unwrap();
-    let engine = Engine::with_config(Config {
-        strategy: Strategy::Jit,
-        hardware_memory_checks: true,
-        ..Config::default()
-    });
-    assert!(matches!(
-        Module::new(&engine, &wasm),
-        Err(Error::Unsupported(_))
-    ));
 }
 
 #[test]

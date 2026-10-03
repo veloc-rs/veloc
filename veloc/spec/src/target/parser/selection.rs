@@ -6,6 +6,7 @@ use super::*;
 struct Case {
     fields: BTreeMap<String, Pattern>,
     definitions: Vec<DefMatch>,
+    same_values: Vec<(String, String)>,
     aliases: BTreeMap<String, String>,
     names: BTreeSet<String>,
     temps: Vec<(String, String)>,
@@ -88,6 +89,13 @@ impl Reader<'_> {
             };
             match (op.as_str(), args.as_slice()) {
                 ("require", [condition]) if !state.constructing => match &condition.kind {
+                    Kind::Call(op, args) if op == "same_value" && args.len() == 2 => {
+                        let lhs = self.selection_field(&args[0], root, &state)?;
+                        let rhs = self.selection_field(&args[1], root, &state)?;
+                        state.field(lhs.clone());
+                        state.field(rhs.clone());
+                        state.same_values.push((lhs, rhs));
+                    }
                     Kind::TypedCall(op, types, values)
                         if op == "type_is" && types.len() == 1 && values.len() == 1 =>
                     {
@@ -153,7 +161,7 @@ impl Reader<'_> {
                     _ => {
                         return Err(self.error(
                             condition,
-                            "expected type_is, matches, fits_signed or fits_unsigned",
+                            "expected type_is, matches, same_value, fits_signed or fits_unsigned",
                         ));
                     }
                 },
@@ -206,6 +214,7 @@ impl Reader<'_> {
             type_args: type_args.to_vec(),
             schema: String::new(),
             definitions: state.definitions,
+            same_values: state.same_values,
             fields: state
                 .fields
                 .into_iter()

@@ -197,19 +197,19 @@ impl<'a> WasmTranslator<'a> {
             let def_ptr = self.builder.ins().load(
                 vmctx,
                 offset,
-                MemFlags::new().with_alignment(alignment),
+                MemFlags::new().with_notrap(true).with_alignment(alignment),
                 VelocType::PTR,
             );
             let base = self.builder.ins().load(
                 def_ptr,
                 VMMemory::base_offset(),
-                MemFlags::new().with_alignment(8),
+                MemFlags::new().with_notrap(true).with_alignment(8),
                 VelocType::PTR,
             );
             let length = self.builder.ins().load(
                 def_ptr,
                 VMMemory::current_length_offset(),
-                MemFlags::new().with_alignment(8),
+                MemFlags::new().with_notrap(true).with_alignment(8),
                 VelocType::I64,
             );
             (base, length)
@@ -218,13 +218,13 @@ impl<'a> WasmTranslator<'a> {
             let base = self.builder.ins().load(
                 vmctx,
                 offset + VMMemory::base_offset(),
-                MemFlags::new().with_alignment(8),
+                MemFlags::new().with_notrap(true).with_alignment(8),
                 VelocType::PTR,
             );
             let length = self.builder.ins().load(
                 vmctx,
                 offset + VMMemory::current_length_offset(),
-                MemFlags::new().with_alignment(8),
+                MemFlags::new().with_notrap(true).with_alignment(8),
                 VelocType::I64,
             );
             (base, length)
@@ -266,7 +266,8 @@ impl<'a> WasmTranslator<'a> {
                 offset: 0,
             },
         );
-        let flags = MemFlags::new().with_alignment(1 << memarg.align);
+        // Wasm's alignment annotation is a hint, not an address guarantee.
+        let flags = MemFlags::new();
         let res = self
             .builder
             .ins()
@@ -297,7 +298,38 @@ impl<'a> WasmTranslator<'a> {
                 offset: 0,
             },
         );
-        let flags = MemFlags::new().with_alignment(1 << memarg.align);
+        // A RISC-V unaligned store may write the accessible prefix before a
+        // guard-page fault. Probe its last byte first so a trapping Wasm store
+        // cannot modify memory. A possibly trapping read survives DCE and keeps
+        // memory order; a dominating successful read may prove it redundant.
+        // Linear memory is readable whenever it is writable.
+        if self.probe_guarded_stores && ty != VelocType::I8 {
+            let size = LINEAR_MEMORY_LAYOUT
+                .layout_of(ty)
+                .unwrap()
+                .store_size
+                .fixed_bytes()
+                .unwrap();
+            let last = memarg.offset + u64::from(size - 1);
+            let (base, offset) = if let Ok(offset) = u32::try_from(last) {
+                (actual_ptr, offset)
+            } else {
+                let displacement = self.builder.ins().i64const(last as i64);
+                let base = self.builder.ins().ptr_index(
+                    actual_ptr,
+                    displacement,
+                    veloc::mir::inst::PtrIndexImm {
+                        scale: 1,
+                        offset: 0,
+                    },
+                );
+                (base, 0)
+            };
+            self.builder
+                .ins()
+                .load(base, offset, MemFlags::new(), VelocType::I8);
+        }
+        let flags = MemFlags::new();
         self.builder
             .ins()
             .store(actual_ptr, val, memarg.offset as u32, flags);

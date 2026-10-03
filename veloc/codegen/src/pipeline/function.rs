@@ -27,13 +27,18 @@ impl<'a> FunctionPipeline<'a> {
     ) -> Self {
         let config = target.pass_config();
         let level = options.opt_level;
+        let mut pre_isel = config.pre_isel_passes(level);
         let mut post_isel = config.post_isel_passes(level);
+        let mut post_regalloc = config.post_regalloc_passes(level);
         match level {
             OptLevel::None => {}
             OptLevel::Default => {
+                pre_isel.push(Box::new(crate::passes::constants::FoldConstantCasts));
+                pre_isel.push(Box::new(crate::passes::cse::CommonValues));
                 post_isel.push(Box::new(crate::passes::schedule::SchedulePass::new(
                     options.verify,
                 )));
+                post_regalloc.push(Box::new(crate::passes::block_placement::BlockPlacementPass));
             }
         }
         Self {
@@ -41,9 +46,9 @@ impl<'a> FunctionPipeline<'a> {
             options,
             profile,
             prepare: PassSequence::from_passes(config.prepare_passes(level)),
-            pre_isel: PassSequence::from_passes(config.pre_isel_passes(level)),
+            pre_isel: PassSequence::from_passes(pre_isel),
             post_isel: PassSequence::from_passes(post_isel),
-            post_regalloc: PassSequence::from_passes(config.post_regalloc_passes(level)),
+            post_regalloc: PassSequence::from_passes(post_regalloc),
         }
     }
     pub fn run(

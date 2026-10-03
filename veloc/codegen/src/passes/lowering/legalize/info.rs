@@ -54,12 +54,9 @@ impl<'a> RewriteContext<'a> {
             .map(|i| inst.fields().at(i))
             .collect();
         let clobbers: SmallVec<[Reg; 4]> = inst.clobbers().collect();
+        // The recipe compiler checks the complete updated signature, including
+        // coordinated operand widening and the unchanged result types.
         for &(index, value) in changes {
-            assert_eq!(
-                self.function.vreg_data(inputs[index]).ty,
-                self.function.vreg_data(value).ty,
-                "updated input type"
-            );
             inputs[index] = value;
         }
         for (index, value) in attributes {

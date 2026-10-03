@@ -43,6 +43,9 @@ pub struct Signature {
     types: Box<[Type]>,
     params: u32,
     pub call_conv: CallConv,
+    /// Parameters describe the fixed prefix; additional call arguments carry
+    /// their own types in the IR.
+    pub variadic: bool,
 }
 impl Signature {
     #[inline]
@@ -70,12 +73,18 @@ impl Signature {
             types,
             params: split,
             call_conv,
+            variadic: false,
         }
+    }
+
+    pub fn with_variadic(mut self, variadic: bool) -> Self {
+        self.variadic = variadic;
+        self
     }
 }
 impl Hash for Signature {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        (self.params(), self.returns(), self.call_conv).hash(state);
+        (self.params(), self.returns(), self.call_conv, self.variadic).hash(state);
     }
 }
 impl fmt::Debug for Signature {
@@ -84,6 +93,7 @@ impl fmt::Debug for Signature {
             .field("params", &self.params())
             .field("returns", &self.returns())
             .field("call_conv", &self.call_conv)
+            .field("variadic", &self.variadic)
             .finish()
     }
 }
@@ -131,11 +141,15 @@ impl Signatures {
         params: &[Type],
         returns: &[Type],
         call_conv: CallConv,
+        variadic: bool,
     ) -> Option<SigId> {
         self.index
             .find(hash, |id| {
                 let sig = &self[*id];
-                sig.call_conv == call_conv && sig.params() == params && sig.returns() == returns
+                sig.call_conv == call_conv
+                    && sig.variadic == variadic
+                    && sig.params() == params
+                    && sig.returns() == returns
             })
             .copied()
     }
@@ -155,6 +169,7 @@ impl Signatures {
             signature.params(),
             signature.returns(),
             signature.call_conv,
+            signature.variadic,
         )
         .unwrap_or_else(|| self.append(hash, signature))
     }
@@ -165,10 +180,16 @@ impl Signatures {
         params: &[Type],
         returns: &[Type],
         call_conv: CallConv,
+        variadic: bool,
     ) -> SigId {
-        let hash = self.hasher.hash_one((params, returns, call_conv));
-        self.find(hash, params, returns, call_conv)
-            .unwrap_or_else(|| self.append(hash, Signature::new(params, returns, call_conv)))
+        let hash = self.hasher.hash_one((params, returns, call_conv, variadic));
+        self.find(hash, params, returns, call_conv, variadic)
+            .unwrap_or_else(|| {
+                self.append(
+                    hash,
+                    Signature::new(params, returns, call_conv).with_variadic(variadic),
+                )
+            })
     }
 
     /// Remap another context once. Nested signatures are interned before users,
@@ -188,9 +209,9 @@ impl Signatures {
                     None => *ty,
                 }));
                 let (params, returns) = types.split_at(sig.params().len());
-                self.intern(params, returns, sig.call_conv)
+                self.intern(params, returns, sig.call_conv, sig.variadic)
             } else {
-                self.intern(sig.params(), sig.returns(), sig.call_conv)
+                self.intern(sig.params(), sig.returns(), sig.call_conv, sig.variadic)
             };
             ids[id.0 as usize] = imported;
         }

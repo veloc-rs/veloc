@@ -1,6 +1,6 @@
 //! Structural editing. Type contracts and dominance remain explicit validation.
 use super::FuncBody;
-use crate::{Block, Inst, InstWriter, SuccessorMut, Type, Value};
+use crate::{Block, Inst, InstWriter, SuccessorData, Type, Value};
 use alloc::vec::Vec;
 use smallvec::SmallVec;
 
@@ -93,8 +93,73 @@ impl<'a> FuncEditor<'a> {
         self.body.dfg.set_value_name(value, name);
     }
 
+    /// Remove unreachable code as a closed set, including cyclic definitions.
+    pub fn remove_unreachable(&mut self) -> bool {
+        let mut seen = hashbrown::HashSet::new();
+        let mut pending = alloc::vec![self.body.entry_block];
+        while let Some(block) = pending.pop() {
+            if seen.insert(block) {
+                pending.extend_from_slice(self.body.cfg.succs(block));
+            }
+        }
+        let dead: Vec<_> = self
+            .body
+            .layout
+            .block_order()
+            .filter(|b| !seen.contains(b))
+            .collect();
+        if dead.is_empty() {
+            return false;
+        }
+        let insts: Vec<_> = dead
+            .iter()
+            .flat_map(|&b| self.body.layout.block_insts(b))
+            .collect();
+        self.erase_insts(&insts);
+        for block in dead {
+            self.body.layout.remove_block(block);
+        }
+        self.rebuild_cfg();
+        true
+    }
+
+    /// Join a jump and its sole-predecessor successor, substituting parameters.
+    pub fn merge_successor(&mut self, block: Block) -> bool {
+        let Some(last) = self.body.layout.last_inst(block) else {
+            return false;
+        };
+        let crate::InstView::Jump { dest } = self.body.dfg.inst(last) else {
+            return false;
+        };
+        let next = dest.block;
+        if next == block || next == self.body.entry_block || self.body.cfg.preds(next) != [block] {
+            return false;
+        }
+        let args = dest.args.to_vec();
+        let params = self.body.dfg.block_params(next).to_vec();
+        for (param, arg) in params.into_iter().zip(args) {
+            self.replace_all_uses(param, arg);
+        }
+        self.erase_inst(last);
+        let insts: Vec<_> = self.body.layout.block_insts(next).collect();
+        for inst in insts {
+            self.move_to_end(inst, block);
+        }
+        self.body.layout.remove_block(next);
+        self.rebuild_cfg();
+        true
+    }
+
+    fn rebuild_cfg(&mut self) {
+        self.body.cfg = super::ControlFlowGraph::new(self.body.layout.block_order());
+        let blocks: Vec<_> = self.body.layout.block_order().collect();
+        for block in blocks {
+            self.sync_edges(block);
+        }
+    }
+
     /// Construction primitive: incoming arguments may be filled later.
-    pub(crate) fn append_block_param(&mut self, block: Block, ty: Type) -> Value {
+    pub fn append_block_param(&mut self, block: Block, ty: Type) -> Value {
         self.body.dfg.append_block_param(block, ty)
     }
 
@@ -133,7 +198,7 @@ impl<'a> FuncEditor<'a> {
         self.body.dfg.remap_functions(map);
     }
 
-    pub(crate) fn edit_successors(&mut self, inst: Inst, edit: impl FnMut(&mut SuccessorMut<'_>)) {
+    pub(crate) fn edit_successors(&mut self, inst: Inst, edit: impl FnMut(&mut SuccessorData)) {
         let block = self
             .body
             .layout
@@ -160,27 +225,65 @@ impl<'a> FuncEditor<'a> {
         self.body.dfg.replace_all_uses(old, new);
     }
 
+    /// Remove parameter positions and their incoming arguments together. The
+    /// caller must remove all uses of discarded values in the complete edit.
+    pub fn retain_block_params(&mut self, block: Block, keep: &[bool]) {
+        assert_ne!(
+            block, self.body.entry_block,
+            "entry parameters belong to the signature"
+        );
+        assert_eq!(keep.len(), self.body.dfg.block_params(block).len());
+        let incoming: Vec<_> = self
+            .body
+            .cfg
+            .preds(block)
+            .iter()
+            .copied()
+            .map(|pred| {
+                self.body
+                    .layout
+                    .last_inst(pred)
+                    .expect("predecessor has no terminator")
+            })
+            .collect();
+        for inst in incoming {
+            self.edit_successors(inst, |edge| {
+                if edge.block == block {
+                    let args: Vec<_> = edge
+                        .args
+                        .iter()
+                        .zip(keep)
+                        .filter_map(|(&arg, &keep)| keep.then_some(arg))
+                        .collect();
+                    edge.set_args(&args);
+                }
+            });
+        }
+        let mut index = 0;
+        self.body.dfg.blocks[block].params.retain(|_| {
+            let retain = keep[index];
+            index += 1;
+            retain
+        });
+    }
+
     /// Edit exactly one outgoing edge, maintaining operands, uses and CFG
     /// adjacency. Type and dominance contracts remain explicit validation.
     pub fn redirect_edge(&mut self, edge: EdgeRef, target: Block, args: &[Value]) {
         assert!(self.body.dfg.blocks.get(target).is_some(), "unknown target");
         self.edit_edge(edge, |successor| {
-            successor.set_block(target);
+            successor.block = target;
             successor.set_args(args);
         });
     }
 
     pub fn set_edge_arg(&mut self, edge: EdgeRef, index: usize, value: Value) {
         self.edit_edge(edge, |successor| {
-            assert!(
-                index < successor.args().len(),
-                "edge argument out of bounds"
-            );
-            successor.set_arg(index, value);
+            successor.args[index] = value;
         });
     }
 
-    fn edit_edge(&mut self, edge: EdgeRef, edit: impl FnOnce(&mut SuccessorMut<'_>)) {
+    fn edit_edge(&mut self, edge: EdgeRef, edit: impl FnOnce(&mut SuccessorData)) {
         let block = self
             .body
             .layout

@@ -1,5 +1,17 @@
 import "../common.spec";
 
+op RvSymbolAddr(target: Global) -> (dst: Value<Type::PTR>) {
+    movable = true;
+    schedule = Address;
+    registers = { dst: GPR };
+    encoding = Emission::address(dst, target);
+    assembly = { lines: [{ mnemonic: "la", operands: [reg(dst,64), target(target)] }] };
+}
+
+select(n: lir::SymbolAddr) {
+    replace(n, build(RvSymbolAddr(n.target)));
+}
+
 expand Binary(RvAdd32, GprValue, GPR, 59, 0, 0, "addw", I, IntAlu, true);
 
 expand Binary(RvAdd64, GprValue, GPR, 51, 0, 0, "add", I, IntAlu, true);
@@ -35,7 +47,7 @@ expand Binary(RvXor64, GprValue, GPR, 51, 4, 0, "xor", I, IntAlu, true);
 op RvMove32(src: Value<ScalarValue>) -> (dst: Value<ScalarValue>) {
     movable = true;
     schedule = Copy;
-    encoding = Emission::instructions([Instruction::Move(dst,src,32)]);
+    encoding = Emission::instructions([Instruction::Copy(dst,src,32)]);
     registers = { dst: SCALAR, src: SCALAR };
     assembly = {
         lines: [{ mnemonic: "move32", operands: [reg(dst,32), reg(src,32)] }]
@@ -52,32 +64,12 @@ op RvLi32(imm: i64) -> (dst: Value<GprValue>) {
     };
 }
 
-op RvRotl32(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
-    movable = true;
-    schedule = IntRotate;
-    encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(59,Reg::X29,1,lhs,rhs,0), Instruction::R(59,Reg::X30,5,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
-    registers = { dst: GPR, lhs: GPR, rhs: GPR };
-    clobbers = [X28,X29,X30];
-    assembly = {
-        lines: [{ mnemonic: "rotl32", operands: [] }]
-    };
-}
 
-op RvRotr32(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
-    movable = true;
-    schedule = IntRotate;
-    encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(59,Reg::X29,5,lhs,rhs,0), Instruction::R(59,Reg::X30,1,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
-    registers = { dst: GPR, lhs: GPR, rhs: GPR };
-    clobbers = [X28,X29,X30];
-    assembly = {
-        lines: [{ mnemonic: "rotr32", operands: [] }]
-    };
-}
 
 op RvMove64(src: Value<ScalarValue>) -> (dst: Value<ScalarValue>) {
     movable = true;
     schedule = Copy;
-    encoding = Emission::instructions([Instruction::Move(dst,src,64)]);
+    encoding = Emission::instructions([Instruction::Copy(dst,src,64)]);
     registers = { dst: SCALAR, src: SCALAR };
     assembly = {
         lines: [{ mnemonic: "move64", operands: [reg(dst,64), reg(src,64)] }]
@@ -94,27 +86,7 @@ op RvLi64(imm: i64) -> (dst: Value<GprValue>) {
     };
 }
 
-op RvRotl64(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
-    movable = true;
-    schedule = IntRotate;
-    encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(51,Reg::X29,1,lhs,rhs,0), Instruction::R(51,Reg::X30,5,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
-    registers = { dst: GPR, lhs: GPR, rhs: GPR };
-    clobbers = [X28,X29,X30];
-    assembly = {
-        lines: [{ mnemonic: "rotl64", operands: [] }]
-    };
-}
 
-op RvRotr64(lhs: Value<GprValue>, rhs: Value<GprValue>) -> (dst: Value<GprValue>) {
-    movable = true;
-    schedule = IntRotate;
-    encoding = Emission::instructions([Instruction::R(51,Reg::X28,0,Reg::X0,rhs,32), Instruction::R(51,Reg::X29,5,lhs,rhs,0), Instruction::R(51,Reg::X30,1,lhs,Reg::X28,0), Instruction::R(51,dst,6,Reg::X29,Reg::X30,0)]);
-    registers = { dst: GPR, lhs: GPR, rhs: GPR };
-    clobbers = [X28,X29,X30];
-    assembly = {
-        lines: [{ mnemonic: "rotr64", operands: [] }]
-    };
-}
 
 op RvZext1(src: Value<GprValue>) -> (dst: Value<GprValue>) {
     encoding = Emission::instructions([Instruction::I(19,dst,7,src,1)]);
@@ -375,6 +347,22 @@ op RvLoad16Stack(slot: StackSlot, flags: MemFlags) -> (dst: Value<GprValue>) {
     };
 }
 
+// Signed extending loads used by post-selection producer/consumer folding.
+// The byte range and access flags are identical to the original narrow load.
+template SignedLoad(Name: ident, Funct3: expr, Bytes: expr, Bits: expr, Mnemonic: expr) {
+    op Name(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value<GprValue>) {
+        movable = true;
+        schedule = Load;
+        encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },Funct3)]);
+        registers = { dst: GPR, base: GPR };
+        clobbers = [X31];
+        memory = { kind: Read, bytes: Bytes };
+        assembly = { lines: [{ mnemonic: Mnemonic, operands: [reg(dst,64),mem(base,offset,Bits)] }] };
+    }
+}
+expand SignedLoad(RvLoad8Signed, 0, 1, 8, "lb");
+expand SignedLoad(RvLoad16Signed, 1, 2, 16, "lh");
+
 op RvStore16(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> () {
     clobbers = [X31];
     movable = true;
@@ -513,7 +501,7 @@ op RvAddOffset(base: Value<GprValue>, offset: i64) -> (dst: Value<GprValue>) {
 
 op RvSelect32(cond: Value<Type::BOOL>, v1: Value<Type::I32 | Type::BOOL>, v2: Value<Type::I32 | Type::BOOL>) -> (dst: Value<Type::I32 | Type::BOOL>) {
     schedule = Select;
-    encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Move(dst,v1,32), Instruction::J(Reg::X0,8), Instruction::Move(dst,v2,32)]);
+    encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Copy(dst,v1,32), Instruction::J(Reg::X0,8), Instruction::Copy(dst,v2,32)]);
     registers = { dst: GPR, cond: GPR, v1: GPR, v2: GPR };
     assembly = {
         lines: [{ mnemonic: "select32", operands: [] }]
@@ -522,7 +510,7 @@ op RvSelect32(cond: Value<Type::BOOL>, v1: Value<Type::I32 | Type::BOOL>, v2: Va
 
 op RvSelect64(cond: Value<Type::BOOL>, v1: Value<Type::I64 | Type::PTR>, v2: Value<Type::I64 | Type::PTR>) -> (dst: Value<Type::I64 | Type::PTR>) {
     schedule = Select;
-    encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Move(dst,v1,64), Instruction::J(Reg::X0,8), Instruction::Move(dst,v2,64)]);
+    encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Copy(dst,v1,64), Instruction::J(Reg::X0,8), Instruction::Copy(dst,v2,64)]);
     registers = { dst: GPR, cond: GPR, v1: GPR, v2: GPR };
     assembly = {
         lines: [{ mnemonic: "select64", operands: [] }]
@@ -705,6 +693,62 @@ expand ShiftImmediate(lir::Ashr, Type::I32, RvAshr32Imm, 5);
 expand ShiftImmediate(lir::Ashr, Type::I64, RvAshr64Imm, 6);
 
 // i32 registers are sign-extended to XLEN, preserving signed and unsigned order.
+// A zero test of a sign-extended byte/half load observes only zero/nonzero.
+// Inspect the load without moving it or duplicating its memory access.
+template NarrowLoadBranch(Condition: expr, Target: ident) {
+    select(n: lir::Brcond) {
+        let cmp = def<lir::Icmp>(n.cond);
+        require(matches(cmp.cc, Condition));
+        let extended = def<lir::Sext>(cmp.lhs);
+        require(type_is<Type::I8 | Type::I16>(extended.src));
+        let loaded = def<lir::Load>(extended.src);
+        let zero = def<lir::Constant>(cmp.rhs);
+        require(matches(zero.imm, 0));
+        replace(n, [build(Target(extended.src, reg(X0), n.then_blk)), build(RvJump(n.else_blk))]);
+    }
+}
+expand NarrowLoadBranch(CC::E, RvBranchEq);
+expand NarrowLoadBranch(CC::NE, RvBranchNe);
+
+// RV64 pointers and i64 share their complete register representation. Looking
+// through these casts avoids manufacturing temporary registers for pointer
+// comparisons, especially null tests in pointer-chasing loops.
+template PointerBranch(Condition: expr, Target: ident) {
+    select(n: lir::Brcond) {
+        choose {
+            case {
+                let cmp = def<lir::Icmp<Type::I64>>(n.cond);
+                require(matches(cmp.cc, Condition));
+                let left = def<lir::Ptrtoint>(cmp.lhs);
+                let right = def<lir::Ptrtoint>(cmp.rhs);
+                replace(n, [build(Target(left.src, right.src, n.then_blk)), build(RvJump(n.else_blk))]);
+            }
+            case {
+                let cmp = def<lir::Icmp<Type::I64>>(n.cond);
+                require(matches(cmp.cc, Condition));
+                let pointer = def<lir::Ptrtoint>(cmp.lhs);
+                let zero = def<lir::Constant>(cmp.rhs);
+                require(matches(zero.imm, 0));
+                replace(n, [build(Target(pointer.src, reg(X0), n.then_blk)), build(RvJump(n.else_blk))]);
+            }
+            case {
+                let cmp = def<lir::Icmp<Type::I64>>(n.cond);
+                require(matches(cmp.cc, Condition));
+                let pointer = def<lir::Ptrtoint>(cmp.rhs);
+                let zero = def<lir::Constant>(cmp.lhs);
+                require(matches(zero.imm, 0));
+                replace(n, [build(Target(reg(X0), pointer.src, n.then_blk)), build(RvJump(n.else_blk))]);
+            }
+        }
+    }
+}
+expand PointerBranch(CC::E, RvBranchEq);
+expand PointerBranch(CC::NE, RvBranchNe);
+expand PointerBranch(CC::L, RvBranchLtS);
+expand PointerBranch(CC::GE, RvBranchGeS);
+expand PointerBranch(CC::B, RvBranchLtU);
+expand PointerBranch(CC::AE, RvBranchGeU);
+
 template IntBranch(Condition: expr, Target: ident) {
     select(n: lir::Brcond) {
         choose {
@@ -920,31 +964,23 @@ select(n: lir::Constant) {
     }
 }
 
-select(n: lir::Rotl) {
-    choose {
-        case {
-            require(type_is<Type::I32>(n.dst));
-            replace(n, build(RvRotl32(n.lhs, n.rhs)));
-        }
-        case {
-            require(type_is<Type::I64>(n.dst));
-            replace(n, build(RvRotl64(n.lhs, n.rhs)));
-        }
+// Expose fallback rotation temporaries to scheduling and allocation. No
+// architectural scratch registers are reserved for these multi-op recipes.
+template Rotate(Source: ident, Ty: type, First: ident, Second: ident, Or: ident) {
+    select(n: Source<Ty>) {
+        let reverse = temp(Ty);
+        let left = temp(Ty);
+        let right = temp(Ty);
+        replace(n, [build(RvSub64(reverse, reg(X0), n.rhs)),
+                    build(First(left, n.lhs, n.rhs)),
+                    build(Second(right, n.lhs, reverse)),
+                    build(Or(n.dst, left, right))]);
     }
 }
-
-select(n: lir::Rotr) {
-    choose {
-        case {
-            require(type_is<Type::I32>(n.dst));
-            replace(n, build(RvRotr32(n.lhs, n.rhs)));
-        }
-        case {
-            require(type_is<Type::I64>(n.dst));
-            replace(n, build(RvRotr64(n.lhs, n.rhs)));
-        }
-    }
-}
+expand Rotate(lir::Rotl, Type::I32, RvShl32, RvLshr32, RvOr32);
+expand Rotate(lir::Rotr, Type::I32, RvLshr32, RvShl32, RvOr32);
+expand Rotate(lir::Rotl, Type::I64, RvShl64, RvLshr64, RvOr64);
+expand Rotate(lir::Rotr, Type::I64, RvLshr64, RvShl64, RvOr64);
 
 select(n: lir::Inttoptr) {
     replace(n, build(RvMove64(n.src)));
@@ -953,6 +989,34 @@ select(n: lir::Inttoptr) {
 select(n: lir::Ptrtoint) {
     replace(n, build(RvMove64(n.src)));
 }
+
+// Comparison instructions already produce 0/1 in the complete GPR.
+template ExtendComparison(Source: ident) {
+    select(n: lir::Zext) {
+        require(type_is<Type::BOOL>(n.src));
+        let comparison = def<Source>(n.src);
+        replace(n, build(RvMove64(n.src)));
+    }
+}
+expand ExtendComparison(lir::Icmp);
+expand ExtendComparison(lir::Ieqz);
+expand ExtendComparison(lir::Fcmp);
+
+select(n: lir::Zext) {
+    require(type_is<Type::I8 | Type::I16>(n.src));
+    let load = def<lir::Load>(n.src);
+    replace(n, build(RvMove64(n.src)));
+}
+
+template ZeroExtendTrunc(Ty: type, Target: ident) {
+    select(n: lir::Zext) {
+        require(type_is<Ty>(n.src));
+        let truncated = def<lir::Trunc>(n.src);
+        replace(n, build(Target(truncated.src)));
+    }
+}
+expand ZeroExtendTrunc(Type::I8, RvZext8);
+expand ZeroExtendTrunc(Type::I16, RvZext16);
 
 select(n: lir::Zext) {
     choose {
@@ -1016,6 +1080,71 @@ select(n: lir::Trunc) {
 select(n: lir::PtrAdd) {
     replace(n, build(RvAdd64(n.lhs, n.rhs)));
 }
+
+op RvNez(src: Value<GprValue>) -> (dst: Value<Type::BOOL>) {
+    encoding = Emission::instructions([Instruction::R(51,dst,3,Reg::X0,src,0)]);
+    registers = { dst: GPR, src: GPR };
+    schedule = IntAlu;
+    movable = true;
+    requires = [I];
+    assembly = { lines: [{ mnemonic: "snez", operands: [reg(dst,64),reg(src,64)] }] };
+}
+
+// A low-bit mask is already a canonical boolean. Avoid normalizing it again.
+select(n: lir::Icmp) {
+    require(matches(n.cc, CC::NE));
+    let zero = def<lir::Constant>(n.rhs);
+    require(matches(zero.imm, 0));
+    let extended = def<lir::Zext>(n.lhs);
+    require(type_is<Type::BOOL>(extended.src));
+    replace(n, build(RvZext1(extended.src)));
+}
+select(n: lir::Icmp) {
+    require(matches(n.cc, CC::E));
+    let zero = def<lir::Constant>(n.rhs);
+    require(matches(zero.imm, 0));
+    let extended = def<lir::Zext>(n.lhs);
+    require(type_is<Type::BOOL>(extended.src));
+    let bit = temp(Type::BOOL);
+    replace(n, [build(RvZext1(bit, extended.src)), build(RvXorImm(n.dst, bit, 1))]);
+}
+
+select(n: lir::Icmp) {
+    require(matches(n.cc, CC::NE));
+    let zero = def<lir::Constant>(n.rhs);
+    require(matches(zero.imm, 0));
+    let bit = def<lir::And>(n.lhs);
+    let one = def<lir::Constant>(bit.rhs);
+    require(matches(one.imm, 1));
+    replace(n, build(RvAndImm(bit.lhs, 1)));
+}
+select(n: lir::Icmp) {
+    require(matches(n.cc, CC::E));
+    let zero = def<lir::Constant>(n.rhs);
+    require(matches(zero.imm, 0));
+    let bit = def<lir::And>(n.lhs);
+    let one = def<lir::Constant>(bit.rhs);
+    require(matches(one.imm, 1));
+    let masked = temp(Type::BOOL);
+    replace(n, [build(RvAndImm(masked, bit.lhs, 1)), build(RvXorImm(n.dst, masked, 1))]);
+}
+
+template CompareZero(Condition: expr, Target: ident) {
+    select(n: lir::Icmp) {
+        require(matches(n.cc, Condition));
+        let zero = def<lir::Constant>(n.rhs);
+        require(matches(zero.imm, 0));
+        replace(n, build(Target(n.lhs)));
+    }
+    select(n: lir::Icmp) {
+        require(matches(n.cc, Condition));
+        let zero = def<lir::Constant>(n.lhs);
+        require(matches(zero.imm, 0));
+        replace(n, build(Target(n.rhs)));
+    }
+}
+expand CompareZero(CC::E, RvEqz);
+expand CompareZero(CC::NE, RvNez);
 
 select(n: lir::Icmp) {
     choose {
@@ -1098,6 +1227,19 @@ select(n: lir::Load) {
     }
 }
 
+// Stores observe only their low bits. Keep any other uses of the truncation,
+// while avoiding its masking instructions on this edge of the selection DAG.
+template StoreTruncated(Ty: type, Target: ident) {
+    select(n: lir::Store) {
+        require(type_is<Ty>(n.src));
+        let truncated = def<lir::Trunc>(n.src);
+        replace(n, build(Target(truncated.src, n.base, n.offset, n.flags)));
+    }
+}
+expand StoreTruncated(Type::I8, RvStore8);
+expand StoreTruncated(Type::I16, RvStore16);
+expand StoreTruncated(Type::I32, RvStore32);
+
 select(n: lir::Store) {
     choose {
         case {
@@ -1122,6 +1264,86 @@ select(n: lir::Store) {
 select(n: lir::StackAddr) {
     replace(n, build(RvStackAddr(n.slot)));
 }
+
+// A zero arm admits a two-instruction mask instead of a branch diamond.
+// Build separate instructions so allocation sees the mask's dependencies.
+template SelectZero(Ty: type, And: ident) {
+    select(n: lir::Select<Ty>) {
+        let zero = def<lir::Constant>(n.v2);
+        require(matches(zero.imm, 0));
+        let mask = temp(Ty);
+        replace(n, [build(RvSub64(mask, reg(X0), n.cond)), build(And(n.dst, n.v1, mask))]);
+    }
+    select(n: lir::Select<Ty>) {
+        let zero = def<lir::Constant>(n.v1);
+        require(matches(zero.imm, 0));
+        let mask = temp(Ty);
+        replace(n, [build(RvAdd64Imm(mask, n.cond, -1)), build(And(n.dst, n.v2, mask))]);
+    }
+}
+expand SelectZero(Type::I32, RvAnd32);
+expand SelectZero(Type::I64, RvAnd64);
+
+// Select between integer bit patterns without a control-flow diamond. The
+// condition is a canonical BOOL, so -cond is either zero or an all-ones mask.
+// A shared XOR operand cancels out of the difference: select(c, x^y, x)
+// becomes x ^ (y & -c), without computing x^y twice.
+template SelectXor(Ty: type, Xor: ident, And: ident) {
+    select(n: lir::Select<Ty>) {
+        let delta = def<lir::Xor>(n.v1);
+        require(same_value(delta.lhs, n.v2));
+        let mask = temp(Ty);
+        let selected = temp(Ty);
+        replace(n, [build(RvSub64(mask, reg(X0), n.cond)),
+                    build(And(selected, delta.rhs, mask)),
+                    build(Xor(n.dst, n.v2, selected))]);
+    }
+    select(n: lir::Select<Ty>) {
+        let delta = def<lir::Xor>(n.v1);
+        require(same_value(delta.rhs, n.v2));
+        let mask = temp(Ty);
+        let selected = temp(Ty);
+        replace(n, [build(RvSub64(mask, reg(X0), n.cond)),
+                    build(And(selected, delta.lhs, mask)),
+                    build(Xor(n.dst, n.v2, selected))]);
+    }
+    select(n: lir::Select<Ty>) {
+        let delta = def<lir::Xor>(n.v2);
+        require(same_value(delta.lhs, n.v1));
+        let mask = temp(Ty);
+        let selected = temp(Ty);
+        replace(n, [build(RvAdd64Imm(mask, n.cond, -1)),
+                    build(And(selected, delta.rhs, mask)),
+                    build(Xor(n.dst, n.v1, selected))]);
+    }
+    select(n: lir::Select<Ty>) {
+        let delta = def<lir::Xor>(n.v2);
+        require(same_value(delta.rhs, n.v1));
+        let mask = temp(Ty);
+        let selected = temp(Ty);
+        replace(n, [build(RvAdd64Imm(mask, n.cond, -1)),
+                    build(And(selected, delta.lhs, mask)),
+                    build(Xor(n.dst, n.v1, selected))]);
+    }
+}
+expand SelectXor(Type::I32, RvXor32, RvAnd32);
+expand SelectXor(Type::I64, RvXor64, RvAnd64);
+
+template SelectInteger(Ty: type, Xor: ident, And: ident) {
+    select(n: lir::Select<Ty>) {
+        let difference = temp(Ty);
+        let mask = temp(Ty);
+        let selected = temp(Ty);
+        replace(n, [
+            build(Xor(difference, n.v1, n.v2)),
+            build(RvSub64(mask, reg(X0), n.cond)),
+            build(And(selected, difference, mask)),
+            build(Xor(n.dst, n.v2, selected))
+        ]);
+    }
+}
+expand SelectInteger(Type::I32, RvXor32, RvAnd32);
+expand SelectInteger(Type::I64, RvXor64, RvAnd64);
 
 select(n: lir::Select) {
     choose {
@@ -1158,4 +1380,18 @@ select(n: lir::Ret) {
 
 select(n: lir::Trap) {
     replace(n, build(RvTrap()));
+}
+
+// Targets end with the default edge, matching the generic branch table.
+op RvBranchTable(index: Value<Type::I32>, targets: sequence(Successor)) -> () {
+    registers = { index: GPR };
+    clobbers = [X5, X6, X31];
+    flow = Jump;
+    schedule = Branch;
+    requires = [I];
+    encoding = Emission::table(index, targets);
+    assembly = { lines: [{ mnemonic: "br_table", operands: [reg(index,32)] }] };
+}
+select(n: lir::Brjt) {
+    replace(n, build(RvBranchTable(n.index, n.targets)));
 }

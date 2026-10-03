@@ -39,6 +39,12 @@ pub struct Store {
 }
 
 impl Store {
+    pub(crate) fn native_ranges(&self) -> Vec<crate::trap::native::CodeRange> {
+        self.instances
+            .values()
+            .flat_map(|instance| instance.module.native_ranges())
+            .collect()
+    }
     pub(crate) fn memory_ranges(&self) -> Vec<crate::trap::MemoryRange> {
         let mut ranges: Vec<_> = self
             .memories

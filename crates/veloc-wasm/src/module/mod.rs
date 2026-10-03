@@ -12,7 +12,7 @@ use elf_loader::input::ElfBinary;
 use elf_loader::{Loader, Relocator};
 
 use crate::Result;
-use crate::engine::{Engine, Strategy};
+use crate::engine::{Engine, OptLevel, Strategy};
 use crate::translator::WasmTranslator;
 use crate::vm::VMOffsets;
 use veloc_mir::{CallConv, FuncId, Linkage, MemFlags, Type as VelocType};
@@ -25,6 +25,39 @@ pub use self::types::*;
 pub enum ModuleArtifact {
     Interpreter(Arc<veloc::mir::Module>),
     Jit(LoadedObject<()>),
+}
+
+/// Compilation products that do not require linking or guest instantiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emit {
+    Mir,
+    Bytecode,
+    Object,
+}
+
+struct PreparedModule {
+    ir: veloc::mir::Module,
+    metadata: WasmMetadata,
+    offsets: VMOffsets,
+    init_func_id: FuncId,
+    strategy: Strategy,
+}
+
+impl PreparedModule {
+    fn object(&self, engine: &Engine, profile: &veloc_profile::Profile) -> Result<Vec<u8>> {
+        if self.strategy == Strategy::FastJit {
+            veloc_fastjit::compile_object_with_profile(&self.ir, profile)
+                .map_err(|e| crate::error::Error::Compile(format!("Fast JIT: {e}")))
+        } else {
+            veloc::codegen::CodegenPipeline::new(
+                engine.backend().target(),
+                engine.config().codegen.clone(),
+            )
+            .with_profile(profile.clone())
+            .compile_object(&self.ir)
+            .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {e}")))
+        }
+    }
 }
 
 struct ModuleInner {
@@ -190,7 +223,65 @@ impl Module {
         }
     }
 
+    pub(crate) fn native_ranges(&self) -> Vec<crate::trap::native::CodeRange> {
+        let Some(loaded) = self.loaded() else {
+            return Vec::new();
+        };
+        let segments = loaded.segments();
+        segments
+            .ranges()
+            .iter()
+            .map(|range| {
+                let start = segments.base().get() + range.offset.get();
+                crate::trap::native::CodeRange {
+                    start,
+                    end: start + range.len,
+                }
+            })
+            .collect()
+    }
+
     pub fn new(engine: &Engine, wasm_bin: &[u8]) -> Result<Self> {
+        Self::profiled(engine, wasm_bin, |profile| {
+            let prepared = Self::prepare(engine, wasm_bin, profile)?;
+            Self::load(engine, prepared, profile)
+        })
+    }
+
+    /// Emit a compilation product without resolving imports or running guest code.
+    pub fn emit(engine: &Engine, wasm_bin: &[u8], kind: Emit) -> Result<Vec<u8>> {
+        match kind {
+            Emit::Bytecode if engine.strategy() != Strategy::Interpreter => {
+                return Err(crate::error::Error::Message(
+                    "bytecode emission requires the interpreter strategy".into(),
+                ));
+            }
+            Emit::Object if engine.strategy() == Strategy::Interpreter => {
+                return Err(crate::error::Error::Message(
+                    "object emission requires a native strategy".into(),
+                ));
+            }
+            _ => {}
+        }
+        Self::profiled(engine, wasm_bin, |profile| {
+            let prepared = Self::prepare(engine, wasm_bin, profile)?;
+            match kind {
+                Emit::Mir => Ok(prepared.ir.to_string().into_bytes()),
+                Emit::Bytecode => profile.measure("bytecode", 0, || {
+                    veloc::interpreter::bytecode::format_module(&prepared.ir)
+                        .map(String::into_bytes)
+                        .map_err(Into::into)
+                }),
+                Emit::Object => prepared.object(engine, profile),
+            }
+        })
+    }
+
+    fn profiled<T>(
+        engine: &Engine,
+        wasm_bin: &[u8],
+        compile: impl FnOnce(&veloc_profile::Profile) -> Result<T>,
+    ) -> Result<T> {
         use veloc_profile::{Config, Mode, Profile};
         let profile = Profile::new(Config {
             mode: if engine.config().trace_file.is_some() {
@@ -204,14 +295,16 @@ impl Module {
             ..Config::default()
         });
         profile.metadata("strategy", || format!("{:?}", engine.strategy()));
-        profile.metadata("target", || {
+        profile.metadata("target", || engine.config().target.name().into());
+        profile.metadata("host", || {
             format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
         });
         profile.metadata("input_bytes", || wasm_bin.len().to_string());
-        profile.metadata("opt_level", || engine.config().opt_level.to_string());
-        let result = profile.measure("wasm.compile", 0, || {
-            Self::compile(engine, wasm_bin, &profile)
+        profile.metadata("opt_level", || match engine.config().codegen.opt_level {
+            OptLevel::None => "0".into(),
+            OptLevel::Default => "1".into(),
         });
+        let result = profile.measure("wasm.compile", 0, || compile(&profile));
         if profile.enabled() {
             let report = profile.report();
             if engine.config().print_stats {
@@ -219,14 +312,24 @@ impl Module {
             }
             if let Some(path) = &engine.config().trace_file {
                 if let Err(error) = std::fs::write(path, report.chrome_trace()) {
-                    eprintln!("Failed to write trace to {path:?}: {error}");
+                    if result.is_ok() {
+                        return Err(crate::error::Error::Message(format!(
+                            "failed to write trace to {}: {error}",
+                            path.display()
+                        )));
+                    }
+                    eprintln!("Failed to write trace to {}: {error}", path.display());
                 }
             }
         }
         result
     }
 
-    fn compile(engine: &Engine, wasm_bin: &[u8], profile: &veloc_profile::Profile) -> Result<Self> {
+    fn prepare(
+        engine: &Engine,
+        wasm_bin: &[u8],
+        profile: &veloc_profile::Profile,
+    ) -> Result<PreparedModule> {
         let (metadata, mut ir, offsets, init_func_id, strategy) =
             profile.measure("wasm.translate", 0, || {
                 profile.measure("wasm.validate", 0, || {
@@ -244,15 +347,7 @@ impl Module {
                 if strategy == Strategy::Auto {
                     strategy = Strategy::Jit;
                 }
-                let hardware_memory_checks = engine.config().hardware_memory_checks;
-                if hardware_memory_checks {
-                    if strategy != Strategy::Interpreter {
-                        return Err(crate::error::Error::Unsupported(
-                            "hardware memory checks require the interpreter strategy".into(),
-                        ));
-                    }
-                    crate::trap::install()?;
-                }
+                let hardware_memory_checks = engine.uses_guarded_memory();
 
                 // 1. Declare runtime functions and offsets
                 let runtime = RuntimeFunctions::declare(&mut ir);
@@ -305,6 +400,9 @@ impl Module {
                             engine.config().ir_names,
                         );
                         translator.hardware_memory_checks = hardware_memory_checks;
+                        translator.probe_guarded_stores = hardware_memory_checks
+                            && strategy != Strategy::Interpreter
+                            && engine.config().target == veloc::codegen::TargetArch::Riscv64;
                         translator.translate(body, &params)?;
 
                         func_count += 1;
@@ -326,7 +424,7 @@ impl Module {
             })?;
 
         // 5. Run optimizations
-        if engine.config().opt_level > 0 {
+        if engine.config().codegen.opt_level == OptLevel::Default {
             let tags: Vec<&str> = engine
                 .config()
                 .opt_debug
@@ -335,18 +433,14 @@ impl Module {
                 .collect();
             let config = OptConfig::with_debug_tags(&tags)?;
 
-            let mut pm = if engine.config().opt_level == 1 {
-                PassManager::o1(
-                    config,
-                    if engine.config().fast_egraph {
-                        veloc_optimizer::passes::expression::Budget::FAST
-                    } else {
-                        veloc_optimizer::passes::expression::Budget::DEFAULT
-                    },
-                )
-            } else {
-                PassManager::new(config)
-            };
+            let mut pm = PassManager::o1(
+                config,
+                if engine.config().fast_egraph {
+                    veloc_optimizer::passes::expression::Budget::FAST
+                } else {
+                    veloc_optimizer::passes::expression::Budget::DEFAULT
+                },
+            );
 
             pm = pm
                 .with_layout(engine.backend().target().desc().data_layout)
@@ -355,31 +449,46 @@ impl Module {
         }
 
         if engine.config().dump_ir {
-            println!("Generated IR for module:");
-            println!("{}", ir);
+            eprintln!("{ir}");
         }
 
-        if let Some(ref path) = engine.config().output_ir {
-            std::fs::write(path, ir.to_string()).map_err(|e| {
-                crate::error::Error::Compile(format!("Failed to write IR to file: {}", e))
-            })?;
-            println!("IR written to: {}", path.display());
+        Ok(PreparedModule {
+            ir,
+            metadata,
+            offsets,
+            init_func_id,
+            strategy,
+        })
+    }
+
+    fn load(
+        engine: &Engine,
+        prepared: PreparedModule,
+        profile: &veloc_profile::Profile,
+    ) -> Result<Self> {
+        let strategy = prepared.strategy;
+        if engine.uses_guarded_memory() {
+            if strategy == Strategy::Interpreter {
+                crate::trap::install()?;
+            } else {
+                crate::trap::native::install()?;
+            }
+        }
+        if strategy != Strategy::Interpreter {
+            let host = if cfg!(target_arch = "x86_64") {
+                Some(veloc::codegen::TargetArch::X86_64)
+            } else if cfg!(target_arch = "riscv64") {
+                Some(veloc::codegen::TargetArch::Riscv64)
+            } else {
+                None
+            };
+            if host != Some(engine.config().target) {
+                return Err(crate::error::Error::Unsupported("native execution requires the host target; use Module::emit for cross compilation".into()));
+            }
         }
 
         let artifact = if matches!(strategy, Strategy::Jit | Strategy::FastJit) {
-            let object_data = if strategy == Strategy::FastJit {
-                veloc_fastjit::compile_object_with_profile(&ir, profile)
-                    .map_err(|e| crate::error::Error::Compile(format!("Fast JIT: {e}")))?
-            } else {
-                let pipeline = veloc::codegen::CodegenPipeline::new(
-                    engine.backend().target(),
-                    engine.config().codegen.clone(),
-                )
-                .with_profile(profile.clone());
-                pipeline
-                    .compile_object(&ir)
-                    .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {e}")))?
-            };
+            let object_data = prepared.object(engine, profile)?;
 
             // Load JIT object and relocate
             profile.measure("jit.link", 0, || {
@@ -475,15 +584,15 @@ impl Module {
                 Ok::<_, crate::error::Error>(ModuleArtifact::Jit(loaded))
             })?
         } else {
-            ModuleArtifact::Interpreter(Arc::new(ir))
+            ModuleArtifact::Interpreter(Arc::new(prepared.ir))
         };
 
         let inner = Arc::new(ModuleInner {
             _engine: engine.clone(),
             artifact,
-            metadata,
-            offsets,
-            init_func_id,
+            metadata: prepared.metadata,
+            offsets: prepared.offsets,
+            init_func_id: prepared.init_func_id,
             strategy,
         });
 

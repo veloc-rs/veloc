@@ -325,6 +325,7 @@ pub struct VMContext {
 }
 
 unsafe extern "C" {
+    #[cfg_attr(target_vendor = "apple", link_name = "sigsetjmp")]
     pub fn __sigsetjmp(env: *mut u8, savemask: i32) -> i32;
     pub fn siglongjmp(env: *mut u8, val: i32) -> !;
 }

@@ -29,7 +29,7 @@ pub(crate) fn construction(
                 format!("[{}]", items.join(", "))
             }
             Binding::Table { cases, default } => format!(
-                "({}).iter().map(crate::BlockCall::as_view).chain(core::iter::once(({}).as_view()))",
+                "({}).iter().map(crate::SuccessorData::as_view).chain(core::iter::once(({}).as_view()))",
                 local(cases), local(default)
             ),
         }

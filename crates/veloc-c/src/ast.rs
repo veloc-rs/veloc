@@ -8,6 +8,28 @@ use std::boxed::Box;
 use std::string::String;
 use std::vec::Vec;
 
+/// LP64 literal type selected from the radix, suffix and representable range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntegerLiteral {
+    pub value: u64,
+    pub bits: u16,
+    pub signed: bool,
+}
+impl IntegerLiteral {
+    pub const fn int(value: i32) -> Self {
+        Self {
+            value: value as u32 as u64,
+            bits: 32,
+            signed: true,
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FloatLiteral {
+    pub value: f64,
+    pub bits: u16,
+}
+
 /// A translation unit (source file)
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranslationUnit {
@@ -216,7 +238,7 @@ pub enum DirectDeclarator {
     Identifier(String),
     Parenthesized(Box<Declarator>),
     Array(Box<DirectDeclarator>, Option<Expression>),
-    Function(Box<DirectDeclarator>, Option<Vec<ParameterDeclaration>>),
+    Function(Box<DirectDeclarator>, Option<ParameterList>),
     FunctionOldStyle(Box<DirectDeclarator>, Option<Vec<String>>),
 }
 
@@ -244,6 +266,13 @@ impl Pointer {
     pub fn new(qualifiers: Vec<TypeQualifier>, inner: Option<Box<Pointer>>) -> Self {
         Pointer { qualifiers, inner }
     }
+}
+
+/// Parameter declaration
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParameterList {
+    pub parameters: Vec<ParameterDeclaration>,
+    pub variadic: bool,
 }
 
 /// Parameter declaration
@@ -279,6 +308,7 @@ pub enum DirectAbstractDeclarator {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Initializer {
     Expression(Expression),
+    List(Vec<Initializer>),
 }
 
 /// Designator
@@ -381,9 +411,8 @@ pub enum JumpStatement {
 pub enum Expression {
     /// Primary expressions
     Identifier(String),
-    Integer(i64),
-    UnsignedInteger(u64),
-    Float(f64),
+    Integer(IntegerLiteral),
+    Float(FloatLiteral),
     Char(char),
     String(String),
     Parenthesized(Box<Expression>),

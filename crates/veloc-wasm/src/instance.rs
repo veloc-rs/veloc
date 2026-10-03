@@ -9,7 +9,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use hashbrown::HashMap;
-use std::mem;
 use veloc::interpreter::{CallTarget, Interpreter, InterpreterValue, Program, VirtualMemory};
 use veloc::mir::FuncId;
 use wasmparser::{ExternalKind, ValType};
@@ -146,16 +145,23 @@ impl VMInstance {
         unsafe { (*self.vmctx_ptr()).functions_mut(offsets, meta.functions.len()) }
     }
 
-    pub(crate) fn call_init(&mut self, program: &Program) -> crate::error::Result<()> {
+    pub(crate) fn call_init(
+        &mut self,
+        program: &Program,
+        ranges: &[crate::trap::MemoryRange],
+        code: &[crate::trap::native::CodeRange],
+    ) -> crate::error::Result<()> {
         let init_func_id = self.module.init_func_id();
 
         let vmctx_ptr = self.vmctx_self_reference;
         let offsets = self.module.vm_offsets();
         let jmp_buf_ptr = unsafe { (*vmctx_ptr).jmp_buf_ptr(offsets) };
 
-        let trap_val = unsafe { crate::vm::__sigsetjmp(jmp_buf_ptr, 0) };
-        if trap_val != 0 {
-            return Err(self.handle_trap(trap_val as u32));
+        if self.module.strategy() == Strategy::Interpreter || !crate::trap::native::SUPPORTED {
+            let trap_val = unsafe { crate::vm::__sigsetjmp(jmp_buf_ptr, 0) };
+            if trap_val != 0 {
+                return Err(self.handle_trap(trap_val as u32));
+            }
         }
 
         if self.module.strategy() == Strategy::Interpreter {
@@ -189,9 +195,18 @@ impl VMInstance {
                     crate::error::Error::Message("Failed to find init func".to_string())
                 })?
             };
-            let init_func: extern "C" fn(*mut VMContext) =
-                unsafe { std::mem::transmute(*init_ptr) };
-            init_func(vmctx_ptr);
+            unsafe {
+                crate::trap::native::call(
+                    (*init_ptr).cast(),
+                    vmctx_ptr,
+                    &[],
+                    &mut [],
+                    true,
+                    ranges,
+                    code,
+                )
+            }
+            .map_err(|trap| self.handle_trap(trap))?;
         }
         Ok(())
     }
@@ -1010,14 +1025,20 @@ impl VMInstance {
             }
         }
 
-        if crate::trap::enabled() {
-            let mut ranges = store.memory_ranges();
-            ranges.extend(handle.memory_ranges());
-            crate::trap::scope(ranges, || {
-                crate::trap::catch(|| unsafe { (&mut *instance_ptr).call_init(&store.program) })
+        let mut ranges = store.memory_ranges();
+        ranges.extend(handle.memory_ranges());
+        let mut code = store.native_ranges();
+        code.extend(handle.module.native_ranges());
+        if handle.module.strategy() == Strategy::Interpreter {
+            crate::trap::native::suspend(|| {
+                crate::trap::scope(ranges.clone(), || {
+                    crate::trap::catch(|| unsafe {
+                        (&mut *instance_ptr).call_init(&store.program, &ranges, &code)
+                    })
+                })
             })?;
         } else {
-            unsafe { (&mut *instance_ptr).call_init(&store.program)? };
+            unsafe { (&mut *instance_ptr).call_init(&store.program, &ranges, &code)? };
         }
 
         Ok(store.push_instance(handle))
@@ -1140,10 +1161,12 @@ pub struct TypedFunc {
 
 impl TypedFunc {
     pub fn call(&self, store: &mut Store, args: &[Val]) -> crate::error::Result<Vec<Val>> {
-        if crate::trap::enabled() {
+        if matches!(self.kind, TypedFuncKind::Interpreter { .. }) {
             let ranges = store.memory_ranges();
-            crate::trap::scope(ranges, || {
-                crate::trap::catch(|| self.call_inner(store, args))
+            crate::trap::native::suspend(|| {
+                crate::trap::scope(ranges, || {
+                    crate::trap::catch(|| self.call_inner(store, args))
+                })
             })
         } else {
             self.call_inner(store, args)
@@ -1158,9 +1181,13 @@ impl TypedFunc {
             let offsets = &instance.module.vm_offsets();
             let jmp_buf_ptr = (*vmctx_ptr).jmp_buf_ptr(offsets);
 
-            let trap_val = __sigsetjmp(jmp_buf_ptr, 0);
-            if trap_val != 0 {
-                return Err(instance.handle_trap(trap_val as u32));
+            if matches!(self.kind, TypedFuncKind::Interpreter { .. })
+                || !crate::trap::native::SUPPORTED
+            {
+                let trap_val = __sigsetjmp(jmp_buf_ptr, 0);
+                if trap_val != 0 {
+                    return Err(instance.handle_trap(trap_val as u32));
+                }
             }
 
             if args.len() != self.params.len() {
@@ -1187,9 +1214,16 @@ impl TypedFunc {
             let res_bits = match self.kind {
                 TypedFuncKind::JIT { trampoline_ptr } => {
                     let storage: Vec<i64> = args.iter().map(Val::as_i64).collect();
-                    let trampoline: extern "C" fn(*const VMContext, *const i64, *mut i64) -> i64 =
-                        mem::transmute(trampoline_ptr);
-                    trampoline(vmctx_ptr, storage.as_ptr(), results_raw.as_mut_ptr())
+                    crate::trap::native::call(
+                        trampoline_ptr,
+                        vmctx_ptr,
+                        &storage,
+                        &mut results_raw,
+                        false,
+                        &store.memory_ranges(),
+                        &store.native_ranges(),
+                    )
+                    .map_err(|trap| instance.handle_trap(trap))?
                 }
                 TypedFuncKind::Interpreter { target_func_id } => {
                     let mut int_args = Vec::with_capacity(args.len() + 1);

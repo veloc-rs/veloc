@@ -4,7 +4,7 @@ use hashbrown::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use veloc_wasm::engine::{Config, Strategy};
+use veloc_wasm::engine::{Config, OptLevel, Strategy};
 use veloc_wasm::instance::ExternMap;
 use veloc_wasm::linker::Linker;
 use veloc_wasm::{Engine, Extern, Instance, Module, Store, Val};
@@ -28,8 +28,8 @@ struct Args {
     dump_ir: bool,
 
     /// Optimization level (0, 1)
-    #[arg(short, long, default_value = "0")]
-    opt_level: u8,
+    #[arg(short = 'O', long, default_value = "0", value_parser = veloc_wasm::cli_support::parse_opt_level)]
+    opt_level: OptLevel,
 
     /// Output chrome trace JSON to file
     #[arg(long)]
@@ -65,19 +65,19 @@ impl SpecRunner {
         strategy: Strategy,
         name: &str,
         dump_ir: bool,
-        opt_level: u8,
+        opt_level: OptLevel,
         trace_file: Option<PathBuf>,
         print_stats: bool,
         opt_debug: Vec<String>,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut config = Config::default();
         config.strategy = strategy;
         config.dump_ir = dump_ir;
-        config.opt_level = opt_level;
+        config.codegen.opt_level = opt_level;
         config.trace_file = trace_file;
         config.print_stats = print_stats;
         config.opt_debug = opt_debug;
-        let engine = Arc::new(Engine::with_config(config));
+        let engine = Arc::new(Engine::with_config(config)?);
         let mut store = Store::new();
         let mut registered = HashMap::new();
 
@@ -153,7 +153,7 @@ impl SpecRunner {
         }
         registered.insert("spectest".to_string(), spectest);
 
-        Self {
+        Ok(Self {
             engine,
             store,
             instances: Vec::new(),
@@ -163,7 +163,7 @@ impl SpecRunner {
             registered,
             mode_name: name.to_string(),
             dump_ir,
-        }
+        })
     }
 
     pub fn instantiate(&mut self, wasm_bin: &[u8], id: Option<&str>) -> Result<Instance> {
@@ -311,7 +311,7 @@ pub fn run_wast_file(
     path: &Path,
     strategy: Strategy,
     dump_ir: bool,
-    opt_level: u8,
+    opt_level: OptLevel,
     verbose: bool,
     trace_file: Option<PathBuf>,
     print_stats: bool,
@@ -321,6 +321,7 @@ pub fn run_wast_file(
         Strategy::Interpreter => "interp",
         Strategy::Jit => "jit",
         Strategy::Auto => "auto",
+        Strategy::FastJit => "fast-jit",
     };
     if path
         .file_name()
@@ -353,7 +354,7 @@ pub fn run_wast_file(
         trace_file,
         print_stats,
         opt_debug,
-    );
+    )?;
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut checked = 0;

@@ -3,6 +3,13 @@ use super::{Access, Field, FieldType, FormatSource, Layout, OpcodeSource, value_
 use crate::model::records::{PropertyType, RecordDef};
 use std::fmt::Write;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OperandScope {
+    All,
+    Typed,
+    Inputs,
+}
+
 pub(super) fn record<'a>(field: &Field, records: &'a [RecordDef]) -> Option<&'a RecordDef> {
     records.iter().find(|r| field.ty.named(&r.name))
 }
@@ -79,6 +86,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
     let view = crate::generate::views::View {
         name: "InstView".into(),
         representation: crate::generate::views::Representation::Inline,
+        equality: true,
         variants: layouts
             .iter()
             .map(|layout| crate::generate::views::Variant {
@@ -219,6 +227,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         .unwrap();
     }
     from_values(&mut out, layouts);
+    import_view(&mut out, layouts, records);
     writeln!(out, "}}\n#[allow(unused_variables)] impl{} InstView{} {{\npub fn opcode(&self) -> Opcode {{ match self {{", view.lifetime(), view.lifetime()).unwrap();
     for layout in layouts {
         let value = match &layout.opcode {
@@ -243,9 +252,17 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         writeln!(out, "{} => {condition},", layout.pattern()).unwrap();
     }
     out.push_str("} }\n");
-    for (name, auxiliary) in [("visit_operands", true), ("visit_type_operands", false)] {
-        let propagate = if auxiliary { "?" } else { "" };
-        if auxiliary {
+    for (name, scope) in [
+        ("visit_operands", OperandScope::All),
+        ("visit_type_operands", OperandScope::Typed),
+        ("visit_inputs", OperandScope::Inputs),
+    ] {
+        let fallible = scope == OperandScope::All;
+        let propagate = if fallible { "?" } else { "" };
+        if scope == OperandScope::Inputs {
+            out.push_str("/// Visit instruction inputs, including auxiliary operands but excluding successor arguments.\n");
+        }
+        if fallible {
             writeln!(out, "pub fn {name}(&self, mut f: impl FnMut(Value)) {{ self.try_visit_operands::<core::convert::Infallible>(|value| {{ f(value); Ok(()) }}).unwrap_or_else(|never| match never {{}}); }}").unwrap();
             out.push_str("/// Visit all operands in storage order, stopping at the first error.\npub fn try_visit_operands<E>(&self, mut f: impl FnMut(Value) -> core::result::Result<(), E>) -> core::result::Result<(), E> { match self {\n");
         } else {
@@ -259,17 +276,17 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
             writeln!(out, "{} => {{", layout.pattern()).unwrap();
             for (i, field) in layout.fields.iter().enumerate() {
                 if let Some(record) = record(field, records) {
-                    if !auxiliary {
+                    if scope == OperandScope::Typed {
                         continue;
                     }
                     for member in &record.fields {
                         match &member.ty {
                             PropertyType::Named(_) if member.policy.references.is_operand() => {
-                                writeln!(out, "f(_field{i}.{})?;", member.name).unwrap()
+                                writeln!(out, "f(_field{i}.{}){propagate};", member.name).unwrap()
                             }
                             PropertyType::Optional(_) => writeln!(
                                 out,
-                                "if let Some(value) = _field{i}.{} {{ f(value)?; }}",
+                                "if let Some(value) = _field{i}.{} {{ f(value){propagate}; }}",
                                 member.name
                             )
                             .unwrap(),
@@ -280,15 +297,15 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
                     match field.access() {
                         Some(Access::Value) => writeln!(out, "f(*_field{i}){propagate};").unwrap(),
                         Some(Access::Array | Access::Values) => writeln!(out, "for &value in _field{i}.iter() {{ f(value){propagate}; }}").unwrap(),
-                        Some(Access::Edge) => writeln!(out, "for &value in _field{i}.args {{ f(value){propagate}; }}").unwrap(),
-                        Some(Access::Edges) => writeln!(out, "for call in _field{i}.iter() {{ for &value in call.args {{ f(value){propagate}; }} }}").unwrap(),
+                        Some(Access::Edge) if scope != OperandScope::Inputs => writeln!(out, "for &value in _field{i}.args {{ f(value){propagate}; }}").unwrap(),
+                        Some(Access::Edges) if scope != OperandScope::Inputs => writeln!(out, "for call in _field{i}.iter() {{ for &value in call.args {{ f(value){propagate}; }} }}").unwrap(),
                         _ => {}
                     }
                 }
             }
             out.push_str("},\n");
         }
-        out.push_str(if auxiliary { "} Ok(()) }\n" } else { "} }\n" });
+        out.push_str(if fallible { "} Ok(()) }\n" } else { "} }\n" });
     }
     out.push_str("pub fn memory_flags(&self) -> Option<MemFlags> { match self {\n");
     for layout in layouts {
@@ -405,8 +422,66 @@ fn from_values(out: &mut String, layouts: &[Layout]) {
     out.push_str("_ => None, } }\n");
 }
 
+/// Clone across DFGs using the same schema as instruction construction.
+fn import_view(out: &mut String, layouts: &[Layout], records: &[RecordDef]) {
+    out.push_str("pub fn import(self, view: InstView<'_>, values: &[Value], mut block: impl FnMut(crate::Block) -> crate::Block) -> Inst { let mut reader = storage::OperandReader(values); match view {\n");
+    for layout in layouts {
+        writeln!(
+            out,
+            "{} => {{",
+            layout.pattern().replace("Self::", "InstView::")
+        )
+        .unwrap();
+        for (i, f) in layout.fields.iter().enumerate() {
+            let field = format!("_field{i}");
+            let expr = if let Some(record) = record(f, records) {
+                writeln!(out, "let mut _record{i} = {field};").unwrap();
+                for member in &record.fields {
+                    if member.policy.references.is_operand() {
+                        let value = if matches!(member.ty, PropertyType::Optional(_)) {
+                            format!("_record{i}.{}.map(|_|reader.value())", member.name)
+                        } else {
+                            "reader.value()".into()
+                        };
+                        writeln!(out, "_record{i}.{} = {value};", member.name).unwrap();
+                    }
+                }
+                format!("_record{i}")
+            } else {
+                match f.access() {
+                    Some(Access::Value) => "reader.value()".into(),
+                    Some(Access::Array) => {
+                        format!("reader.take({field}.len()).try_into().unwrap()")
+                    }
+                    Some(Access::Values) => format!("reader.take({field}.len())"),
+                    Some(Access::Edge) => format!(
+                        "Successor {{block:block({field}.block),args:reader.take({field}.args.len())}}"
+                    ),
+                    Some(Access::Edges) => format!(
+                        "{field}.iter().map(|s|Successor {{block:block(s.block),args:reader.take(s.args.len())}}).collect::<alloc::vec::Vec<_>>()"
+                    ),
+                    _ if f.policy.borrowed => format!("{field}.clone()"),
+                    _ => field,
+                }
+            };
+            writeln!(out, "let _arg{i} = {expr};").unwrap();
+        }
+        let args = (0..layout.fields.len())
+            .map(|i| format!("_arg{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            out,
+            "assert!(reader.0.is_empty(), \"operand count mismatch\"); self.{}({args}) }},",
+            super::constructor_name(&layout.name)
+        )
+        .unwrap();
+    }
+    out.push_str("} }\n");
+}
+
 fn edit_successors(out: &mut String, layouts: &[Layout]) {
-    out.push_str("impl crate::dfg::DataFlowGraph {\npub fn edit_successors(&mut self, inst: Inst, mut edit: impl FnMut(&mut SuccessorMut<'_>)) {\nmatch self.inst(inst) {\n");
+    out.push_str("impl crate::dfg::DataFlowGraph {\npub fn edit_successors(&mut self, inst: Inst, mut edit: impl FnMut(&mut crate::SuccessorData)) {\nmatch self.inst(inst) {\n");
     for layout in layouts {
         if !layout
             .fields
@@ -422,10 +497,10 @@ fn edit_successors(out: &mut String, layouts: &[Layout]) {
                 Some(Access::Array) => format!("*_field{i}"),
                 Some(Access::Values) => format!("_field{i}.to_vec()"),
                 Some(Access::Edge) => {
-                    format!("crate::BlockCall::new(_field{i}.block, _field{i}.args)")
+                    format!("crate::SuccessorData::new(_field{i}.block, _field{i}.args)")
                 }
                 Some(Access::Edges) => format!(
-                    "_field{i}.iter().map(|s| crate::BlockCall::new(s.block, s.args)).collect::<alloc::vec::Vec<_>>()"
+                    "_field{i}.iter().map(|s| crate::SuccessorData::new(s.block, s.args)).collect::<alloc::vec::Vec<_>>()"
                 ),
                 _ => format!("_field{i}"),
             };
@@ -438,14 +513,10 @@ fn edit_successors(out: &mut String, layouts: &[Layout]) {
         }
         for (i, f) in layout.fields.iter().enumerate() {
             match f.access() {
-                Some(Access::Edge) => {
-                    writeln!(out, "SuccessorMut::edit_call(&mut _arg{i}, &mut edit);").unwrap()
+                Some(Access::Edge) => writeln!(out, "edit(&mut _arg{i});").unwrap(),
+                Some(Access::Edges) => {
+                    writeln!(out, "for successor in &mut _arg{i} {{ edit(successor); }}").unwrap()
                 }
-                Some(Access::Edges) => writeln!(
-                    out,
-                    "for call in &mut _arg{i} {{ SuccessorMut::edit_call(call, &mut edit); }}"
-                )
-                .unwrap(),
                 _ => {}
             }
         }
@@ -456,7 +527,7 @@ fn edit_successors(out: &mut String, layouts: &[Layout]) {
             .map(|(i, f)| match f.access() {
                 Some(Access::Values) => format!("&_arg{i}"),
                 Some(Access::Edge) => format!("_arg{i}.as_view()"),
-                Some(Access::Edges) => format!("_arg{i}.iter().map(crate::BlockCall::as_view)"),
+                Some(Access::Edges) => format!("_arg{i}.iter().map(crate::SuccessorData::as_view)"),
                 _ => format!("_arg{i}"),
             })
             .collect::<Vec<_>>()

@@ -50,7 +50,8 @@ fn tail_threaded_dispatch_handles_control_flow_and_calls() {
     let engine = Engine::with_config(Config {
         strategy: Strategy::Interpreter,
         ..Config::default()
-    });
+    })
+    .unwrap();
     let module = Module::new(&engine, &wasm).unwrap();
     let mut store = Store::new();
     let instance = Linker::new().instantiate(&mut store, module).unwrap();

@@ -23,7 +23,8 @@ fn multi_results_and_unused_arguments_cross_the_entry_abi() {
         let engine = Engine::with_config(Config {
             strategy,
             ..Config::default()
-        });
+        })
+        .unwrap();
         let module = Module::new(&engine, &wasm).unwrap();
         let mut store = Store::new();
         let instance = Linker::new().instantiate(&mut store, module).unwrap();
@@ -49,6 +50,7 @@ fn multi_results_and_unused_arguments_cross_the_entry_abi() {
 #[ignore = "full CoreMark benchmark; run explicitly with --release --ignored"]
 fn coremark_validates_under_jit() {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_veloc-wasm"))
+        .arg("run")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/wasm/coremark.wasm"
@@ -110,7 +112,8 @@ fn host_imports_use_native_bridges_for_calls_and_tables() {
         let engine = Engine::with_config(Config {
             strategy,
             ..Config::default()
-        });
+        })
+        .unwrap();
         let module = Module::new(&engine, &wasm).unwrap();
         let mut store = Store::new();
         let mut linker = Linker::new();

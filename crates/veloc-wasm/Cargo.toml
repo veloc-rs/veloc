@@ -29,3 +29,6 @@ wat = ["dep:wat"]
 
 [dev-dependencies]
 wat = { workspace = true }
+
+[build-dependencies]
+cc = "1"

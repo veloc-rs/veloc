@@ -5,7 +5,7 @@ import "lower.spec";
 // Even the generic model explicitly owns its estimates and execution resources.
 cpu generic {
     name = "generic";
-    features = [I, M, F, D];
+    features = [I, M, F, D, C];
     schedule = {
         issue_width: 1,
         resources: [{ name: "Scalar", units: 1 }],
@@ -27,7 +27,6 @@ cpu generic {
             { class: FloatSqrt, resource: "Scalar", latency: 32, occupancy: 32 },
             { class: FloatToInt, resource: "Scalar", latency: 4, occupancy: 1 },
             { class: IntPair, resource: "Scalar", latency: 2, occupancy: 2 },
-            { class: IntRotate, resource: "Scalar", latency: 4, occupancy: 4 },
             { class: IntToFloat, resource: "Scalar", latency: 4, occupancy: 1 },
             { class: Load, resource: "Scalar", latency: 4, occupancy: 1 },
             { class: Return, resource: "Scalar", latency: 1, occupancy: 1 },
@@ -44,7 +43,7 @@ cpu generic {
 }
 cpu c908 {
     name = "c908";
-    features = [I, M, F, D, Zba, Zbb];
+    features = [I, M, F, D, C, Zba, Zbb];
     // Integer costs calibrated on K230; added classes below are uncalibrated.
     schedule = {
         issue_width: 2,
@@ -74,7 +73,6 @@ cpu c908 {
             { class: FloatSqrt, resource: "Uncalibrated", latency: 32, occupancy: 32 },
             { class: FloatToInt, resource: "Uncalibrated", latency: 4, occupancy: 1 },
             { class: IntPair, resource: "Alu", latency: 2, occupancy: 2 },
-            { class: IntRotate, resource: "Alu", latency: 4, occupancy: 4 },
             { class: IntToFloat, resource: "Uncalibrated", latency: 4, occupancy: 1 },
             { class: Load, resource: "LoadStore", latency: 4, occupancy: 1 },
             { class: Return, resource: "Uncalibrated", latency: 1, occupancy: 1 },

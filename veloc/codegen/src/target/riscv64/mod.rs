@@ -1,8 +1,8 @@
 //! RV64GC scalar backend using the LP64D calling convention.
 //!
 //! Integer i32 values are kept sign-extended to XLEN, as required by the ABI.
-//! x5/x6 and f30/f31 are spill temporaries; x7 and x28..x31 are reserved for
-//! expansion of selected instructions. C908 enables optional Zba/Zbb selection;
+//! x5/x6 and f30/f31 are spill temporaries; x31 handles large addresses and
+//! far transfers. C908 enables optional Zba/Zbb selection;
 //! the generic CPU retains base-ISA fallback sequences.
 pub mod emitter;
 #[allow(dead_code, unused_imports)]
@@ -10,6 +10,8 @@ pub mod inst {
     include!(concat!(env!("OUT_DIR"), "/machine_riscv64.rs"));
 }
 mod frame;
+mod load_extensions;
+mod zero;
 
 use crate::target::*;
 use veloc_lir::{MachineOpcode, RegisterBank};
@@ -43,6 +45,7 @@ pub struct Riscv64TargetMachine {
     desc: TargetDescription,
     features: inst::FeatureSet,
     schedule: ScheduleModel,
+    emitter: emitter::Emit,
 }
 impl Riscv64TargetMachine {
     pub fn new(config: TargetConfig) -> crate::Result<Self> {
@@ -67,8 +70,12 @@ impl Riscv64TargetMachine {
             }
         }
         Ok(Self {
-            config,
             features,
+            emitter: emitter::Emit {
+                compressed: features.contains(inst::Feature::C),
+                external_calls: config.external_calls,
+            },
+            config,
             schedule: cpu.schedule,
             desc: TargetDescription {
                 arch: TargetArch::Riscv64,
@@ -136,6 +143,21 @@ impl TargetInstructions for Riscv64TargetMachine {
     }
 }
 impl TargetRegalloc for Riscv64TargetMachine {
+    fn rematerializable_constant(&self, source: veloc_lir::InstRef<'_>) -> Option<i64> {
+        let MachineOpcode::Target(op) = source.opcode() else {
+            return None;
+        };
+        if !matches!(
+            inst::TargetInst::from_u32(op),
+            inst::TargetInst::RvLi32 | inst::TargetInst::RvLi64
+        ) {
+            return None;
+        }
+        let veloc_lir::FieldValueRef::Imm(&imm) = source.fields().read(0) else {
+            return None;
+        };
+        (-2048..=2047).contains(&imm).then_some(imm)
+    }
     fn spill_scratch(&self, c: RegClass) -> &'static [Reg] {
         match c {
             RegClass::GPR => &[Reg(5), Reg(6)],
@@ -217,12 +239,24 @@ fn copy(w: veloc_lir::InstWriter<'_>, dst: Reg, src: Reg, ty: Type) -> InstId {
 }
 struct Passes;
 impl TargetPassConfig for Passes {
+    fn post_isel_passes(
+        &self,
+        level: crate::OptLevel,
+    ) -> Vec<Box<dyn crate::pipeline::FunctionPass>> {
+        match level {
+            crate::OptLevel::None => vec![],
+            crate::OptLevel::Default => vec![
+                Box::new(load_extensions::FoldLoadExtensions),
+                Box::new(zero::ZeroOperands),
+            ],
+        }
+    }
     fn prepare_passes(
         &self,
         _level: crate::OptLevel,
     ) -> Vec<Box<dyn crate::pipeline::FunctionPass>> {
         vec![Box::new(
-            crate::passes::lowering::control::BranchTableLowering,
+            crate::passes::lowering::control::BranchTableLowering { max_cases: 8 },
         )]
     }
 }
@@ -251,7 +285,7 @@ impl TargetMachine for Riscv64TargetMachine {
         &Passes
     }
     fn emitter(&self) -> &dyn TargetEmitter {
-        &emitter::Emit
+        &self.emitter
     }
 }
 

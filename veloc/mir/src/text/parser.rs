@@ -5,8 +5,8 @@
 
 use super::lexer::{Cursor, Kind, Location};
 use crate::{
-    Block, BlockCall, CallConv, FuncBody, FuncId, Linkage, MemFlags, Module, Opcode, Result, SigId,
-    Signature, Type, Value,
+    Block, CallConv, FuncBody, FuncId, Linkage, MemFlags, Module, Opcode, Result, SigId, Signature,
+    SuccessorData, Type, Value,
 };
 use alloc::boxed::Box;
 use alloc::{
@@ -213,8 +213,11 @@ fn parse_module(source: &str) -> ParseResult<Module> {
             if current.is_some() {
                 return Err(input.error("global declaration inside function"));
             }
-            let (name, ty, linkage) = parse_global(&mut input, &mut module)?;
-            module.add_global(name, ty, linkage);
+            let (name, ty, linkage, data) = parse_global(&mut input, &mut module)?;
+            let id = module.add_global(name, ty, linkage);
+            if let Some(data) = data {
+                module.define_global(id, data);
+            }
         } else {
             current
                 .as_mut()
@@ -549,22 +552,22 @@ impl OperandParser<'_> {
         Ok(values)
     }
 
-    pub(super) fn block_call(&mut self, input: &mut Cursor<'_>) -> ParseResult<BlockCall> {
+    pub(super) fn successor(&mut self, input: &mut Cursor<'_>) -> ParseResult<SuccessorData> {
         let location = input.location();
         let name = input.word()?;
         let block = self.symbols.block(name, self.func, location)?;
         input.expect(Kind::LParen)?;
         let values = self.values(input)?;
         input.expect(Kind::RParen)?;
-        Ok(BlockCall::new(block, &values))
+        Ok(SuccessorData::new(block, &values))
     }
 
-    pub(super) fn block_calls(&mut self, input: &mut Cursor<'_>) -> ParseResult<Vec<BlockCall>> {
+    pub(super) fn successors(&mut self, input: &mut Cursor<'_>) -> ParseResult<Vec<SuccessorData>> {
         input.expect(Kind::LBracket)?;
         let mut calls = Vec::new();
         if !input.eat(Kind::RBracket) {
             loop {
-                calls.push(self.block_call(input)?);
+                calls.push(self.successor(input)?);
                 if !input.eat(Kind::Comma) {
                     break;
                 }
@@ -651,6 +654,8 @@ fn parse_instruction_header(input: &mut Cursor<'_>) -> ParseResult<(Opcode, MemF
             }
         } else if part == "volatile" {
             flags = flags.with_volatile(true);
+        } else if part == "notrap" {
+            flags = flags.with_notrap(true);
         } else if let Some(value) = part.strip_prefix("align") {
             flags = flags.with_alignment(parse_alignment(value, part, location)?);
         } else {
@@ -740,6 +745,26 @@ fn parse_types(input: &mut Cursor<'_>, module: &mut Module) -> ParseResult<Vec<T
     Ok(types)
 }
 
+fn parse_parameters(input: &mut Cursor<'_>, module: &mut Module) -> ParseResult<(Vec<Type>, bool)> {
+    input.expect(Kind::LParen)?;
+    let mut params = Vec::new();
+    if input.eat(Kind::RParen) {
+        return Ok((params, false));
+    }
+    loop {
+        if input.is("...") {
+            input.advance();
+            input.expect(Kind::RParen)?;
+            return Ok((params, true));
+        }
+        params.push(parse_type(input, module)?);
+        if !input.eat(Kind::Comma) {
+            input.expect(Kind::RParen)?;
+            return Ok((params, false));
+        }
+    }
+}
+
 fn parse_function_returns(input: &mut Cursor<'_>, module: &mut Module) -> ParseResult<Vec<Type>> {
     if input.is("void") {
         input.advance();
@@ -759,7 +784,7 @@ fn parse_function_returns(input: &mut Cursor<'_>, module: &mut Module) -> ParseR
 }
 
 fn parse_signature(input: &mut Cursor<'_>, module: &mut Module) -> ParseResult<Signature> {
-    let params = parse_types(input, module)?;
+    let (params, variadic) = parse_parameters(input, module)?;
     input.expect(Kind::Arrow)?;
     let returns = if input.is("void") {
         input.advance();
@@ -769,7 +794,7 @@ fn parse_signature(input: &mut Cursor<'_>, module: &mut Module) -> ParseResult<S
     } else {
         alloc::vec![parse_type(input, module)?]
     };
-    Ok(Signature::new(params, returns, CallConv::SystemV))
+    Ok(Signature::new(params, returns, CallConv::SystemV).with_variadic(variadic))
 }
 
 fn parse_linkage(input: &mut Cursor<'_>) -> ParseResult<Linkage> {
@@ -791,7 +816,7 @@ fn parse_function_header(
     let linkage = parse_linkage(input)?;
     input.keyword("function")?;
     let name = input.word()?.to_string();
-    let params = parse_types(input, module)?;
+    let (params, variadic) = parse_parameters(input, module)?;
     let returns = if input.eat(Kind::Arrow) {
         parse_function_returns(input, module)?
     } else {
@@ -800,14 +825,14 @@ fn parse_function_header(
     Ok(FunctionHeader {
         name,
         linkage,
-        signature: Signature::new(params, returns, CallConv::SystemV),
+        signature: Signature::new(params, returns, CallConv::SystemV).with_variadic(variadic),
     })
 }
 
 fn parse_global(
     input: &mut Cursor<'_>,
     module: &mut Module,
-) -> ParseResult<(String, Type, Linkage)> {
+) -> ParseResult<(String, Type, Linkage, Option<crate::GlobalData>)> {
     input.keyword("global")?;
     let name = input.word()?.to_string();
     input.expect(Kind::Colon)?;
@@ -815,7 +840,73 @@ fn parse_global(
     input.expect(Kind::LParen)?;
     let linkage = parse_linkage(input)?;
     input.expect(Kind::RParen)?;
-    Ok((name, ty, linkage))
+    let data = if input.is("data") {
+        input.advance();
+        input.keyword("align")?;
+        input.expect(Kind::Equal)?;
+        let align: u64 = input.atom(|s| s.parse().map_err(|_| "invalid data alignment".into()))?;
+        if !align.is_power_of_two() {
+            return Err(input.error("data alignment must be a power of two"));
+        }
+        input.keyword("writable")?;
+        input.expect(Kind::Equal)?;
+        let writable = input.atom(|s| {
+            s.parse::<bool>()
+                .map_err(|_| "expected true or false".into())
+        })?;
+        input.keyword("bytes")?;
+        input.expect(Kind::Equal)?;
+        input.expect(Kind::LBracket)?;
+        let mut bytes = Vec::new();
+        while input.kind() != Kind::RBracket {
+            bytes.push(input.atom(|s| s.parse::<u8>().map_err(|_| "invalid data byte".into()))?);
+            if !input.eat(Kind::Comma) {
+                break;
+            }
+        }
+        input.expect(Kind::RBracket)?;
+        input.keyword("relocations")?;
+        input.expect(Kind::Equal)?;
+        input.expect(Kind::LBracket)?;
+        let mut relocations = Vec::new();
+        while input.kind() != Kind::RBracket {
+            input.expect(Kind::LParen)?;
+            let offset: u64 =
+                input.atom(|s| s.parse().map_err(|_| "invalid relocation offset".into()))?;
+            input.expect(Kind::Comma)?;
+            let symbol = input.word()?.to_string();
+            input.expect(Kind::Comma)?;
+            let addend = input.atom(|s| {
+                s.parse::<i64>()
+                    .map_err(|_| "invalid relocation addend".into())
+            })?;
+            input.expect(Kind::RParen)?;
+            if offset
+                .checked_add(8)
+                .is_none_or(|end| end > bytes.len() as u64)
+            {
+                return Err(input.error("relocation outside data object"));
+            }
+            relocations.push(crate::DataRelocation {
+                offset,
+                symbol,
+                addend,
+            });
+            if !input.eat(Kind::Comma) {
+                break;
+            }
+        }
+        input.expect(Kind::RBracket)?;
+        Some(crate::GlobalData {
+            bytes,
+            align,
+            writable,
+            relocations,
+        })
+    } else {
+        None
+    };
+    Ok((name, ty, linkage, data))
 }
 
 fn parse_value_idx(name: &str) -> Option<u32> {
@@ -1105,21 +1196,21 @@ block0():
         };
         let value = parser.value(&mut Cursor::new("v0")).unwrap();
         let calls = parser
-            .block_calls(&mut Cursor::new("[block0(v0), block0()]"))
+            .successors(&mut Cursor::new("[block0(v0), block0()]"))
             .unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].args.as_slice(), &[value]);
         assert!(calls[1].args.is_empty());
         assert!(
             parser
-                .block_calls(&mut Cursor::new("[]"))
+                .successors(&mut Cursor::new("[]"))
                 .unwrap()
                 .is_empty()
         );
-        assert!(parser.block_calls(&mut Cursor::new("block0()")).is_err());
-        assert!(parser.block_calls(&mut Cursor::new("[block0(),]")).is_err());
+        assert!(parser.successors(&mut Cursor::new("block0()")).is_err());
+        assert!(parser.successors(&mut Cursor::new("[block0(),]")).is_err());
         let mut input = Cursor::new("block0() extra");
-        parser.block_call(&mut input).unwrap();
+        parser.successor(&mut input).unwrap();
         assert!(input.finish().is_err());
         let sig = parser.signature(&mut Cursor::new("(i32) -> i32")).unwrap();
         assert_eq!(

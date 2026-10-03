@@ -242,6 +242,7 @@ fn simple_scalar(ty: &str) -> bool {
             | "i32"
             | "bool"
             | "FuncId"
+            | "GlobalId"
             | "SigId"
             | "Intrinsic"
             | "IntCC"

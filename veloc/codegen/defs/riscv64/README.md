@@ -16,10 +16,10 @@ precede base-instruction fallbacks:
 | `lower/f.spec` | Single-precision arithmetic, memory and conversions |
 | `lower/d.spec` | Double-precision arithmetic, memory and conversions involving f64 |
 | `lower/zba.spec` | Shift/add address generation and zero extension from i32 |
-| `lower/zbb.spec` | Rotates and byte/halfword extensions |
+| `lower/zbb.spec` | Min/max, rotates, complements and byte/halfword extensions |
 
 The backend uses LP64D and currently requires I/M/F/D. `generic` enables this
-baseline; `c908` additionally enables Zba/Zbb. Disabling a required baseline
+baseline plus C; `c908` additionally enables Zba/Zbb. Disabling a required baseline
 extension is rejected at target construction. Other extensions advertised by
 K230, such as V and Zbs, do not yet have selection rules here.
 
@@ -37,16 +37,26 @@ Comparison/branch rules fold i32/i64/pointer comparisons into BEQ/BNE/BLT/BGE/
 BLTU/BGEU. Signed and unsigned i32 comparisons both rely on that sign-extension
 invariant. A matched comparison with other users remains available to those users.
 
+`require(same_value(a, b))` compares SSA operand identities. It allows recipes
+such as `select(c, x ^ y, x)` to share the common input without assuming that
+two separately matched operands are equal. Integer selects use explicit
+arithmetic recipes, exposing their temporary registers to allocation.
+
+Narrow masks and paired shifts select Zbb extension instructions. Redundant
+zero extensions of LBU/LHU results preserve the original memory operation.
+The post-selection load-extension pass separately folds a sole signed user
+into LB/LH/LW at the load's position; it retains the access width and flags.
+
 ## Final layout
 
 The shared section layout engine selects the encoding after all module passes:
 
 | Operation | Preferred form | Fallbacks |
 | --- | --- | --- |
-| Conditional branch | B-type branch (4 bytes) | Inverted branch + JAL (8), inverted branch + AUIPC/JALR (12) |
-| Jump | JAL x0 (4 bytes) | AUIPC/JALR (8) |
+| Conditional branch | C.BEQZ/C.BNEZ (2 bytes, when eligible) | B-type (4), inverted branch + JAL (8), inverted branch + AUIPC/JALR (12) |
+| Jump | C.J (2 bytes, when eligible) | JAL x0 (4), AUIPC/JALR (8) |
 | Call to a definition in the same section | JAL ra (4 bytes) | AUIPC/JALR (8), absolute-pointer call (24 plus alignment) |
-| Call to an unresolved symbol | Absolute-pointer call | 8-byte-aligned embedded pointer with R_RISCV_64 relocation |
+| Call to an unresolved symbol | Fixed AUIPC/JALR with R_RISCV_CALL_PLT in native linker mode | Absolute-pointer call with R_RISCV_64 for arbitrary JIT addresses |
 
 B-type and JAL displacements are checked relative to the actual instruction PC;
 an inverted-branch sequence accounts for the jump starting four bytes later.
@@ -55,8 +65,8 @@ padding after branch and call forms change. Internal calls are resolved in the
 same layout as blocks, including recursive and forward calls. External calls
 retain support for arbitrary host addresses without a new loader relocation.
 
-The historical measurements below predate this layout change; its runtime benefit
-has not yet been measured on K230.
+Native C measurements use the reproducible runner in `crates/veloc-c/benchmarks/coremark/`.
+The historical Wasm measurements below use a separate workload and pipeline.
 
 ## Running on K230
 
@@ -64,10 +74,10 @@ Build the Linux RISC-V executable locally with a configured cross linker and
 sysroot, then copy it and the Wasm input to the board. On the board:
 
 ```sh
-./veloc-wasm coremark.wasm --strategy jit --opt-level 1 --cpu generic --print-stats
-./veloc-wasm coremark.wasm --strategy jit --opt-level 1 --cpu c908 --print-stats
-./veloc-wasm coremark.wasm --strategy jit --opt-level 1 --cpu c908 --cpu-features=-Zbb
-./veloc-wasm coremark.wasm --strategy jit --opt-level 1 --cpu c908 --cpu-features=-Zba
+./veloc-wasm run coremark.wasm --strategy jit --opt-level 1 --cpu generic --print-stats
+./veloc-wasm run coremark.wasm --strategy jit --opt-level 1 --cpu c908 --print-stats
+./veloc-wasm run coremark.wasm --strategy jit --opt-level 1 --cpu c908 --cpu-features=-Zbb
+./veloc-wasm run coremark.wasm --strategy jit --opt-level 1 --cpu c908 --cpu-features=-Zba
 ```
 
 Run performance samples serially after uploads and correctness tests finish.

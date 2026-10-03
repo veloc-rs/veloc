@@ -86,6 +86,8 @@ impl FuncBody {
     pub fn cfg(&self) -> &ControlFlowGraph {
         &self.cfg
     }
+    /// Function entry. Valid MIR has no control-flow edges into this block;
+    /// its parameters are supplied exclusively by the function call.
     pub fn entry_block(&self) -> Block {
         self.entry_block
     }

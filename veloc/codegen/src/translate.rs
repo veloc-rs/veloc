@@ -395,6 +395,34 @@ impl<'a> FuncTranslator<'a> {
                 Ok(self.mfunc.editor().at_end(mblock).ret(&rets))
             }
 
+            InstView::GlobalAddr { global } => {
+                let global = self
+                    .module
+                    .globals()
+                    .get(global.0 as usize)
+                    .ok_or_else(|| Error::translate("unknown global"))?;
+                let symbol = self
+                    .mmodule
+                    .symbols_mut()
+                    .get_or_create_global(&global.name, global.linkage);
+                Ok(self
+                    .mfunc
+                    .editor()
+                    .at_end(mblock)
+                    .symbol_addr(result(), symbol))
+            }
+            InstView::FuncAddr { func_id } => {
+                let callee = &self.module.decls()[*func_id];
+                let symbol = self
+                    .mmodule
+                    .symbols_mut()
+                    .get_or_create_function(&callee.name, callee.linkage);
+                Ok(self
+                    .mfunc
+                    .editor()
+                    .at_end(mblock)
+                    .symbol_addr(result(), symbol))
+            }
             InstView::Call { func_id, args } => {
                 let callee = &self.module.decls()[*func_id];
                 let symbol = self
@@ -477,16 +505,27 @@ impl<'a> FuncTranslator<'a> {
                 // 1. scale index: idx * scale
                 let scaled_idx = if imm.scale != 1 {
                     let scale_reg = self.mfunc.editor().alloc_vreg(addr_ty);
-                    self.mfunc
-                        .editor()
-                        .at_end(mblock)
-                        .constant(scale_reg, imm.scale as i64);
+                    self.mfunc.editor().at_end(mblock).constant(
+                        scale_reg,
+                        if imm.scale.is_power_of_two() {
+                            imm.scale.trailing_zeros() as i64
+                        } else {
+                            imm.scale as i64
+                        },
+                    );
 
                     let res_reg = self.mfunc.editor().alloc_vreg(addr_ty);
-                    self.mfunc
-                        .editor()
-                        .at_end(mblock)
-                        .mul(res_reg, idx, scale_reg);
+                    if imm.scale.is_power_of_two() {
+                        self.mfunc
+                            .editor()
+                            .at_end(mblock)
+                            .shl(res_reg, idx, scale_reg);
+                    } else {
+                        self.mfunc
+                            .editor()
+                            .at_end(mblock)
+                            .mul(res_reg, idx, scale_reg);
+                    }
 
                     res_reg
                 } else {

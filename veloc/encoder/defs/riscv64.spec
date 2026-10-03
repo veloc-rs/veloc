@@ -5,7 +5,7 @@ enum Instruction {
         R(u32, Reg, u32, Reg, Reg, u32),
         I(u32, Reg, u32, Reg, i64),
         B(u32, Reg, Reg, i64), J(Reg, i64),
-        Constant(Reg, i64, u32), Move(Reg, Reg, u32),
+        Constant(Reg, i64, u32), Copy(Reg, Reg, u32),
         Address(Reg, Address), Load(u32, Reg, Address, u32), Store(u32, Reg, Address, u32)
     ];
 }

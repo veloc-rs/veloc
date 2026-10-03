@@ -56,9 +56,12 @@ impl TargetEmitter for X86_64CodeEmitter {
                         "{target:?} requires unavailable target features"
                     )));
                 }
-                target.emit(emitter, inst, mfunc).map_err(|error| {
-                    crate::Error::codegen(std::format!("{target:?}: {error}; {inst:?}"))
-                })
+                target
+                    .emission(inst, mfunc)
+                    .and_then(|code| encode_instruction(emitter, code))
+                    .map_err(|error| {
+                        crate::Error::codegen(std::format!("{target:?}: {error}; {inst:?}"))
+                    })
             }
         }
     }
@@ -144,9 +147,26 @@ pub(crate) fn encode_instruction(
             emitter.instruction(&encoded, Some(crate::emitter::Target::Symbol(target)))
         }
         Emission::Branch(target, branch) => {
-            let short = x86::encode_branch(branch, true).map_err(error)?;
-            let long = x86::encode_branch(branch, false).map_err(error)?;
-            emitter.branch(target, &short, &long)
+            let forms = |branch| -> crate::Result<Vec<crate::emitter::CodeForm>> {
+                [true, false]
+                    .into_iter()
+                    .map(|short| {
+                        let encoding = x86::encode_branch(branch, short).map_err(error)?;
+                        crate::emitter::CodeForm::relative_field(&encoding)
+                    })
+                    .collect()
+            };
+            if branch.near == 0xe9 {
+                emitter.jump(target, forms(branch)?);
+            } else {
+                let inverted = x86::Branch {
+                    near: branch.near ^ 1,
+                    short: branch.short ^ 1,
+                    ..branch
+                };
+                emitter.conditional_branch(target, forms(branch)?, forms(inverted)?);
+            }
+            Ok(())
         }
     }
 }

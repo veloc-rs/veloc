@@ -126,19 +126,19 @@ impl<'a> WasmTranslator<'a> {
             let def_ptr = self.builder.ins().load(
                 vmctx,
                 offset,
-                MemFlags::new().with_alignment(alignment),
+                MemFlags::new().with_notrap(true).with_alignment(alignment),
                 VelocType::PTR,
             );
             let base = self.builder.ins().load(
                 def_ptr,
                 VMTable::base_offset(),
-                MemFlags::new().with_alignment(8),
+                MemFlags::new().with_notrap(true).with_alignment(8),
                 VelocType::PTR,
             );
             let length = self.builder.ins().load(
                 def_ptr,
                 VMTable::current_elements_offset(),
-                MemFlags::new().with_alignment(8),
+                MemFlags::new().with_notrap(true).with_alignment(8),
                 VelocType::I64,
             );
             (base, length)
@@ -147,13 +147,13 @@ impl<'a> WasmTranslator<'a> {
             let base = self.builder.ins().load(
                 vmctx,
                 offset + VMTable::base_offset(),
-                MemFlags::new().with_alignment(8),
+                MemFlags::new().with_notrap(true).with_alignment(8),
                 VelocType::PTR,
             );
             let length = self.builder.ins().load(
                 vmctx,
                 offset + VMTable::current_elements_offset(),
-                MemFlags::new().with_alignment(8),
+                MemFlags::new().with_notrap(true).with_alignment(8),
                 VelocType::I64,
             );
             (base, length)

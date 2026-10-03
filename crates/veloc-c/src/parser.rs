@@ -16,13 +16,18 @@ use std::vec::Vec;
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
     current: Option<Token>,
+    typedefs: std::collections::HashSet<String>,
 }
 
 impl<'a> Parser<'a> {
     /// Create a new parser from a lexer
-    pub fn new(mut lexer: Lexer<'a>) -> Self {
-        let current = lexer.next_token().ok();
-        Parser { lexer, current }
+    pub fn new(mut lexer: Lexer<'a>) -> Result<Self> {
+        let current = Some(lexer.next_token()?);
+        Ok(Parser {
+            lexer,
+            current,
+            typedefs: Default::default(),
+        })
     }
 
     /// Parse a translation unit (source file)
@@ -31,6 +36,9 @@ impl<'a> Parser<'a> {
 
         while !self.is_at_end() {
             let decl = self.parse_external_declaration()?;
+            if let ExternalDeclaration::Declaration(d) = &decl {
+                self.record_typedefs(d);
+            }
             declarations.push(decl);
         }
 
@@ -55,7 +63,7 @@ impl<'a> Parser<'a> {
             .current
             .take()
             .ok_or_else(|| Error::syntax("Unexpected end of input", 0, 0))?;
-        self.current = self.lexer.next_token().ok();
+        self.current = Some(self.lexer.next_token()?);
         Ok(prev)
     }
 
@@ -97,6 +105,12 @@ impl<'a> Parser<'a> {
     fn parse_external_declaration(&mut self) -> Result<ExternalDeclaration> {
         // Parse specifiers and declarator first
         let specifiers = self.parse_declaration_specifiers()?;
+        if self.match_token(TokenKind::Semicolon)? {
+            return Ok(ExternalDeclaration::Declaration(Declaration::new(
+                specifiers,
+                Vec::new(),
+            )));
+        }
         let declarator = self.parse_declarator()?;
 
         // Check if this is a function definition (function declarator followed by {)
@@ -146,14 +160,16 @@ impl<'a> Parser<'a> {
     }
 
     /// Save parser state for backtracking
-    fn save_checkpoint(&self) -> ParserCheckpoint {
+    fn save_checkpoint(&self) -> ParserCheckpoint<'a> {
         ParserCheckpoint {
             current: self.current.clone(),
+            lexer: self.lexer.clone(),
         }
     }
 
     /// Restore parser state from checkpoint
-    fn restore_checkpoint(&mut self, checkpoint: ParserCheckpoint) {
+    fn restore_checkpoint(&mut self, checkpoint: ParserCheckpoint<'a>) {
+        self.lexer = checkpoint.lexer;
         self.current = checkpoint.current;
     }
 
@@ -202,6 +218,10 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::CharKw) => {
                     self.advance()?;
                     specifiers.push(DeclarationSpecifier::TypeSpecifier(TypeSpecifier::Char));
+                }
+                Some(TokenKind::BoolKw) => {
+                    self.advance()?;
+                    specifiers.push(DeclarationSpecifier::TypeSpecifier(TypeSpecifier::Bool));
                 }
                 Some(TokenKind::Short) => {
                     self.advance()?;
@@ -270,10 +290,19 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 // Identifiers (typedef names)
-                Some(TokenKind::Identifier) => {
-                    // For simplicity, we're treating all identifiers after specifiers as typedef names
-                    // In a real implementation, you'd need a symbol table
-                    break;
+                Some(TokenKind::Identifier)
+                    if self
+                        .current
+                        .as_ref()
+                        .is_some_and(|t| self.typedefs.contains(&t.lexeme))
+                        && !specifiers
+                            .iter()
+                            .any(|s| matches!(s, DeclarationSpecifier::TypeSpecifier(_))) =>
+                {
+                    let token = self.advance()?;
+                    specifiers.push(DeclarationSpecifier::TypeSpecifier(
+                        TypeSpecifier::TypedefName(token.lexeme),
+                    ));
                 }
                 _ => break,
             }
@@ -344,35 +373,20 @@ impl<'a> Parser<'a> {
 
     /// Parse specifier-qualifier list
     fn parse_specifier_qualifier_list(&mut self) -> Result<Vec<SpecifierQualifier>> {
-        let mut list = Vec::new();
-
-        loop {
-            match self.peek_kind() {
-                Some(TokenKind::Void) => {
-                    self.advance()?;
-                    list.push(SpecifierQualifier::TypeSpecifier(TypeSpecifier::Void));
+        self.parse_declaration_specifiers()?
+            .into_iter()
+            .map(|spec| match spec {
+                DeclarationSpecifier::TypeSpecifier(ty) => {
+                    Ok(SpecifierQualifier::TypeSpecifier(ty))
                 }
-                Some(TokenKind::CharKw) => {
-                    self.advance()?;
-                    list.push(SpecifierQualifier::TypeSpecifier(TypeSpecifier::Char));
-                }
-                Some(TokenKind::Int) => {
-                    self.advance()?;
-                    list.push(SpecifierQualifier::TypeSpecifier(TypeSpecifier::Int));
-                }
-                Some(TokenKind::Const) => {
-                    self.advance()?;
-                    list.push(SpecifierQualifier::TypeQualifier(TypeQualifier::Const));
-                }
-                Some(TokenKind::Volatile) => {
-                    self.advance()?;
-                    list.push(SpecifierQualifier::TypeQualifier(TypeQualifier::Volatile));
-                }
-                _ => break,
-            }
-        }
-
-        Ok(list)
+                DeclarationSpecifier::TypeQualifier(q) => Ok(SpecifierQualifier::TypeQualifier(q)),
+                _ => Err(Error::semantic(
+                    "storage class not allowed in a type name",
+                    0,
+                    0,
+                )),
+            })
+            .collect()
     }
 
     /// Parse struct declarator
@@ -412,7 +426,7 @@ impl<'a> Parser<'a> {
                 let enum_name = token.lexeme;
 
                 let value = if self.match_token(TokenKind::Assign)? {
-                    Some(self.parse_expression()?)
+                    Some(self.parse_conditional_expression()?)
                 } else {
                     None
                 };
@@ -534,17 +548,25 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse parameter list
-    fn parse_parameter_list(&mut self) -> Result<Vec<ParameterDeclaration>> {
+    fn parse_parameter_list(&mut self) -> Result<ParameterList> {
         let mut params = Vec::new();
+        let mut variadic = false;
 
         loop {
+            if self.match_token(TokenKind::Ellipsis)? {
+                variadic = true;
+                break;
+            }
             params.push(self.parse_parameter_declaration()?);
             if !self.match_token(TokenKind::Comma)? {
                 break;
             }
         }
 
-        Ok(params)
+        Ok(ParameterList {
+            parameters: params,
+            variadic,
+        })
     }
 
     /// Parse parameter declaration
@@ -646,23 +668,30 @@ impl<'a> Parser<'a> {
 
     /// Parse initializer
     fn parse_initializer(&mut self) -> Result<Initializer> {
-        if self.check(TokenKind::LBrace) {
-            // Compound initializer - for now, skip the braces and parse inner expression
-            self.advance()?;
-            // Parse the first expression (simplified)
-            let expr = if !self.check(TokenKind::RBrace) {
-                self.parse_expression()?
-            } else {
-                return Err(Error::syntax(
-                    "Empty initializer list not supported yet",
-                    self.lexer.line(),
-                    self.lexer.column(),
-                ));
-            };
-            self.expect(TokenKind::RBrace, "Expected '}' after initializer")?;
-            Ok(Initializer::Expression(expr))
-        } else {
-            Ok(Initializer::Expression(self.parse_expression()?))
+        if !self.match_token(TokenKind::LBrace)? {
+            return Ok(Initializer::Expression(self.parse_assignment_expression()?));
+        }
+        let mut items = Vec::new();
+        while !self.check(TokenKind::RBrace) {
+            items.push(self.parse_initializer()?);
+            if !self.match_token(TokenKind::Comma)? {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace, "expected } after initializer")?;
+        Ok(Initializer::List(items))
+    }
+
+    fn record_typedefs(&mut self, declaration: &Declaration) {
+        if declaration
+            .specifiers
+            .contains(&DeclarationSpecifier::StorageClass(
+                StorageClassSpecifier::Typedef,
+            ))
+        {
+            for item in &declaration.init_declarators {
+                self.typedefs.insert(item.declarator.name().into());
+            }
         }
     }
 
@@ -684,9 +713,14 @@ impl<'a> Parser<'a> {
 
     /// Parse block item
     fn parse_block_item(&mut self) -> Result<BlockItem> {
-        // Check if this is a declaration (starts with type specifier)
+        if self.is_type_specifier_start() {
+            let decl = self.parse_declaration()?;
+            self.record_typedefs(&decl);
+            return Ok(BlockItem::Declaration(decl));
+        }
         match self.peek_kind() {
             Some(TokenKind::Int)
+            | Some(TokenKind::BoolKw)
             | Some(TokenKind::CharKw)
             | Some(TokenKind::Void)
             | Some(TokenKind::FloatKw)
@@ -885,9 +919,17 @@ impl<'a> Parser<'a> {
 
     /// Check if the current position starts a type specifier
     fn is_type_specifier_start(&self) -> bool {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|t| t.kind == TokenKind::Identifier && self.typedefs.contains(&t.lexeme))
+        {
+            return true;
+        }
         matches!(
             self.peek_kind(),
             Some(TokenKind::Int)
+                | Some(TokenKind::BoolKw)
                 | Some(TokenKind::CharKw)
                 | Some(TokenKind::Void)
                 | Some(TokenKind::FloatKw)
@@ -902,6 +944,9 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::Short)
                 | Some(TokenKind::Signed)
                 | Some(TokenKind::Unsigned)
+                | Some(TokenKind::Const)
+                | Some(TokenKind::Volatile)
+                | Some(TokenKind::Restrict)
         )
     }
 
@@ -941,7 +986,14 @@ impl<'a> Parser<'a> {
 
     /// Parse expression (entry point for expression parsing)
     fn parse_expression(&mut self) -> Result<Expression> {
-        self.parse_assignment_expression()
+        let mut expr = self.parse_assignment_expression()?;
+        while self.match_token(TokenKind::Comma)? {
+            expr = Expression::Comma(
+                Box::new(expr),
+                Box::new(self.parse_assignment_expression()?),
+            );
+        }
+        Ok(expr)
     }
 
     /// Parse assignment expression
@@ -979,27 +1031,40 @@ impl<'a> Parser<'a> {
                 let rhs = self.parse_assignment_expression()?;
                 Ok(Expression::ModuloAssign(Box::new(lhs), Box::new(rhs)))
             }
-            Some(TokenKind::ShiftLeft) => {
-                // Check if it's <<= or just <<
-                if self.peek_char2() == Some('=') {
-                    self.advance()?;
-                    self.advance()?;
-                    let rhs = self.parse_assignment_expression()?;
-                    Ok(Expression::ShiftLeftAssign(Box::new(lhs), Box::new(rhs)))
-                } else {
-                    Ok(lhs)
-                }
+            Some(TokenKind::ShlAssign) => {
+                self.advance()?;
+                Ok(Expression::ShiftLeftAssign(
+                    Box::new(lhs),
+                    Box::new(self.parse_assignment_expression()?),
+                ))
             }
-            Some(TokenKind::ShiftRight) => {
-                // Check if it's >>= or just >>
-                if self.peek_char2() == Some('=') {
-                    self.advance()?;
-                    self.advance()?;
-                    let rhs = self.parse_assignment_expression()?;
-                    Ok(Expression::ShiftRightAssign(Box::new(lhs), Box::new(rhs)))
-                } else {
-                    Ok(lhs)
-                }
+            Some(TokenKind::ShrAssign) => {
+                self.advance()?;
+                Ok(Expression::ShiftRightAssign(
+                    Box::new(lhs),
+                    Box::new(self.parse_assignment_expression()?),
+                ))
+            }
+            Some(TokenKind::AndAssign) => {
+                self.advance()?;
+                Ok(Expression::BitwiseAndAssign(
+                    Box::new(lhs),
+                    Box::new(self.parse_assignment_expression()?),
+                ))
+            }
+            Some(TokenKind::OrAssign) => {
+                self.advance()?;
+                Ok(Expression::BitwiseOrAssign(
+                    Box::new(lhs),
+                    Box::new(self.parse_assignment_expression()?),
+                ))
+            }
+            Some(TokenKind::XorAssign) => {
+                self.advance()?;
+                Ok(Expression::BitwiseXorAssign(
+                    Box::new(lhs),
+                    Box::new(self.parse_assignment_expression()?),
+                ))
             }
             _ => Ok(lhs),
         }
@@ -1299,9 +1364,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Check if token at offset is a type specifier start
-    fn is_type_specifier_start_at(&self, _offset: usize) -> bool {
-        // Simplified - in production, properly implement lookahead
-        true
+    fn is_type_specifier_start_at(&self, offset: usize) -> bool {
+        let mut lexer = self.lexer.clone();
+        let mut token = self.current.clone();
+        for _ in 0..offset {
+            token = lexer.next_token().ok();
+        }
+        let lookahead = Parser {
+            lexer,
+            current: token,
+            typedefs: self.typedefs.clone(),
+        };
+        lookahead.is_type_specifier_start()
     }
 
     /// Parse postfix expression
@@ -1390,8 +1464,12 @@ impl<'a> Parser<'a> {
                 let token = self.advance()?;
                 // Remove quotes from string literal
                 let s = token.lexeme;
-                let content = &s[1..s.len() - 1];
-                Ok(Expression::String(content.to_string()))
+                let mut content = s[1..s.len() - 1].to_string();
+                while self.check(TokenKind::StringLit) {
+                    let token = self.advance()?;
+                    content.push_str(&token.lexeme[1..token.lexeme.len() - 1]);
+                }
+                Ok(Expression::String(content))
             }
             Some(TokenKind::LParen) => {
                 self.advance()?;
@@ -1413,7 +1491,8 @@ impl<'a> Parser<'a> {
 
 /// Checkpoint for parser backtracking
 #[derive(Clone)]
-struct ParserCheckpoint {
+struct ParserCheckpoint<'a> {
+    lexer: Lexer<'a>,
     current: Option<Token>,
 }
 
@@ -1425,7 +1504,7 @@ mod tests {
     fn test_parse_simple_function() {
         let source = "int main(void) { return 0; }";
         let lexer = Lexer::new(source);
-        let mut parser = Parser::new(lexer);
+        let mut parser = Parser::new(lexer).unwrap();
 
         let result = parser.parse_translation_unit();
         assert!(result.is_ok());
@@ -1438,7 +1517,7 @@ mod tests {
     fn test_parse_variable_declaration() {
         let source = "int x = 42;";
         let lexer = Lexer::new(source);
-        let mut parser = Parser::new(lexer);
+        let mut parser = Parser::new(lexer).unwrap();
 
         let result = parser.parse_translation_unit();
         if let Err(ref e) = result {
@@ -1459,7 +1538,7 @@ mod tests {
             }
         "#;
         let lexer = Lexer::new(source);
-        let mut parser = Parser::new(lexer);
+        let mut parser = Parser::new(lexer).unwrap();
 
         let result = parser.parse_translation_unit();
         assert!(result.is_ok());

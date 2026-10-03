@@ -24,6 +24,7 @@ enum Test {
     },
     Features(Vec<String>),
     Foldable(usize),
+    SameValue(String, String),
 }
 
 use crate::rules::graph::{Candidates, Graph, Node};
@@ -63,12 +64,13 @@ impl Graph {
                 }
                 Node::Check { test, yes, no } => {
                     let needed = match &plan.tests[test] {
-                        Test::Definition(index) => slot(&plan.definitions[*index].input),
-                        Test::Field { field, .. } => slot(field),
-                        Test::Foldable(index) => Some(*index),
-                        Test::Features(_) => None,
+                        Test::Definition(index) => [slot(&plan.definitions[*index].input), None],
+                        Test::Field { field, .. } => [slot(field), None],
+                        Test::Foldable(index) => [Some(*index), None],
+                        Test::SameValue(lhs, rhs) => [slot(lhs), slot(rhs)],
+                        Test::Features(_) => [None, None],
                     };
-                    if let Some(needed) = needed {
+                    for needed in needed.into_iter().flatten() {
                         assert!(
                             defined.contains(&needed),
                             "test reads an unmatched definition"
@@ -159,6 +161,11 @@ impl Plan {
                 };
                 *name = rename(name, &names);
             }
+            for (lhs, rhs) in &mut rule.same_values {
+                *lhs = rename(lhs, &names);
+                *rhs = rename(rhs, &names);
+                tests.push(plan.test(Test::SameValue(lhs.clone(), rhs.clone())));
+            }
             for (field, pattern) in named_args(&rule.fields) {
                 let schema = field
                     .split_once('.')
@@ -229,7 +236,33 @@ impl Plan {
             if !required.is_empty() {
                 tests.push(plan.test(Test::Features(required.into_iter().collect())));
             }
+            // Inspecting a producer is not the same as folding it. A recipe
+            // that keeps its result and only queries its opcode/properties
+            // leaves that producer (including memory effects) in place.
+            let bindings = collect_field_variable_bindings(&rule.fields);
+            fn reads_definition(
+                build: &Constructor,
+                bindings: &HashMap<String, String>,
+                owner: &str,
+            ) -> bool {
+                match build {
+                    Constructor::Variable(name) => bindings.get(name).is_some_and(|path| {
+                        path.split_once('.').is_some_and(|(base, _)| base == owner)
+                    }),
+                    Constructor::Inst { args, .. } => args
+                        .iter()
+                        .any(|arg| reads_definition(arg, bindings, owner)),
+                    _ => false,
+                }
+            }
             for def in &rule.definitions {
+                if !rule
+                    .builds
+                    .iter()
+                    .any(|build| reads_definition(build, &bindings, &def.name))
+                {
+                    continue;
+                }
                 let slot = plan
                     .definitions
                     .iter()

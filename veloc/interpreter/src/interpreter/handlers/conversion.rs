@@ -22,6 +22,7 @@ define_register_handlers! {
     ExtendU { dst, src, ty } => {
         let val = get!(src).unwrap_i64();
         let res = match ty.from {
+            Type::BOOL => val & 1,
             Type::I8 => (val as u8) as u64 as i64,
             Type::I16 => (val as u16) as u64 as i64,
             Type::I32 => (val as u32) as u64 as i64,

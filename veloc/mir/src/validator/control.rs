@@ -213,6 +213,12 @@ impl Checker<'_> {
                     if !view.is_terminator() {
                         return func.fail(format!("non-terminator {inst} has a successor"));
                     }
+                    if edge.block == body.entry_block() {
+                        return func.fail(format!(
+                            "entry block {} must have no predecessors: edge from {block} at {inst}",
+                            edge.block
+                        ));
+                    }
                     self.structure.successors[block.0 as usize].push(edge.block);
                     Ok(())
                 })?;

@@ -8,7 +8,7 @@ use super::printer::InstPrinter;
 use crate::TypeInfo;
 use crate::type_methods::VectorConstInfo;
 use crate::{
-    BlockCall, Float, FloatCC, FuncId, Int, IntCC, Intrinsic, ScalarConst, SigId, Type, Value,
+    Float, FloatCC, FuncId, Int, IntCC, Intrinsic, ScalarConst, SigId, SuccessorData, Type, Value,
     VectorConst,
 };
 use alloc::vec::Vec;
@@ -458,16 +458,16 @@ impl AtomCodec for Values {
     }
 }
 
-impl AtomCodec for BlockCall {
-    type Owned = BlockCall;
+impl AtomCodec for SuccessorData {
+    type Owned = SuccessorData;
     type View<'a> = crate::Successor<'a>;
 
     fn parse(
         cx: &mut OperandParser<'_>,
         input: &mut Cursor<'_>,
         _: Option<Type>,
-    ) -> Result<BlockCall, ParseError> {
-        cx.block_call(input)
+    ) -> Result<SuccessorData, ParseError> {
+        cx.successor(input)
     }
 
     fn print(
@@ -476,20 +476,20 @@ impl AtomCodec for BlockCall {
         value: &crate::Successor<'_>,
         _: Option<Type>,
     ) -> fmt::Result {
-        cx.fmt_block_call(out, *value)
+        cx.fmt_successor(out, *value)
     }
 }
 
 impl AtomCodec for Successors {
-    type Owned = Vec<BlockCall>;
+    type Owned = Vec<SuccessorData>;
     type View<'a> = crate::Successors<'a>;
 
     fn parse(
         cx: &mut OperandParser<'_>,
         input: &mut Cursor<'_>,
         _: Option<Type>,
-    ) -> Result<Vec<BlockCall>, ParseError> {
-        cx.block_calls(input)
+    ) -> Result<Vec<SuccessorData>, ParseError> {
+        cx.successors(input)
     }
 
     fn print(
@@ -498,7 +498,7 @@ impl AtomCodec for Successors {
         value: &crate::Successors<'_>,
         _: Option<Type>,
     ) -> fmt::Result {
-        cx.fmt_block_calls(out, *value)
+        cx.fmt_successors(out, *value)
     }
 }
 
@@ -521,6 +521,26 @@ impl AtomCodec for FunctionName {
         _: Option<Type>,
     ) -> fmt::Result {
         cx.fmt_func_ref(out, *value)
+    }
+}
+
+impl AtomCodec for crate::GlobalId {
+    type Owned = Self;
+    type View<'a> = Self;
+    fn parse(
+        cx: &mut OperandParser<'_>,
+        input: &mut Cursor<'_>,
+        ty: Option<Type>,
+    ) -> Result<Self, ParseError> {
+        Decimal::<u32>::parse(cx, input, ty).map(crate::GlobalId)
+    }
+    fn print(
+        cx: &InstPrinter<'_>,
+        out: &mut dyn fmt::Write,
+        value: &Self,
+        ty: Option<Type>,
+    ) -> fmt::Result {
+        Decimal::<u32>::print(cx, out, &value.0, ty)
     }
 }
 

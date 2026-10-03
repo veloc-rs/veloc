@@ -60,6 +60,7 @@ struct Interval {
     segments: Vec<(u32, u32)>,
     class: RegClass,
     preferences: Vec<Reg>,
+    spill_cost: u64,
 }
 
 impl Interval {
@@ -118,7 +119,9 @@ impl<'a> RegisterAllocator<'a> {
     ) -> Result<Allocation> {
         let f = &source;
         let mut frame = f.stack_frame.batch();
+        let loops = analyses.loop_info(f, self.target).clone();
         let live = analyses.liveness(f, self.target);
+        let mut spill_cost = SecondaryMap::<VReg, u64>::new();
         let mut ranges = SecondaryMap::<VReg, Vec<(u32, u32)>>::with_capacity(f.vregs().len());
         let mut local_virtual = HashMap::new();
         let mut fixed = Vec::<Vec<Reservation>>::new();
@@ -131,11 +134,16 @@ impl<'a> RegisterAllocator<'a> {
         }
         let mut pos = 1u32;
         for block in f.blocks() {
+            // Static frequency estimate; cap nesting to avoid overflow.
+            let frequency = 10u64.pow(loops.depth(block).min(6));
             let start = pos * 2;
             local_fixed.fill(None);
             for &param in f.block_params(block).unwrap() {
                 let definition = if block == f.entry_block() { 0 } else { start };
                 extend_range(&mut local_virtual, &mut local_fixed, param, definition);
+                if let Some(v) = param.as_vreg() {
+                    spill_cost[v] += frequency;
+                }
             }
             for id in f.block_insts(block) {
                 let inst = &f.inst(id);
@@ -170,10 +178,28 @@ impl<'a> RegisterAllocator<'a> {
                 // All current machine schemas read inputs before writing defs.
                 // Separate positions let a dying input share an output register.
                 for reg in inst.uses() {
+                    if let Some(v) = reg.as_vreg() {
+                        spill_cost[v] += frequency;
+                    }
                     extend_range(&mut local_virtual, &mut local_fixed, reg, pos * 2);
                 }
                 for reg in inst.defs() {
+                    if let Some(v) = reg.as_vreg() {
+                        spill_cost[v] += frequency;
+                    }
                     extend_range(&mut local_virtual, &mut local_fixed, reg, pos * 2 + 1);
+                }
+                // A unary result can reuse its dying input. This naturally
+                // coalesces copies and conversions without recognizing target
+                // opcodes; interval interference still rejects live inputs.
+                let mut uses = inst.uses();
+                let mut defs = inst.defs();
+                if let (Some(input), Some(output), None, None) =
+                    (uses.next(), defs.next(), uses.next(), defs.next())
+                {
+                    if let Some(v) = output.as_vreg() {
+                        preferences[v].push(input);
+                    }
                 }
                 // Instruction and ABI clobbers reserve only the write point.
                 // Input reads occur one position earlier.
@@ -185,6 +211,22 @@ impl<'a> RegisterAllocator<'a> {
                             && c.placement == veloc_lir::Placement::Fixed(reg)
                     }) {
                         reserve(&mut fixed, reg, pos * 2 + 1, None);
+                    }
+                }
+                // SSA edge arguments and destination parameters prefer the
+                // same home. These are hints only: interference and fixed
+                // reservations still decide whether sharing is legal.
+                for edge in f.successors(id) {
+                    for (&param, &arg) in f.block_params(edge.block).unwrap().iter().zip(edge.args)
+                    {
+                        if param != arg {
+                            if let Some(v) = param.as_vreg() {
+                                preferences[v].push(arg);
+                            }
+                            if let Some(v) = arg.as_vreg() {
+                                preferences[v].push(param);
+                            }
+                        }
                     }
                 }
                 pos += 1;
@@ -235,6 +277,7 @@ impl<'a> RegisterAllocator<'a> {
                     segments: segments.clone(),
                     class: self.target.desc().reg_class_for_vreg(&data.ty, data.bank),
                     preferences: core::mem::take(&mut preferences[vreg]),
+                    spill_cost: spill_cost[vreg],
                 }
             })
             .collect();
@@ -264,7 +307,18 @@ impl<'a> RegisterAllocator<'a> {
                 .allocatable_regs_in_class(interval.class)
                 .to_vec();
             candidates.sort_by_key(|reg| {
-                std::cmp::Reverse(interval.preferences.iter().filter(|r| *r == reg).count())
+                std::cmp::Reverse(
+                    interval
+                        .preferences
+                        .iter()
+                        .filter(|&&hint| {
+                            hint == *reg
+                                || self
+                                    .assigned(hint)
+                                    .is_some_and(|assigned| Reg::from(assigned) == *reg)
+                        })
+                        .count(),
+                )
             });
             let free = candidates
                 .iter()
@@ -276,28 +330,33 @@ impl<'a> RegisterAllocator<'a> {
                 })
                 .copied();
             let chosen = free.or_else(|| {
-                // Evict the furthest-ending range only when the current one ends sooner.
+                // Whole-value spills pay for every use and definition. Prefer
+                // the register whose conflicting values are cheapest in total,
+                // protecting frequently used loop values even if they live long.
                 candidates
                     .iter()
                     .filter(|r| available(r))
                     .filter_map(|&r| {
-                        let mut conflicts = assigned_ranges
+                        let (cost, end) = assigned_ranges
                             .get(r.index() as usize)?
                             .iter()
-                            .filter(|old| old.overlaps(&interval));
-                        let old = conflicts.next()?;
-                        (old.end > interval.end && conflicts.next().is_none())
-                            .then_some((r, old.end))
+                            .filter(|old| old.overlaps(&interval))
+                            .fold((0, 0), |(cost, end), old| {
+                                (cost + old.spill_cost, end.max(old.end))
+                            });
+                        (cost < interval.spill_cost
+                            || (cost == interval.spill_cost && end > interval.end))
+                            .then_some((r, cost, end))
                     })
-                    .max_by_key(|&(reg, end)| (end, reg))
-                    .map(|(reg, _)| reg)
+                    .min_by_key(|&(reg, cost, end)| (cost, core::cmp::Reverse(end), reg))
+                    .map(|(reg, _, _)| reg)
             });
             if let Some(reg) = chosen {
                 let index = reg.index() as usize;
                 if assigned_ranges.len() <= index {
                     assigned_ranges.resize_with(index + 1, Vec::new);
                 }
-                if let Some(conflict) = assigned_ranges[index]
+                while let Some(conflict) = assigned_ranges[index]
                     .iter()
                     .position(|old| old.overlaps(&interval))
                 {

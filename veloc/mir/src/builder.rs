@@ -1,6 +1,6 @@
 use super::function::{FuncBody, FuncEditor, InstCursor};
 use super::inst::{InstWriter, VectorExtData};
-use super::types::{Block, BlockCall, FuncId, Type, Value, Variable};
+use super::types::{Block, FuncId, SuccessorData, Type, Value, Variable};
 use crate::Opcode;
 use crate::{CallConv, Linkage, Module, Result, SigId};
 use alloc::vec::Vec;
@@ -44,13 +44,21 @@ impl ModuleBuilder {
         self.data.find_function(name)
     }
 
+    pub fn intern_signature(&mut self, signature: crate::Signature) -> SigId {
+        self.data.intern_signature(signature)
+    }
+
     /// Start a new definition. An existing body must be edited instead.
     pub fn define(&mut self, func_id: FuncId) -> SsaBuilder<'_> {
         SsaBuilder::new(&mut self.data, func_id)
     }
 
-    pub fn add_global(&mut self, name: String, ty: Type, linkage: Linkage) {
-        self.data.add_global(name, ty, linkage);
+    pub fn add_global(&mut self, name: String, ty: Type, linkage: Linkage) -> crate::GlobalId {
+        self.data.add_global(name, ty, linkage)
+    }
+
+    pub fn define_global(&mut self, id: crate::GlobalId, data: crate::GlobalData) {
+        self.data.define_global(id, data);
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -322,7 +330,7 @@ impl<'a> SsaBuilder<'a> {
             return;
         };
         self.edit().edit_successors(inst, |edge| {
-            if edge.block() == target {
+            if edge.block == target {
                 edge.set_arg(index, val);
             }
         });
@@ -450,14 +458,19 @@ impl<'ctx, 'body> InstCursor<'ctx, 'body> {
         );
     }
 
-    pub fn br_table(&mut self, index: Value, default_call: BlockCall, targets: &[BlockCall]) {
+    pub fn br_table(
+        &mut self,
+        index: Value,
+        default_call: SuccessorData,
+        targets: &[SuccessorData],
+    ) {
         self.insert(
             |writer: InstWriter<'_>| {
                 writer.br_table(
                     index,
                     targets
                         .iter()
-                        .map(BlockCall::as_view)
+                        .map(SuccessorData::as_view)
                         .chain(core::iter::once(default_call.as_view())),
                 )
             },

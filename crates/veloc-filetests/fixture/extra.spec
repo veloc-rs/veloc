@@ -44,7 +44,7 @@ op Rebind(move value: Value<Callable>) -> (result: Value<Callable>) {
 }
 struct MoveBranch {
     value: Value,
-    dest: BlockCall,
+    dest: Successor,
 }
 op MoveBranch(move value: Value<Callable>, dest: successor) -> () {
     meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::UNKNOWN };

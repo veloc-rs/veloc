@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::error::{Error, Result};
 use veloc::codegen::Backend;
+pub use veloc::codegen::OptLevel;
 
 /// 编译策略
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
@@ -13,27 +15,36 @@ pub enum Strategy {
     Interpreter,
 }
 
+/// Bounds-check implementation. Guarded objects require a compatible runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum MemoryChecks {
+    /// Use guard pages for supported native execution, software checks otherwise.
+    #[default]
+    Auto,
+    Software,
+    Guarded,
+}
+
 /// Engine 配置
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// The optimization level selects both MIR and native-code pipelines.
     pub codegen: veloc::codegen::CodegenOptions,
-    /// Explicit host CPU model and ISA overrides for native code generation.
+    /// Backend architecture for native compilation. Execution requires the host architecture.
+    pub target: veloc::codegen::TargetArch,
+    /// CPU model and ISA overrides for the selected native backend.
     pub cpu: String,
     pub cpu_features: Vec<String>,
     pub strategy: Strategy,
-    /// Use protected linear memory and signal traps for interpreter loads/stores.
-    /// Currently supported on Linux x86-64 with glibc.
-    pub hardware_memory_checks: bool,
+    /// Native guard pages are supported on Linux x86-64 and RV64 with glibc;
+    /// interpreter guard pages are supported on Linux x86-64 with glibc.
+    pub memory_checks: MemoryChecks,
     pub dump_ir: bool,
     pub ir_names: bool,
     /// Validate translated MIR before optimization and code generation.
     pub verify_ir: bool,
-    /// 优化等级
-    pub opt_level: u8,
     /// Use a smaller equality-search budget in MIR expression optimization.
     pub fast_egraph: bool,
-    /// 输出 IR 到文件路径
-    pub output_ir: Option<PathBuf>,
     /// Chrome Trace 输出文件路径
     pub trace_file: Option<PathBuf>,
     /// Include bounded optimization remarks and LIR snapshots in the trace.
@@ -47,17 +58,23 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            codegen: Default::default(),
+            codegen: veloc::codegen::CodegenOptions {
+                opt_level: OptLevel::None,
+                ..Default::default()
+            },
+            target: if cfg!(target_arch = "riscv64") {
+                veloc::codegen::TargetArch::Riscv64
+            } else {
+                veloc::codegen::TargetArch::X86_64
+            },
             cpu: "generic".into(),
             cpu_features: Vec::new(),
             strategy: Strategy::Auto,
-            hardware_memory_checks: false,
+            memory_checks: MemoryChecks::Auto,
             dump_ir: false,
             ir_names: false,
             verify_ir: cfg!(debug_assertions),
-            opt_level: 0,
             fast_egraph: false,
-            output_ir: None,
             trace_file: None,
             trace_details: false,
             print_stats: false,
@@ -77,27 +94,45 @@ struct EngineInner {
 }
 
 impl Engine {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self> {
         Self::with_config(Config::default())
     }
 
-    pub fn with_config(config: Config) -> Self {
-        Self {
+    pub fn with_config(config: Config) -> Result<Self> {
+        if config.strategy == Strategy::FastJit
+            && (config.target != veloc::codegen::TargetArch::X86_64
+                || config.cpu != "generic"
+                || !config.cpu_features.is_empty())
+        {
+            return Err(Error::Unsupported(
+                "fast-jit requires generic x86_64 without feature overrides".into(),
+            ));
+        }
+        if config.trace_details && config.trace_file.is_none() {
+            return Err(Error::Message("trace details require a trace file".into()));
+        }
+        if config.fast_egraph && config.codegen.opt_level == OptLevel::None {
+            return Err(Error::Message(
+                "fast e-graph requires optimization level 1".into(),
+            ));
+        }
+        if !config.opt_debug.is_empty() && config.codegen.opt_level == OptLevel::None {
+            return Err(Error::Message(
+                "optimizer debug tags require optimization level 1".into(),
+            ));
+        }
+        Ok(Self {
             inner: Arc::new(EngineInner {
                 backend: Backend::with_target_config(veloc::codegen::TargetConfig {
                     cpu: config.cpu.clone(),
                     features: config.cpu_features.clone(),
-                    arch: if cfg!(target_arch = "riscv64") {
-                        veloc::codegen::TargetArch::Riscv64
-                    } else {
-                        veloc::codegen::TargetArch::X86_64
-                    },
+                    arch: config.target,
                     ..Default::default()
                 })
-                .expect("host codegen target"),
+                .map_err(|error| Error::Compile(error.to_string()))?,
                 config,
             }),
-        }
+        })
     }
 
     pub fn strategy(&self) -> Strategy {
@@ -106,6 +141,16 @@ impl Engine {
 
     pub fn config(&self) -> &Config {
         &self.inner.config
+    }
+
+    pub(crate) fn uses_guarded_memory(&self) -> bool {
+        match self.config().memory_checks {
+            MemoryChecks::Auto => {
+                self.strategy() != Strategy::Interpreter && crate::trap::native::SUPPORTED
+            }
+            MemoryChecks::Software => false,
+            MemoryChecks::Guarded => true,
+        }
     }
 
     pub(crate) fn backend(&self) -> &Backend {

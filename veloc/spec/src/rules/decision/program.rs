@@ -264,6 +264,7 @@ impl Program {
         }
         let mut inputs = Vec::new();
         let mut fields = Vec::new();
+        let mut input_types: Vec<_> = sig.inputs.iter().map(|(_, ty)| ty.clone()).collect();
         for (field, value) in changes {
             let access = Node {
                 offset: value.offset,
@@ -289,19 +290,7 @@ impl Program {
                         functions,
                         &mut Vec::new(),
                     )?;
-                    let expected = &sig
-                        .inputs
-                        .iter()
-                        .find(|(n, _)| n == &format!("{root}.{field}"))
-                        .ok_or_else(|| Error::at(expr.source, value.offset, "unknown input field"))?
-                        .1;
-                    if &ty != expected && !(ty.domain.len() == 1 && ty.domain == expected.domain) {
-                        return Err(Error::at(
-                            expr.source,
-                            value.offset,
-                            "updated input type mismatch",
-                        ));
-                    }
+                    input_types[index] = ty;
                     inputs.push((index, slot));
                 }
                 Domain::Attribute => {
@@ -355,6 +344,18 @@ impl Program {
                 last.offset,
                 "empty instruction update",
             ));
+        }
+        // Re-infer the complete instruction contract after all edits. This
+        // allows coordinated widening while preserving result types and fields.
+        for root in expr.roots {
+            sig.check_call(
+                expr.source,
+                node.offset,
+                &operations[root],
+                &input_types,
+                &sig.results,
+                expr.defs,
+            )?;
         }
         self.recipe(
             sig,

@@ -23,14 +23,14 @@ impl Operands {
         for (method, ty) in methods {
             writeln!(
                 out,
-                "fn {method}(self, value: {ty}) -> Option<(&'a [crate::Type], &'a [crate::Type])>;"
+                "fn {method}(self, value: {ty}) -> Option<(&'a [crate::Type], &'a [crate::Type], bool)>;"
             )
             .unwrap();
         }
         let reg = &self.register_rust;
         out.push_str(&format!(r#"
-        fn validate_values(self, name: &str, role: &str, values: &[{reg}], expected: &[crate::Type]) -> core::result::Result<(), Self::Error> {{
-            if values.len() != expected.len() {{
+        fn validate_values(self, name: &str, role: &str, values: &[{reg}], expected: &[crate::Type], variadic: bool) -> core::result::Result<(), Self::Error> {{
+            if values.len() < expected.len() || (!variadic && values.len() != expected.len()) {{
                 return Err(self.error(&alloc::format!("{{name}} {{role}} count mismatch: expected {{}}, got {{}}", expected.len(), values.len())));
             }}
             for (index, (&value, &expected)) in values.iter().zip(expected).enumerate() {{
@@ -46,6 +46,7 @@ impl Operands {
     fn view_plan(&self, defs: &Definitions) -> crate::generate::views::View {
         use crate::generate::views::{Field, Representation, Variant, View};
         View {
+            equality: false,
             name: self.view.clone(),
             representation: Representation::Records,
             variants: self
@@ -269,7 +270,7 @@ impl Operands {
                     let method = signature_method(source).0;
                     format!("self.{method}({value}).ok_or_else(|| self.error(\"missing function or signature\"))?")
                 },
-                |role, values, types| format!("self.validate_values({:?}, {role:?}, {values}, {types})?;", op.mnemonic),
+                |role, values, types, variadic| format!("self.validate_values({:?}, {role:?}, {values}, {types}, {variadic})?;", op.mnemonic),
                 "self.results()",
             ));
             out.push_str(&crate::model::constraints::emit_checks(

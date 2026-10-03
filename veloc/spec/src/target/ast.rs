@@ -134,6 +134,8 @@ pub struct SelectRuleDef {
     pub definitions: Vec<DefMatch>,
     /// Named root fields and their pure matching constraints.
     pub fields: Vec<PatternArg>,
+    /// Equal SSA operands, checked before constructing the replacement.
+    pub same_values: Vec<(String, String)>,
     /// Fresh registers allocated only after matching succeeds.
     pub temps: Vec<(String, String)>,
     /// Deferred instruction construction, committed in order.
@@ -204,6 +206,7 @@ pub enum AttributeKind {
     Imm,
     MemFlags,
     Block,
+    Blocks,
     Global,
     StackSlot,
     Call,
@@ -221,6 +224,7 @@ impl AttributeKind {
             Self::Imm,
             Self::MemFlags,
             Self::Block,
+            Self::Blocks,
             Self::Global,
             Self::StackSlot,
             Self::Call,
@@ -229,12 +233,21 @@ impl AttributeKind {
         .find(|kind| kind.description().spec_type == ty)
     }
 
+    pub(crate) fn shape(self) -> crate::storage::operands::Shape {
+        if self == Self::Blocks {
+            crate::storage::operands::Shape::Sequence
+        } else {
+            crate::storage::operands::Shape::One
+        }
+    }
+
     /// The Spec type, constructor parameter and stored field describe one type.
     pub fn description(self) -> AttributeType {
         let (spec_type, rust_type, field_variant) = match self {
             Self::Imm => ("i64", "i64", "Imm"),
             Self::MemFlags => ("MemFlags", "veloc_lir::MemFlags", "MemFlags"),
             Self::Block => ("Successor", "veloc_lir::EdgeId", "Edge"),
+            Self::Blocks => ("sequence(Successor)", "&[veloc_lir::EdgeId]", "Edge"),
             Self::Global => ("Global", "veloc_lir::SymbolId", "Global"),
             Self::StackSlot => ("StackSlot", "veloc_lir::StackSlot", "StackSlot"),
             Self::Call => ("CallInfo", "veloc_lir::CallInfo", "Call"),

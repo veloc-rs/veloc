@@ -122,7 +122,16 @@ struct Key {
     opcode: Op,
     args: SmallVec<[Root; 3]>,
     results: SmallVec<[Type; 2]>,
-    properties: SmallVec<[IntCC; 1]>,
+    properties: Properties,
+}
+
+/// Congruence needs every semantic property, even for operations that have no
+/// constant evaluator. Pointer scale/offset must never be dropped from the key.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Properties {
+    Evaluated(SmallVec<[IntCC; 1]>),
+    PtrOffset(i32),
+    PtrIndex(veloc_mir::inst::PtrIndexImm),
 }
 
 /// Mutations are batched until congruence indexes have been repaired.
@@ -299,7 +308,11 @@ impl Graph {
                 .iter()
                 .map(|&v| dfg.value_type(v))
                 .collect(),
-            properties: crate::evaluate::properties(&dfg.inst(inst)),
+            properties: match dfg.inst(inst) {
+                veloc_mir::InstView::PtrOffset { offset, .. } => Properties::PtrOffset(offset),
+                veloc_mir::InstView::PtrIndex { imm_id, .. } => Properties::PtrIndex(imm_id),
+                view => Properties::Evaluated(crate::evaluate::properties(&view)),
+            },
         }
     }
 
@@ -439,8 +452,11 @@ impl Graph {
     /// Bounded local reasoning over a not-yet-allocated operation. Argument
     /// order is preserved so Operand(i) also identifies the original MIR input.
     fn reduce(&self, f: &FuncBody, key: &Key) -> Option<SmallVec<[Fold; 2]>> {
+        let Properties::Evaluated(properties) = &key.properties else {
+            return None;
+        };
         let args: SmallVec<[Value; 3]> = key.args.iter().map(|root| root.value()).collect();
-        crate::evaluate::reduce(key.opcode, &args, &key.results, &key.properties, |value| {
+        crate::evaluate::reduce(key.opcode, &args, &key.results, properties, |value| {
             f.dfg().as_scalar_const(value)
         })
     }
@@ -681,7 +697,7 @@ impl Graph {
             opcode,
             args: args.iter().map(|&v| self.find(v)).collect(),
             results: smallvec::smallvec![ty],
-            properties: SmallVec::new(),
+            properties: Properties::Evaluated(SmallVec::new()),
         };
         if let Some(reduced) = self.reduce(ir.body(), &key) {
             assert_eq!(reduced.len(), 1, "rule operation result arity");
@@ -739,4 +755,8 @@ impl Graph {
 
 fn can_analyze(f: &FuncBody, inst: Inst) -> bool {
     crate::evaluate::can_reduce(f.dfg(), inst)
+        || matches!(
+            f.dfg().inst(inst),
+            veloc_mir::InstView::PtrOffset { .. } | veloc_mir::InstView::PtrIndex { .. }
+        )
 }

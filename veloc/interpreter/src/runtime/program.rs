@@ -211,10 +211,11 @@ impl Program {
         // Host signatures have no module context for nested callable identities.
         // Such calls remain rejected by the ownership-aware ABI checks.
         let sig = host.signature();
-        let signature = sig.types().iter().all(|ty| ty.is_compact()).then(|| {
-            self.types
-                .intern_signature(sig.params(), sig.returns(), sig.call_conv)
-        });
+        let signature = sig
+            .types()
+            .iter()
+            .all(|ty| ty.is_compact())
+            .then(|| self.types.insert_signature(sig.clone()));
         let id = self.hosts.push(host);
         let sig_id = self.host_signatures.push(signature);
         debug_assert_eq!(id, sig_id);
@@ -231,6 +232,12 @@ impl<'a> ProgramBuilder<'a> {
         module
             .validate()
             .map_err(|e| Error::Message(e.to_string()))?;
+        if module.signatures().iter().any(|(_, sig)| sig.variadic) {
+            return Err(Error::Message(
+                "variadic calls require native ABI lowering; the interpreter does not support them"
+                    .into(),
+            ));
+        }
         // The append-only type pool retains interned entries if linking is
         // abandoned. No module or callable reference is published before finish.
         let signatures = program

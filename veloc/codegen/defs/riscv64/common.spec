@@ -16,6 +16,8 @@ type Emission = rust("crate::target::riscv64::emitter::Emission") {
     fn jump(target: Block) -> Self;
     fn branch(funct3: u32, lhs: Reg, rhs: Reg, target: Block) -> Self;
     fn call(target: Global) -> Self;
+    fn address(dst: Reg, target: Global) -> Self;
+    fn table(index: Reg, targets: sequence(Block)) -> Self;
 }
 
 typeset GprValue = Type::BOOL | ScalarInteger | Type::PTR;

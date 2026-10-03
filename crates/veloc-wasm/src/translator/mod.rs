@@ -22,6 +22,8 @@ pub struct WasmTranslator<'a> {
     terminated: bool,
     use_names: bool,
     pub(crate) hardware_memory_checks: bool,
+    /// Some machines can partially complete an unaligned store before faulting.
+    pub(crate) probe_guarded_stores: bool,
 
     pub metadata: &'a WasmMetadata,
     pub ir_sig_ids: &'a [SigId],
@@ -75,6 +77,7 @@ impl<'a> WasmTranslator<'a> {
             next_var_idx: 0,
             use_names,
             hardware_memory_checks: false,
+            probe_guarded_stores: false,
             memory_vars: Vec::new(),
             table_vars: Vec::new(),
             global_ptr_vars: Vec::new(),
@@ -192,7 +195,7 @@ impl<'a> WasmTranslator<'a> {
                 let ptr = self.builder.ins().load(
                     vmctx,
                     offset,
-                    MemFlags::new().with_alignment(alignment),
+                    MemFlags::new().with_notrap(true).with_alignment(alignment),
                     VelocType::PTR,
                 );
                 if self.use_names {
@@ -420,9 +423,7 @@ impl<'a> WasmTranslator<'a> {
         match ty {
             VelocType::I32 => {
                 if v_ty == VelocType::BOOL {
-                    let one = self.builder.ins().i32const((1) as i32);
-                    let zero = self.builder.ins().i32const((0) as i32);
-                    self.builder.ins().select(v, one, zero)
+                    self.builder.ins().extendu(v, VelocType::I32)
                 } else if v_ty == VelocType::I64 || v_ty == VelocType::PTR {
                     self.builder.ins().wrap(v, VelocType::I32)
                 } else {
@@ -431,9 +432,7 @@ impl<'a> WasmTranslator<'a> {
             }
             VelocType::I64 => {
                 if v_ty == VelocType::BOOL {
-                    let one = self.builder.ins().i64const((1) as i64);
-                    let zero = self.builder.ins().i64const((0) as i64);
-                    self.builder.ins().select(v, one, zero)
+                    self.builder.ins().extendu(v, VelocType::I64)
                 } else if v_ty == VelocType::I32 {
                     self.builder.ins().extendu(v, VelocType::I64)
                 } else if v_ty == VelocType::PTR {

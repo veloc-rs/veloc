@@ -6,7 +6,8 @@ extern crate veloc_test_mir as veloc_mir;
 
 use veloc_mir::constant::ScalarConst;
 use veloc_mir::{
-    Arguments, BlockCall, CallConv, InstView, IntCC, Linkage, ModuleBuilder, Opcode, Type, Value,
+    Arguments, CallConv, InstView, IntCC, Linkage, ModuleBuilder, Opcode, SuccessorData, Type,
+    Value,
 };
 
 #[allow(dead_code)]
@@ -250,7 +251,7 @@ fn function_edits_keep_layout_and_successor_edges_in_sync() {
     let old = func.layout().block_order().nth(1).unwrap();
     let new = func.layout().block_order().nth(2).unwrap();
     let jump = func.layout().first_inst(entry).unwrap();
-    let dest = BlockCall::new(new, &[]);
+    let dest = SuccessorData::new(new, &[]);
     func.edit()
         .replace_inst(jump, |writer: veloc_mir::InstWriter<'_>| {
             writer.jump(dest.as_view())
@@ -375,10 +376,10 @@ fn unified_slots_distinguish_repeated_successors_and_vector_operands() {
     use veloc_mir::dfg::DataFlowGraph;
     use veloc_mir::inst::VectorExtData;
     let mut dfg = DataFlowGraph::new();
-    let call = BlockCall::new(Block(0), &[Value(0)]);
+    let call = SuccessorData::new(Block(0), &[Value(0)]);
     let table = [call.clone(), call.clone()];
     let data = |writer: veloc_mir::InstWriter<'_>| {
-        writer.br_table(Value(0), table.iter().map(BlockCall::as_view))
+        writer.br_table(Value(0), table.iter().map(SuccessorData::as_view))
     };
     let first = dfg.create_inst(data.clone());
     let other = dfg.create_inst(data);
@@ -654,7 +655,7 @@ fn construction_does_not_validate_type_contracts() {
                 if case == "branch" {
                     ins.br(i, dest, &[], dest, &[]);
                 } else {
-                    let call = veloc_mir::BlockCall::new(dest, &[]);
+                    let call = veloc_mir::SuccessorData::new(dest, &[]);
                     ins.br_table(f, call, &[]);
                 }
                 drop(ins);

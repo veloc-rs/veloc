@@ -3,8 +3,8 @@
 Dump LIR after selected passes, optionally restricting the function name:
 
 ```sh
-cargo run --release -p veloc-wasm --bin veloc-wasm -- \
-  crates/veloc-wasm/tests/wasm/coremark.wasm --strategy jit --compile-only \
+cargo run --release -p veloc-wasm --bin veloc-wasm -- emit \
+  crates/veloc-wasm/tests/wasm/coremark.wasm --strategy jit --emit object -o /tmp/coremark.o \
   --dump-after translated,legalize,selected,final \
   --dump-function func_10 2> /tmp/coremark.lir
 ```
@@ -14,7 +14,7 @@ checkpoints. Dumps go to stderr and do not require verification to be enabled.
 Omit `--dump-function` to include all functions. Pass names appear in dump headers
 and in `--print-stats` output.
 
-Use `--print-stats --compile-only` to inspect aggregate pass timings, instruction
+Use `emit --emit object -o module.o --print-stats` to inspect aggregate pass timings, instruction
 counts (translated, legalized, selected, final) and emitted code/data bytes.
 Timings exclude IR printing. They are not total compilation time: frontend work,
 translation, object packaging and loading must also be measured separately.

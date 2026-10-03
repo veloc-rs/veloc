@@ -1,8 +1,8 @@
 //! Local list scheduling with register dependencies and pressure control.
 //!
 //! Only operations explicitly declared movable by the target enter a region.
-//! Memory accesses retain source order. Volatile, unknown and control effects
-//! remain barriers; no alias independence is assumed.
+//! Nontrapping reads may reorder; writes retain order with every memory access.
+//! Volatile, unknown and control effects remain barriers.
 //! Selection has already resolved hardware state to physical register operands.
 use crate::analysis::{LivenessInfo, RegSet};
 use crate::pipeline::{FunctionPass, FunctionSession, FunctionStage};
@@ -210,7 +210,7 @@ fn schedule_region(
         function: f,
         insts: ids,
     };
-    let graph = DependencyGraph::build(region, live_out);
+    let graph = DependencyGraph::build(region, live_out, target);
     schedule_order(region, target, live_out, &graph, verify)
         .into_iter()
         .map(|node| region.inst_id(node))

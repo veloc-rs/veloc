@@ -13,7 +13,7 @@ pub struct Inst(pub u32);
 entity_impl!(Inst, "inst");
 
 mod storage;
-pub use storage::{Arguments, Successor, SuccessorMut, Successors};
+pub use storage::{Arguments, Successor, Successors};
 pub(crate) use storage::{FieldPool, StoredInst};
 
 /// A single-use write into one DFG. Generated methods encode directly into
@@ -68,11 +68,16 @@ impl InstView<'_> {
         self.memory_flags().is_some_and(|flags| flags.is_volatile())
     }
 
+    pub fn may_trap(&self) -> bool {
+        self.opcode().spec().may_trap()
+            && !self.memory_flags().is_some_and(|flags| flags.is_notrap())
+    }
+
     /// Deletion, speculation and commoning have different preconditions.
     pub fn can_erase(&self) -> bool {
         let spec = self.opcode().spec();
         !spec.is_terminator()
-            && !spec.may_trap()
+            && !self.may_trap()
             && !self.opcode().transfers_ownership()
             && !self.has_volatile_access()
             && self.memory_effect().can_erase()
@@ -94,7 +99,7 @@ impl InstView<'_> {
     pub fn has_side_effects(&self) -> bool {
         let spec = self.opcode().spec();
         spec.is_terminator()
-            || spec.may_trap()
+            || self.may_trap()
             || self.has_volatile_access()
             || self.memory_effect().has_side_effects()
     }
@@ -109,20 +114,20 @@ impl fmt::Display for InstView<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Block, BlockCall};
+    use crate::{Block, SuccessorData};
 
     #[test]
     fn successor_views_preserve_occurrences_and_default_order() {
         let mut dfg = DataFlowGraph::new();
-        let first = BlockCall::new(Block(1), &[Value(1)]);
-        let second = BlockCall::new(Block(2), &[Value(2), Value(3)]);
-        let default = BlockCall::new(Block(3), &[]);
+        let first = SuccessorData::new(Block(1), &[Value(1)]);
+        let second = SuccessorData::new(Block(2), &[Value(2), Value(3)]);
+        let default = SuccessorData::new(Block(3), &[]);
         let inst = dfg.create_inst(|writer| {
             writer.br_table(
                 Value(0),
                 [first.clone(), second.clone(), first, default]
                     .iter()
-                    .map(BlockCall::as_view),
+                    .map(SuccessorData::as_view),
             )
         });
         let InstView::BrTable { table, .. } = dfg.inst(inst) else {

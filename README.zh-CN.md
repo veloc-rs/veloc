@@ -22,7 +22,7 @@ cargo build --workspace --release
 使用解释器运行仓库内置的 CoreMark WebAssembly 模块：
 
 ```bash
-cargo run --release -p veloc-wasm --bin veloc-wasm -- \
+cargo run --release -p veloc-wasm --bin veloc-wasm -- run \
   crates/veloc-wasm/tests/wasm/coremark.wasm \
   --strategy interpreter
 ```
@@ -30,7 +30,7 @@ cargo run --release -p veloc-wasm --bin veloc-wasm -- \
 也可以使用 x86-64 原生 JIT：
 
 ```bash
-cargo run --release -p veloc-wasm --bin veloc-wasm -- crates/veloc-wasm/tests/wasm/coremark.wasm --strategy jit
+cargo run --release -p veloc-wasm --bin veloc-wasm -- run crates/veloc-wasm/tests/wasm/coremark.wasm --strategy jit
 ```
 
 在 x86-64 Linux 上运行完整的 JIT CoreMark 回归测试（检查验证信息和 CRC）：
@@ -40,38 +40,64 @@ CARGO_INCREMENTAL=0 cargo test --release -p veloc-wasm --test jit \
   coremark_validates_under_jit -- --ignored --nocapture
 ```
 
-CLI 接受 `.wasm` 和 `.wat` 文件，默认调用 `_start`，并提供 `interpreter`、`jit` 和 `auto` 三种执行策略。
+`run` 默认使用解释器调用 `_start`。执行策略包括 `interpreter`、`jit`、
+`fast-jit`（Linux x86-64）和 `auto`（当前选择 JIT）。
+读取 WAT 文件需要使用 `--features wat` 构建。
 
-在使用 glibc 的 Linux x86-64 上，解释器可使用受保护的虚拟内存检查 Wasm 内存读写越界：
+默认的 `--memory-checks auto` 在 Linux x86-64 / RV64 glibc 原生执行时使用保护页，
+其他环境使用软件边界检查。`--memory-checks software` 可强制软件检查。
+Linux x86-64 glibc 上的解释器也可显式启用保护页：
 
 ```bash
-cargo run --release -p veloc-wasm --bin veloc-wasm -- \
-  path/to/module.wasm --strategy interpreter --hardware-memory-checks
+cargo run --release -p veloc-wasm --bin veloc-wasm -- run \
+  path/to/module.wasm --strategy interpreter --memory-checks guarded
 ```
 
-该选项默认关闭；JIT 仍使用软件边界检查。
-启用后会安装进程级 SIGSEGV/SIGBUS 处理器，并要求 Rust 构建支持 unwind。
+保护页模式会安装进程级 SIGSEGV/SIGBUS 处理器。原生代码通过 C 陷阱边界返回，
+解释器保护页要求 Rust 构建支持 unwind。RV64 在写入前探测最后一个字节，
+避免非对齐越界写入先修改部分内存。交叉编译对象时也可显式选择 guarded，
+但加载该对象的运行时必须支持对应的陷阱处理。
 
 ## 查看生成结果
 
 ```bash
 # 打印 Veloc IR，不执行模块
-cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wat --dump-ir
+cargo run -p veloc-wasm --features wat --bin veloc-wasm -- emit path/to/module.wat --emit mir
 
 # 将 Veloc IR 写入文件
-cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
-  --output-ir module.veloc-mir
+cargo run -p veloc-wasm --bin veloc-wasm -- emit path/to/module.wasm --emit mir -o module.veloc-mir
 
 # 打印解释器字节码
-cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
-  --strategy interpreter --dump-bytecode
+cargo run -p veloc-wasm --bin veloc-wasm -- emit path/to/module.wasm --emit bytecode
 
 # 打印优化统计信息并生成 Chrome Trace
-cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
+cargo run -p veloc-wasm --bin veloc-wasm -- run path/to/module.wasm \
   -O 1 --print-stats --trace-file optimizer-trace.json
 ```
 
 运行 `cargo run -p veloc-wasm --bin veloc-wasm -- --help` 可以查看完整的 CLI 参数。
+
+CLI 只保留 `run`、`emit`、`inspect` 三个命令；不再支持直接传入文件的旧入口、
+`--output-ir` 或 `--compile-only`。`-O0`、`-O1` 同时选择 MIR 与机器码优化流程，
+其他等级会报错。所有 `--dump-*` 都输出到 stderr，并继续当前命令。
+`emit` 只生成指定产物，不链接导入、不实例化模块，也不执行模块的 start 函数。
+
+```sh
+# 带类型参数调用导出函数
+veloc-wasm run add.wasm --invoke add --arg i32:1 --arg i32:2
+# 设置 WASI 环境变量与命令行参数
+veloc-wasm run app.wasm --env MODE=fast -- input.txt
+# 从后端声明查询 CPU 与指令集特性
+veloc-wasm inspect cpus --target riscv64
+veloc-wasm inspect features --target riscv64
+# 本机交叉编译 ELF 目标文件，不加载执行
+veloc-wasm emit module.wasm --emit object --target riscv64 --cpu c908 -o module.o
+```
+
+文本产物默认写到 stdout；`-o -` 显式选择 stdout。object 输出必须指定 `-o`。
+目标文件依赖 Veloc 的运行时 ABI，不是独立可执行程序。
+库接口以 `Config.codegen.opt_level` 作为统一优化等级，
+`Engine::new` 和 `Engine::with_config` 均返回 `Result`。
 
 ## 工作原理
 

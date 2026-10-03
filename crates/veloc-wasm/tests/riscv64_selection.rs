@@ -39,7 +39,7 @@ fn scheduled_integer_dags_match_interpreter() {
     wat.push(')');
     let wasm = wat::parse_str(&wat).unwrap();
     let run = |config| {
-        let engine = Engine::with_config(config);
+        let engine = Engine::with_config(config).unwrap();
         let module = Module::new(&engine, &wasm).unwrap();
         let mut store = Store::new();
         let instance = Linker::new().instantiate(&mut store, module).unwrap();
@@ -67,20 +67,17 @@ fn scheduled_integer_dags_match_interpreter() {
     });
     for cpu in ["generic", "c908"] {
         for level in [OptLevel::None, OptLevel::Default] {
-            for mir_level in [0, 1] {
-                let actual = run(Config {
-                    strategy: Strategy::Jit,
-                    cpu: cpu.into(),
-                    opt_level: mir_level,
-                    codegen: CodegenOptions {
-                        opt_level: level,
-                        verify: true,
-                        ..Default::default()
-                    },
+            let actual = run(Config {
+                strategy: Strategy::Jit,
+                cpu: cpu.into(),
+                codegen: CodegenOptions {
+                    opt_level: level,
+                    verify: true,
                     ..Default::default()
-                });
-                assert_eq!(actual, expected, "{cpu}, {level:?}, MIR O{mir_level}");
-            }
+                },
+                ..Default::default()
+            });
+            assert_eq!(actual, expected, "{cpu}, {level:?}");
         }
     }
 }
@@ -200,7 +197,7 @@ fn scalar_selection_matches_interpreter() {
     ));
     let wasm = wat::parse_str(&wat).unwrap();
     let run = |config| {
-        let engine = Engine::with_config(config);
+        let engine = Engine::with_config(config).unwrap();
         let module = Module::new(&engine, &wasm).unwrap();
         let mut store = Store::new();
         let instance = Linker::new().instantiate(&mut store, module).unwrap();
@@ -229,8 +226,12 @@ fn scalar_selection_matches_interpreter() {
                 strategy: Strategy::Jit,
                 cpu: cpu.into(),
                 cpu_features: features.iter().map(|s| s.to_string()).collect(),
-                opt_level,
                 codegen: veloc_wasm::veloc::codegen::CodegenOptions {
+                    opt_level: if opt_level == 0 {
+                        veloc_wasm::engine::OptLevel::None
+                    } else {
+                        veloc_wasm::engine::OptLevel::Default
+                    },
                     verify: true,
                     ..Default::default()
                 },

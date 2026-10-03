@@ -323,8 +323,25 @@ pub(super) fn compile(
                         AttributeKind::from_spec(&ty)
                             .ok_or_else(|| format!("unsupported machine attribute type `{ty}`"))?,
                     ),
-                    _ => return Err("machine instructions require fixed operands".into()),
+                    Operand::Successor(name) => {
+                        OperandConstraint::Attribute(name, AttributeKind::Block)
+                    }
+                    Operand::Successors(name) => {
+                        OperandConstraint::Attribute(name, AttributeKind::Blocks)
+                    }
+                    _ => return Err("machine instructions require fixed register operands".into()),
                 });
+            }
+            if let Some(index) = operands
+                .iter()
+                .position(|op| matches!(op, OperandConstraint::Attribute(_, AttributeKind::Blocks)))
+            {
+                if operands[index + 1..]
+                    .iter()
+                    .any(|op| matches!(op, OperandConstraint::Attribute(..)))
+                {
+                    return Err("successor sequence must be the final attribute".into());
+                }
             }
             let names = operands
                 .iter()
@@ -504,7 +521,7 @@ pub(super) fn compile(
             ) {
                 return Err(format!("unknown control flow `{flow}`"));
             }
-            let has_memory = if let Some(node) = fields.remove("memory") {
+            let memory = if let Some(node) = fields.remove("memory") {
                 let mut fields = object(node)?;
                 let kind = fields.remove("kind").ok_or("missing memory kind")?;
                 let bytes = number(&fields.remove("bytes").ok_or("missing memory size")?)?;
@@ -512,15 +529,15 @@ pub(super) fn compile(
                     return Err("expected Read/Write with a positive byte size".into());
                 }
                 finish(&fields)?;
-                true
+                Some((name(&kind)?.to_owned(), bytes))
             } else {
-                false
+                None
             };
             let flag_count = operands
                 .iter()
                 .filter(|op| matches!(op, OperandConstraint::Attribute(_, AttributeKind::MemFlags)))
                 .count();
-            if flag_count != usize::from(has_memory) {
+            if flag_count != usize::from(memory.is_some()) {
                 return Err("a memory instruction requires exactly one MemFlags field; other instructions must not have one".into());
             }
             let is_pseudo = match fields.remove("pseudo") {
@@ -557,6 +574,7 @@ pub(super) fn compile(
                 clobbers,
                 schedule_class,
                 movable,
+                memory,
                 flow,
                 encoding: None,
                 is_pseudo,

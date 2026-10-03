@@ -1,6 +1,8 @@
 use crate::error::{Error, Result};
+pub(crate) mod native;
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub(crate) struct MemoryRange {
     pub start: usize,
     pub accessible_end: usize,
@@ -43,10 +45,6 @@ mod platform {
 
     static PREVIOUS: OnceLock<Previous> = OnceLock::new();
     static INSTALL_RESULT: OnceLock<core::result::Result<(), i32>> = OnceLock::new();
-
-    pub(super) fn enabled() -> bool {
-        INSTALL_RESULT.get().is_some_and(|result| result.is_ok())
-    }
 
     #[derive(Debug)]
     struct MemoryFault(i32);
@@ -96,6 +94,10 @@ mod platform {
         info: *mut libc::siginfo_t,
         context: *mut c_void,
     ) {
+        #[cfg(veloc_native_traps)]
+        unsafe {
+            super::native::veloc_native_handle_signal(signal, info, context);
+        }
         let fault = unsafe { (*info).si_addr() as usize };
         let in_wasm_memory = ACTIVE
             .try_with(|active| {
@@ -191,6 +193,9 @@ pub(crate) fn install() -> Result<()> {
     }
     #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
     {
+        // Keep the unwind-capable interpreter handler outermost, regardless
+        // of which engine strategy is instantiated first.
+        native::install()?;
         platform::install()
     }
     #[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu")))]
@@ -198,17 +203,6 @@ pub(crate) fn install() -> Result<()> {
         Err(Error::Unsupported(
             "hardware memory checks require Linux x86-64 with glibc".into(),
         ))
-    }
-}
-
-pub(crate) fn enabled() -> bool {
-    #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
-    {
-        platform::enabled()
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu")))]
-    {
-        false
     }
 }
 

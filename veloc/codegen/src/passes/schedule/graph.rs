@@ -1,10 +1,11 @@
 //! Ordering constraints are independent of scheduling priorities and CPU resources.
 use super::{NodeId, Region};
 use crate::analysis::RegSet;
+use crate::target::TargetSchedule;
 use cranelift_entity::PrimaryMap;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
-use veloc_lir::Reg;
+use veloc_lir::{MachineOpcode, Reg};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DependencyKind {
@@ -28,7 +29,7 @@ pub(super) struct DependencyGraph {
 }
 
 impl DependencyGraph {
-    pub fn build(region: Region<'_>, live_out: &RegSet) -> Self {
+    pub fn build(region: Region<'_>, live_out: &RegSet, target: &dyn TargetSchedule) -> Self {
         let mut graph = Self {
             edges: region.nodes().map(|_| SmallVec::new()).collect(),
             indegree: region.nodes().map(|_| 0).collect(),
@@ -36,14 +37,29 @@ impl DependencyGraph {
         let mut definitions = HashMap::<Reg, NodeId>::new();
         let mut resources = HashMap::<Reg, ResourceAccess>::new();
         let mut last_memory = None;
+        let mut reads = Vec::new();
         for node in region.nodes() {
-            // Until alias analysis proves independence, keep all accesses in
-            // source order. Pure computations may still fill load latency gaps.
-            if region.inst(node).mem_flags().is_some() {
+            let inst = region.inst(node);
+            if let Some(flags) = inst.mem_flags() {
+                // Nontrapping ordinary reads commute even when they alias.
+                // Writes and potentially trapping accesses are barriers until
+                // an alias analysis proves a weaker ordering sufficient.
+                let read = flags.is_notrap()
+                    && !flags.is_volatile()
+                    && matches!(inst.opcode(), MachineOpcode::Target(op)
+                        if target.instruction_metadata(op).memory.is_some_and(|m|
+                            m.effect == veloc_types::MemoryEffects::READ));
                 if let Some(previous) = last_memory {
                     graph.edge(previous, node, DependencyKind::Memory);
                 }
-                last_memory = Some(node);
+                if read {
+                    reads.push(node);
+                } else {
+                    for previous in reads.drain(..) {
+                        graph.edge(previous, node, DependencyKind::Memory);
+                    }
+                    last_memory = Some(node);
+                }
             }
             let access = region.inst(node).register_access();
             for value in access.reads() {

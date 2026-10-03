@@ -1,3 +1,5 @@
+pub mod block_placement;
+pub mod constants;
 pub mod frame;
 pub mod isel;
 pub mod lowering;
@@ -8,3 +10,5 @@ pub use isel::InstructionSelectionPass;
 pub use lowering::LegalizePass;
 pub use unreachable::RemoveUnreachablePass;
 pub mod schedule;
+
+pub mod cse;

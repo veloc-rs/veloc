@@ -30,6 +30,38 @@ impl From<veloc_mir::CallConv> for CallConv {
 }
 
 impl CallConv {
+    /// Scalar C varargs, after the frontend's default argument promotions.
+    pub fn plan_variadic(
+        &self,
+        arch: TargetArch,
+        layout: &DataLayout,
+        args: &[Type],
+        returns: &[Type],
+        fixed: usize,
+    ) -> Result<AbiPlan, crate::Error> {
+        if fixed > args.len() {
+            return Err(crate::Error::codegen("invalid variadic argument boundary"));
+        }
+        if arch != TargetArch::Riscv64 {
+            return Err(crate::Error::codegen(
+                "variadic ABI lowering is currently implemented for RISC-V only",
+            ));
+        }
+        let mut transport = args.to_vec();
+        for ty in &mut transport[fixed..] {
+            match *ty {
+                Type::F64 => *ty = Type::I64,
+                Type::I32 | Type::I64 | Type::PTR => {}
+                _ => {
+                    return Err(crate::Error::codegen(
+                        "unsupported variadic argument representation",
+                    ));
+                }
+            }
+        }
+        self.plan(arch, layout, &transport, returns)
+    }
+
     /// Compute the same protocol for caller and callee.
     pub fn plan(
         &self,

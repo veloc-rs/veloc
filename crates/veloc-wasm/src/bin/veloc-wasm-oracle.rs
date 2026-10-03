@@ -1,10 +1,11 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
 use veloc_wasm::{
     Engine, Module, Store, Val,
-    engine::{Config, Strategy},
+    cli_support::{parse_opt_level, parse_val, read_wasm},
+    engine::{Config, OptLevel, Strategy},
     linker::Linker,
 };
 
@@ -28,8 +29,8 @@ struct Args {
     args: Vec<String>,
 
     /// Optimization level used by both engines.
-    #[arg(short = 'O', long, default_value = "1")]
-    opt_level: u8,
+    #[arg(short = 'O', long, default_value = "1", value_parser = parse_opt_level)]
+    opt_level: OptLevel,
 
     /// Dump generated IR for both engines.
     #[arg(long)]
@@ -44,8 +45,12 @@ fn main() -> Result<()> {
     #[cfg(feature = "logging")]
     env_logger::init();
     let args = Args::parse();
-    let wasm = read_wasm_or_wat(&args.file)?;
-    let call_args = parse_args(&args.args)?;
+    let wasm = read_wasm(&args.file)?;
+    let call_args = args
+        .args
+        .iter()
+        .map(|arg| parse_val(arg))
+        .collect::<Result<Vec<_>>>()?;
 
     let interp = run_once(
         Strategy::Interpreter,
@@ -91,28 +96,30 @@ fn run_once(
     wasm: &[u8],
     export: &str,
     args: &[Val],
-    opt_level: u8,
+    opt_level: OptLevel,
     dump_ir: bool,
 ) -> RunOutcome {
     let outcome = (|| -> Result<Vec<Val>> {
         let config = Config {
-            codegen: Default::default(),
+            codegen: veloc_wasm::veloc::codegen::CodegenOptions {
+                opt_level,
+                ..Default::default()
+            },
             cpu: "generic".into(),
             cpu_features: Vec::new(),
             strategy,
-            hardware_memory_checks: false,
+            memory_checks: veloc_wasm::engine::MemoryChecks::Software,
             dump_ir,
             ir_names: false,
             verify_ir: true,
-            opt_level,
             fast_egraph: false,
-            output_ir: None,
             trace_file: None,
             trace_details: false,
             print_stats: false,
             opt_debug: Vec::new(),
+            ..Config::default()
         };
-        let engine = Arc::new(Engine::with_config(config));
+        let engine = Arc::new(Engine::with_config(config)?);
         let module = Module::new(&engine, wasm)
             .map_err(|err| anyhow!("failed to compile module in {:?} mode: {}", strategy, err))?;
         let mut store = Store::new();
@@ -137,58 +144,6 @@ fn run_once(
     })();
 
     RunOutcome { results: outcome }
-}
-
-fn read_wasm_or_wat(path: &PathBuf) -> Result<Vec<u8>> {
-    if path.extension().and_then(|ext| ext.to_str()) != Some("wat") {
-        return std::fs::read(path)
-            .with_context(|| format!("failed to read Wasm file: {}", path.display()));
-    }
-
-    #[cfg(feature = "wat")]
-    {
-        wat::parse_file(path)
-            .with_context(|| format!("failed to parse WAT file: {}", path.display()))
-    }
-    #[cfg(not(feature = "wat"))]
-    {
-        Err(anyhow!(
-            "WAT input requires rebuilding veloc-wasm with `--features wat`"
-        ))
-    }
-}
-
-fn parse_args(args: &[String]) -> Result<Vec<Val>> {
-    args.iter().map(|arg| parse_val(arg)).collect()
-}
-
-fn parse_val(arg: &str) -> Result<Val> {
-    let (ty, value) = arg
-        .split_once(':')
-        .ok_or_else(|| anyhow!("argument `{}` must have the form `<type>:<value>`", arg))?;
-    match ty {
-        "i32" => {
-            Ok(Val::I32(value.parse().with_context(|| {
-                format!("invalid i32 literal `{}`", value)
-            })?))
-        }
-        "i64" => {
-            Ok(Val::I64(value.parse().with_context(|| {
-                format!("invalid i64 literal `{}`", value)
-            })?))
-        }
-        "f32" => {
-            Ok(Val::F32(value.parse().with_context(|| {
-                format!("invalid f32 literal `{}`", value)
-            })?))
-        }
-        "f64" => {
-            Ok(Val::F64(value.parse().with_context(|| {
-                format!("invalid f64 literal `{}`", value)
-            })?))
-        }
-        _ => bail!("unsupported argument type `{}`", ty),
-    }
 }
 
 fn print_outcome(label: &str, outcome: &Result<Vec<Val>>) {

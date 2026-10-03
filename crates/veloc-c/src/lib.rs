@@ -6,9 +6,12 @@
 
 pub mod ast;
 pub mod codegen;
+mod constant;
 pub mod error;
 pub mod lexer;
 pub mod parser;
+mod types;
+mod visit;
 
 use std::format;
 use std::path::Path;
@@ -23,7 +26,7 @@ pub use veloc_mir::Module;
 /// Parse C source code and return the AST
 pub fn parse(source: &str) -> Result<TranslationUnit> {
     let lexer = Lexer::new(source);
-    let mut parser = Parser::new(lexer);
+    let mut parser = Parser::new(lexer)?;
     parser.parse_translation_unit()
 }
 

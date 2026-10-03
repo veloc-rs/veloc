@@ -20,6 +20,7 @@ pub(crate) struct FinalInstDef {
     clobbers: Vec<String>,
     schedule_class: Option<String>,
     movable: bool,
+    memory: Option<(String, u32)>,
     flow: String,
     encoding: Option<String>,
     is_pseudo: bool,
@@ -149,7 +150,7 @@ impl Plan {
                         OperandConstraint::Attribute(_, kind) => Some((
                             kind.description().field_variant,
                             String::new(),
-                            crate::storage::operands::Shape::One,
+                            kind.shape(),
                         )),
                         _ => None,
                     })
@@ -167,7 +168,7 @@ impl Plan {
                             OperandConstraint::Attribute(
                                 _,
                                 AttributeKind::Block
-                                    | AttributeKind::Global
+                                    | AttributeKind::Blocks
                                     | AttributeKind::StackSlot
                                     | AttributeKind::Call
                             )

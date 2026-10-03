@@ -231,6 +231,15 @@ impl TargetDescription {
 }
 
 /// 目标配置
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExternalCalls {
+    /// The runtime may place imported functions anywhere in the address space.
+    #[default]
+    ArbitraryAddress,
+    /// A native linker supplies direct calls or a nearby PLT/trampoline.
+    Linker,
+}
+
 #[derive(Debug, Clone)]
 pub struct TargetConfig {
     pub arch: TargetArch,
@@ -241,6 +250,7 @@ pub struct TargetConfig {
     pub cpu: String,
     /// 调优目标，可能与 cpu 不同（如编译在通用 CPU 上运行但针对特定 CPU 优化）
     pub tune: String,
+    pub external_calls: ExternalCalls,
 }
 
 impl Default for TargetConfig {
@@ -250,6 +260,7 @@ impl Default for TargetConfig {
             features: Vec::new(),
             cpu: "generic".to_string(),
             tune: "generic".to_string(),
+            external_calls: ExternalCalls::ArbitraryAddress,
         }
     }
 }

@@ -18,3 +18,35 @@ impl<'a> FeatureSetRef<'a> {
             .all(|(index, mask)| self.words.get(index).copied().unwrap_or(0) & mask == *mask)
     }
 }
+
+/// Target names taken from the same schemas used by code generation.
+pub struct TargetCapabilities {
+    pub cpus: std::vec::Vec<&'static str>,
+    pub features: std::vec::Vec<&'static str>,
+}
+
+pub fn capabilities(arch: super::TargetArch) -> crate::Result<TargetCapabilities> {
+    match arch {
+        super::TargetArch::X86_64 => {
+            use super::x86_64::inst;
+            Ok(TargetCapabilities {
+                cpus: inst::SUPPORTED_CPUS.iter().map(|cpu| cpu.name).collect(),
+                features: inst::ALL_FEATURES
+                    .iter()
+                    .map(|feature| feature.name())
+                    .collect(),
+            })
+        }
+        super::TargetArch::Riscv64 => {
+            use super::riscv64::inst;
+            Ok(TargetCapabilities {
+                cpus: inst::SUPPORTED_CPUS.iter().map(|cpu| cpu.name).collect(),
+                features: inst::ALL_FEATURES
+                    .iter()
+                    .map(|feature| feature.name())
+                    .collect(),
+            })
+        }
+        _ => Err(crate::Error::target_machine_unavailable(arch)),
+    }
+}

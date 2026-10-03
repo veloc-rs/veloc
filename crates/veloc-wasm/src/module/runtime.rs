@@ -7,6 +7,7 @@ unsafe extern "C" {
 
 pub extern "C" fn wasm_trap_handler(_vmctx: *mut VMContext, code: u32) -> ! {
     unsafe {
+        crate::trap::native::raise(code + 1);
         let vmctx = &*_vmctx;
         let instance = VMInstance::from_vmctx(_vmctx);
         let offsets = &instance.module.inner.offsets;

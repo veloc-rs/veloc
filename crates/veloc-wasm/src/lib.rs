@@ -3,6 +3,7 @@ extern crate alloc;
 // Re-export veloc crate for advanced usage
 pub use veloc;
 
+pub mod cli_support;
 pub mod engine;
 pub mod error;
 pub mod func;

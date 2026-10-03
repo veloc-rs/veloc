@@ -6,17 +6,6 @@ type Value = rust("crate::Value") {
     fn ty(self) -> Type { value = type(self); }
 }
 
-// Operand groups retain only lengths and control-flow metadata in instruction fields.
-type ValueList = rust("crate::inst::Arguments") {
-    field = list(Value);
-}
-type BlockCall = rust("crate::inst::Successor") {
-    field = edge(Value);
-}
-type JumpTable = rust("crate::inst::Successors") {
-    field = list(BlockCall);
-}
-
 // Rust-owned data types used by operation properties and host interfaces.
 type Int = rust("crate::Int") {
     fn ty(self) -> Type { value = type(self); }

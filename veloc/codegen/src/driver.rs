@@ -104,6 +104,7 @@ impl<'a> CodegenPipeline<'a> {
                         &compiled.symbols,
                     );
                 }
+                object.add_globals(module.globals())?;
                 // Only referenced imports need runtime symbol resolution.
                 object.finish(&self.profile)
             })

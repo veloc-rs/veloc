@@ -29,7 +29,7 @@ impl TypeContext {
         returns: &[Type],
         call_conv: CallConv,
     ) -> SigId {
-        self.signatures.intern(params, returns, call_conv)
+        self.signatures.intern(params, returns, call_conv, false)
     }
 
     /// Import the source context and return its signature-ID mapping.

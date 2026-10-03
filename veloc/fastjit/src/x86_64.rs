@@ -13,6 +13,9 @@ impl image::Target for Target {
         if sig.call_conv != CallConv::SystemV {
             return Err(unsupported("calling convention"));
         }
+        if sig.variadic {
+            return Err(unsupported("variadic function definitions"));
+        }
         compile_function(module, body, sig.params(), sig.returns())
     }
 }
@@ -515,6 +518,9 @@ fn compile_function<'a>(
                 _ => None,
             };
             if let Some(sig) = sig {
+                if sig.variadic {
+                    return Err(unsupported("variadic calls"));
+                }
                 let stack = abi_args(sig.params())?
                     .into_iter()
                     .filter(|arg| matches!(arg, AbiArg::Stack(_)))

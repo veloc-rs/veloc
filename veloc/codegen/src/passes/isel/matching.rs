@@ -37,6 +37,7 @@ impl Program {
 #[derive(Clone, Copy)]
 enum FieldSource {
     Attribute(InstId, usize),
+    Successors(InstId),
     Imm(i64),
 }
 fn integer(inst: InstRef<'_>, index: usize) -> i64 {
@@ -158,6 +159,12 @@ pub(super) fn execute(
                     reader.pc = failure;
                 }
             }
+            Op::CheckSameValue { lhs, rhs, failure } => {
+                assert!(!accepted);
+                if values[lhs].expect("matched operand") != values[rhs].expect("matched operand") {
+                    reader.pc = failure;
+                }
+            }
             Op::CheckIntRange {
                 node,
                 index,
@@ -228,6 +235,10 @@ pub(super) fn execute(
                 assert!(accepted);
                 fields[dst] = Some(FieldSource::Attribute(insts[node].unwrap(), index));
             }
+            Op::ReadSuccessors { dst, node } => {
+                assert!(accepted);
+                fields[dst] = Some(FieldSource::Successors(insts[node].unwrap()));
+            }
             Op::ConstImm { dst, imm } => {
                 assert!(accepted);
                 fields[dst] = Some(FieldSource::Imm(imm));
@@ -249,24 +260,39 @@ pub(super) fn execute(
                     inputs.push(values[slot].expect("initialized input"));
                 }
                 for slot in field_slots.iter() {
-                    let mut field = match fields[slot].expect("initialized field") {
-                        FieldSource::Attribute(inst, index) => store.inst(inst).fields().at(index),
-                        FieldSource::Imm(value) => FieldValue::Imm(value),
-                    };
-                    if let FieldValue::Edge(edge) = &mut field {
-                        assert!(
-                            !edge_transfers.iter().any(|&(old, _)| old == *edge),
-                            "edge transferred twice"
-                        );
-                        assert!(
-                            store.inst(source).edge_ids().any(|id| id == *edge),
-                            "edge must belong to selection root"
-                        );
-                        let copy = store.clone_edge(*edge);
-                        edge_transfers.push((*edge, copy));
-                        *edge = copy;
+                    let source_fields: SmallVec<[FieldValue; 4]> =
+                        match fields[slot].expect("initialized field") {
+                            FieldSource::Successors(inst) => store
+                                .inst(inst)
+                                .fields()
+                                .successors()
+                                .iter()
+                                .copied()
+                                .map(FieldValue::Edge)
+                                .collect(),
+                            source => smallvec::smallvec![match source {
+                                FieldSource::Attribute(inst, index) =>
+                                    store.inst(inst).fields().at(index),
+                                FieldSource::Imm(value) => FieldValue::Imm(value),
+                                FieldSource::Successors(_) => unreachable!(),
+                            }],
+                        };
+                    for mut field in source_fields {
+                        if let FieldValue::Edge(edge) = &mut field {
+                            assert!(
+                                !edge_transfers.iter().any(|&(old, _)| old == *edge),
+                                "edge transferred twice"
+                            );
+                            assert!(
+                                store.inst(source).edge_ids().any(|id| id == *edge),
+                                "edge must belong to selection root"
+                            );
+                            let copy = store.clone_edge(*edge);
+                            edge_transfers.push((*edge, copy));
+                            *edge = copy;
+                        }
+                        operands.push(field);
                     }
-                    operands.push(field);
                 }
                 out.push(program.targets[target](
                     store, source, &results, &inputs, operands,

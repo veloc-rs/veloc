@@ -256,7 +256,7 @@ fn codec(kind: &AtomKind, rust: &RustTypes, host: Host<'_>) -> String {
     match kind {
         AtomKind::Value | AtomKind::OptionalValue => host.value(),
         AtomKind::Values => "super::atom::Values".into(),
-        AtomKind::Successor => "crate::BlockCall".into(),
+        AtomKind::Successor => "crate::SuccessorData".into(),
         AtomKind::Successors => "super::atom::Successors".into(),
         AtomKind::Integer => "super::atom::IntegerBits".into(),
         AtomKind::Bytes => "super::atom::Bytes".into(),

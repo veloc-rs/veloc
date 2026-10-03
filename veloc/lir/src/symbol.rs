@@ -64,6 +64,19 @@ impl SymbolTable {
     }
 
     /// 获取符号详情
+    pub fn get_or_create_global(&mut self, name: &str, linkage: Linkage) -> SymbolId {
+        if let Some((id, _)) = self.symbols.iter().find(|(_, sym)| sym.name == name) {
+            return id;
+        }
+        self.symbols.push(Symbol {
+            name: name.to_string(),
+            kind: SymbolKind::GlobalVariable,
+            linkage,
+            visibility: Visibility::Default,
+        })
+    }
+
+    /// 获取符号详情
     pub fn get(&self, id: SymbolId) -> &Symbol {
         &self.symbols[id]
     }

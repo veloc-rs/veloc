@@ -36,10 +36,21 @@ impl<'a> ObjectFileBuilder<'a> {
         let (format, architecture, endian) = object_format_for_target(target.desc().arch)?;
         let mut object = Object::new(format, architecture, endian);
         if target.desc().arch == TargetArch::Riscv64 {
+            use crate::target::riscv64::inst::{Feature, FeatureSet};
+            let c = FeatureSet::empty().with(Feature::C);
+            let compressed = target
+                .selector()
+                .features
+                .contains_all(crate::target::FeatureSetRef::new(c.as_words()));
             object.flags = object::FileFlags::Elf {
                 os_abi: 0,
                 abi_version: 0,
-                e_flags: object::elf::EF_RISCV_FLOAT_ABI_DOUBLE,
+                e_flags: object::elf::EF_RISCV_FLOAT_ABI_DOUBLE
+                    | if compressed {
+                        object::elf::EF_RISCV_RVC
+                    } else {
+                        0
+                    },
             };
         }
         let text_section = object.section_id(StandardSection::Text);
@@ -74,6 +85,55 @@ impl<'a> ObjectFileBuilder<'a> {
         });
     }
 
+    pub(crate) fn add_globals(&mut self, globals: &[veloc_mir::Global]) -> Result<()> {
+        for global in globals {
+            let id = self.ensure_text_symbol_name(&global.name);
+            let symbol = self.object.symbol_mut(id);
+            symbol.kind = SymbolKind::Data;
+            symbol.scope = symbol_scope(global.linkage);
+        }
+        for global in globals {
+            let Some(data) = &global.data else {
+                continue;
+            };
+            let id = self.symbols[&global.name];
+            let section = self.object.section_id(if data.writable {
+                StandardSection::Data
+            } else {
+                StandardSection::ReadOnlyData
+            });
+            let base = self
+                .object
+                .add_symbol_data(id, section, &data.bytes, data.align);
+            for relocation in &data.relocations {
+                if relocation
+                    .offset
+                    .checked_add(8)
+                    .is_none_or(|end| end > data.bytes.len() as u64)
+                {
+                    return Err(Error::codegen("data relocation out of bounds"));
+                }
+                let symbol = self.ensure_text_symbol_name(&relocation.symbol);
+                self.object
+                    .add_relocation(
+                        section,
+                        Relocation {
+                            offset: base + relocation.offset,
+                            symbol,
+                            addend: relocation.addend,
+                            flags: RelocationFlags::Generic {
+                                kind: RelocationKind::Absolute,
+                                encoding: RelocationEncoding::Generic,
+                                size: 64,
+                            },
+                        },
+                    )
+                    .map_err(|e| Error::codegen(format!("data relocation: {e}")))?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn finish(mut self, profile: &veloc_profile::Profile) -> Result<std::vec::Vec<u8>> {
         // Run after module post-emission passes, immediately before writing the
         // section. Every function and block participates in the same layout.
@@ -103,6 +163,59 @@ impl<'a> ObjectFileBuilder<'a> {
             });
             for relocation in emitted.relocations {
                 let (sym_name, target_symbol) = &self.relocation_symbols[&relocation.symbol];
+                if relocation.kind == crate::RelocationKind::RiscvCall {
+                    self.object
+                        .add_relocation(
+                            self.text_section,
+                            Relocation {
+                                offset: base_offset + relocation.offset,
+                                symbol: *target_symbol,
+                                addend: relocation.addend,
+                                flags: RelocationFlags::Elf {
+                                    r_type: object::elf::R_RISCV_CALL_PLT,
+                                },
+                            },
+                        )
+                        .map_err(|e| Error::codegen(format!("RISC-V call relocation: {e}")))?;
+                    continue;
+                }
+                if relocation.kind == crate::RelocationKind::RiscvPcRelativeAddress {
+                    let offset = base_offset + relocation.offset;
+                    let anchor = self.object.add_symbol(Symbol {
+                        name: Vec::new(),
+                        value: offset,
+                        size: 0,
+                        kind: SymbolKind::Label,
+                        scope: SymbolScope::Compilation,
+                        weak: false,
+                        section: SymbolSection::Section(self.text_section),
+                        flags: SymbolFlags::None,
+                    });
+                    for (offset, symbol, addend, r_type) in [
+                        (
+                            offset,
+                            *target_symbol,
+                            relocation.addend,
+                            object::elf::R_RISCV_PCREL_HI20,
+                        ),
+                        (offset + 4, anchor, 0, object::elf::R_RISCV_PCREL_LO12_I),
+                    ] {
+                        self.object
+                            .add_relocation(
+                                self.text_section,
+                                Relocation {
+                                    offset,
+                                    symbol,
+                                    addend,
+                                    flags: RelocationFlags::Elf { r_type },
+                                },
+                            )
+                            .map_err(|e| {
+                                Error::codegen(format!("RISC-V address relocation: {e}"))
+                            })?;
+                    }
+                    continue;
+                }
                 self.object
                     .add_relocation(
                         self.text_section,
@@ -116,6 +229,8 @@ impl<'a> ObjectFileBuilder<'a> {
                                         RelocationKind::Relative
                                     }
                                     crate::RelocationKind::Absolute64 => RelocationKind::Absolute,
+                                    crate::RelocationKind::RiscvPcRelativeAddress
+                                    | crate::RelocationKind::RiscvCall => unreachable!(),
                                 },
                                 encoding: match relocation.kind {
                                     crate::RelocationKind::RelativeBranch32 => {
@@ -124,10 +239,14 @@ impl<'a> ObjectFileBuilder<'a> {
                                     crate::RelocationKind::Absolute64 => {
                                         RelocationEncoding::Generic
                                     }
+                                    crate::RelocationKind::RiscvPcRelativeAddress
+                                    | crate::RelocationKind::RiscvCall => unreachable!(),
                                 },
                                 size: match relocation.kind {
                                     crate::RelocationKind::RelativeBranch32 => 32,
                                     crate::RelocationKind::Absolute64 => 64,
+                                    crate::RelocationKind::RiscvPcRelativeAddress
+                                    | crate::RelocationKind::RiscvCall => unreachable!(),
                                 },
                             },
                         },

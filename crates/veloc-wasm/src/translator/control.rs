@@ -531,7 +531,7 @@ impl<'a> WasmTranslator<'a> {
                 }
                 args.reverse();
 
-                let default_call = veloc::mir::BlockCall::new(default_target, &args);
+                let default_call = veloc::mir::SuccessorData::new(default_target, &args);
                 let mut table = Vec::new();
                 for t in targets.targets() {
                     let depth = t?;
@@ -543,7 +543,7 @@ impl<'a> WasmTranslator<'a> {
                         frame.end_label.unwrap()
                     };
                     // WASM ensures all targets have same arity and types
-                    table.push(veloc::mir::BlockCall::new(target, &args));
+                    table.push(veloc::mir::SuccessorData::new(target, &args));
                 }
                 self.builder.ins().br_table(index, default_call, &table);
                 self.terminated = true;

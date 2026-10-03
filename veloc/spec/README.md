@@ -823,8 +823,8 @@ type Value = rust("crate::Value") {
     fn ty(self) -> Type { value: type(self) }
 }
 type ValueList = rust("crate::inst::Arguments") { field: list(Value), }
-type BlockCall = rust("crate::inst::Successor") { field: edge(Value), }
-type JumpTable = rust("crate::inst::Successors") { field: list(BlockCall), }
+type Successor = rust("crate::inst::Successor") { field: edge(Value), }
+type JumpTable = rust("crate::inst::Successors") { field: list(Successor), }
 type Payload = rust("crate::Payload") {
     storage: pooled,
 }
@@ -1457,8 +1457,9 @@ contracts remain explicit validation, not implicit builder checks.
 
 Storage definitions also generate successor-occurrence editing. `EdgeRef`
 identifies an instruction and a successor position, not a source/destination
-pair. `SuccessorMut` can redirect or resize one edge without changing parallel
-edges. CFG adjacency is derived from the final instruction and unchanged targets
+pair. Editing callbacks receive owned `SuccessorData` to redirect or resize one
+edge without changing parallel edges. Writing it back updates operand references.
+CFG adjacency is derived from the final instruction and unchanged targets
 retain their predecessor relations. Sealing is SSA-builder-local state, not a
 property of finished blocks. Validation checks structure before type projections,
 then CFG consistency and entry-reachable dominance. The callable migration
@@ -1467,8 +1468,13 @@ contract and its implementation status are documented in
 
 Simplification uses a deduplicated worklist of affected definitions and users
 instead of repeatedly scanning the whole function. Multi-result constant
-replacement updates uses through the function editor. Dead-code removal erases
-closed sets together so dead internal references do not obstruct deletion.
+replacement updates uses through the function editor. Parameter simplification
+propagates identical incoming values and removes the forwarded parameter positions.
+Dead-code removal traces required instructions and block parameters together:
+`visit_inputs` visits direct inputs, including auxiliary operands, while successor
+arguments become live only through their destination parameters. It removes dead
+parameter positions and edge arguments before erasing the closed set of dead
+instructions, including unused loop-carried computations.
 
 `AnalysisManager` borrows one function exclusively. Reading analyses is cached;
 requesting mutable function access clears derived analyses. It cannot switch to a

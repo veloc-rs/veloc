@@ -20,7 +20,6 @@ schedule_class FloatMul { doc = "Floating-point multiplication"; }
 schedule_class FloatSqrt { doc = "Floating-point square root"; }
 schedule_class FloatToInt { doc = "Floating-point to integer conversion"; }
 schedule_class IntPair { doc = "Two-instruction integer sequences"; }
-schedule_class IntRotate { doc = "Four-instruction rotate expansion"; }
 schedule_class IntToFloat { doc = "Integer to floating-point conversion"; }
 schedule_class Load { doc = "Memory loads including address formation"; }
 schedule_class Return { doc = "Return transfer"; }

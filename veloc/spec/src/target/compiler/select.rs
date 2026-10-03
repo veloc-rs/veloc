@@ -452,9 +452,21 @@ pub(super) fn check_storage(
                 "{opcode}.{field}: field is fixed to none and has no readable storage position"
             ));
         }
-        if member.field.shape == crate::storage::operands::Shape::Sequence {
+        if member.field.shape == crate::storage::operands::Shape::Sequence
+            && member.field.ty != "Successor"
+        {
             return Err(format!(
                 "{opcode}.{field}: sequence fields require a sequence selection operation, not a scalar access"
+            ));
+        }
+        if rule
+            .same_values
+            .iter()
+            .any(|(lhs, rhs)| lhs == path || rhs == path)
+            && member.domain == crate::storage::operands::Domain::Attribute
+        {
+            return Err(format!(
+                "{opcode}.{field}: same_value requires register operands"
             ));
         }
     }

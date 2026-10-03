@@ -47,6 +47,9 @@ struct Alloca {
     size: u32,
     align: u32,
 }
+
+struct GlobalAddr { global: GlobalId, }
+struct FuncAddr { func_id: FuncId, }
 struct PtrOffset {
     ptr: Value,
     offset: i32,
@@ -94,12 +97,12 @@ struct CallIntrinsic {
     sig_id: SigId,
 }
 struct Jump {
-    dest: BlockCall,
+    dest: Successor,
 }
 struct Br {
     condition: Value,
-    then_dest: BlockCall,
-    else_dest: BlockCall,
+    then_dest: Successor,
+    else_dest: Successor,
 }
 struct BrTable {
     index: Value,

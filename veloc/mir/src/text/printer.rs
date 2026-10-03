@@ -84,6 +84,9 @@ impl<'a> InstPrinter<'a> {
         if flags.is_volatile() {
             f.write_str(".volatile")?;
         }
+        if flags.is_notrap() {
+            f.write_str(".notrap")?;
+        }
         if flags.alignment() != 1 {
             write!(f, ".align{}", flags.alignment())?;
         }
@@ -145,19 +148,19 @@ impl<'a> InstPrinter<'a> {
         .fmt_type(f, ty)
     }
 
-    pub(super) fn fmt_block_call(&self, f: &mut dyn Write, call: crate::Successor<'_>) -> Result {
+    pub(super) fn fmt_successor(&self, f: &mut dyn Write, call: crate::Successor<'_>) -> Result {
         write!(f, "{}(", call.block)?;
         self.fmt_values(f, call.args)?;
         f.write_char(')')
     }
 
-    pub(super) fn fmt_block_calls(&self, f: &mut dyn Write, calls: Successors<'_>) -> Result {
+    pub(super) fn fmt_successors(&self, f: &mut dyn Write, calls: Successors<'_>) -> Result {
         f.write_char('[')?;
         for (index, call) in calls.iter().enumerate() {
             if index != 0 {
                 f.write_str(", ")?;
             }
-            self.fmt_block_call(f, call)?;
+            self.fmt_successor(f, call)?;
         }
         f.write_char(']')
     }
@@ -173,9 +176,20 @@ struct TypePrinter<'a> {
 impl TypePrinter<'_> {
     fn fmt_signature(&self, f: &mut dyn Write, sig: &Signature) -> Result {
         f.write_char('(')?;
-        self.fmt_types(f, sig.params())?;
+        self.fmt_parameters(f, sig)?;
         f.write_str(") -> ")?;
         self.fmt_ret_types(f, sig.returns())
+    }
+
+    fn fmt_parameters(&self, f: &mut dyn Write, sig: &Signature) -> Result {
+        self.fmt_types(f, sig.params())?;
+        if sig.variadic {
+            if !sig.params().is_empty() {
+                f.write_str(", ")?;
+            }
+            f.write_str("...")?;
+        }
+        Ok(())
     }
 
     fn fmt_types(&self, f: &mut dyn Write, types: &[Type]) -> Result {
@@ -249,7 +263,7 @@ impl<'a> FuncPrinter<'a> {
         let printer = TypePrinter {
             module: Some(self.module),
         };
-        printer.fmt_types(f, sig.params())?;
+        printer.fmt_parameters(f, sig)?;
         f.write_str(") -> ")?;
         printer.fmt_ret_types(f, sig.returns())
     }
@@ -292,11 +306,37 @@ impl<'a> ModulePrinter<'a> {
 
     pub fn print(&self, f: &mut dyn Write) -> Result {
         for global in &self.module.globals {
-            writeln!(
+            write!(
                 f,
                 "global {}: {} ({})",
                 global.name, global.ty, global.linkage
             )?;
+            if let Some(data) = &global.data {
+                write!(
+                    f,
+                    " data align={} writable={} bytes=[",
+                    data.align, data.writable
+                )?;
+                for (index, byte) in data.bytes.iter().enumerate() {
+                    if index != 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{byte}")?;
+                }
+                f.write_str("] relocations=[")?;
+                for (index, relocation) in data.relocations.iter().enumerate() {
+                    if index != 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(
+                        f,
+                        "({}, {}, {})",
+                        relocation.offset, relocation.symbol, relocation.addend
+                    )?;
+                }
+                f.write_str("]")?;
+            }
+            writeln!(f)?;
         }
         for (index, (_, func)) in self.module.functions().enumerate() {
             if index != 0 || !self.module.globals.is_empty() {

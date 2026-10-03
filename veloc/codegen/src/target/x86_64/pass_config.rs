@@ -9,9 +9,11 @@ impl TargetPassConfig for X86_64PassConfig {
         &self,
         _level: crate::OptLevel,
     ) -> Vec<std::boxed::Box<dyn crate::pipeline::FunctionPass>> {
-        // Policy: use a comparison chain until jump-table selection is available.
+        // Policy: use a comparison tree until jump-table selection is available.
         std::vec![std::boxed::Box::new(
-            crate::passes::lowering::control::BranchTableLowering
+            crate::passes::lowering::control::BranchTableLowering {
+                max_cases: usize::MAX
+            }
         )]
     }
 }

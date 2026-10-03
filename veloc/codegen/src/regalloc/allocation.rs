@@ -8,6 +8,11 @@ use veloc_lir::{InstId, MachineFunction, PReg, Reg, StackBatch, StackSlot, Type}
 /// A planned physical transfer, not an instruction in the source function.
 #[derive(Debug, Clone, Copy)]
 pub enum Transfer {
+    Rematerialize {
+        reg: Reg,
+        opcode: u32,
+        immediate: i64,
+    },
     Copy {
         dst: Reg,
         src: Reg,
@@ -27,6 +32,16 @@ impl Transfer {
         writer: veloc_lir::InstWriter<'_>,
     ) -> crate::Result<InstId> {
         match self {
+            Self::Rematerialize {
+                reg,
+                opcode,
+                immediate,
+            } => Ok(writer.write(
+                veloc_lir::MachineOpcode::Target(opcode),
+                &[reg],
+                &[],
+                veloc_lir::Fields::Imm(immediate),
+            )),
             Self::Copy { dst, src, ty } => target.copy_instruction(writer, dst, src, ty),
             Self::Spill {
                 kind,
@@ -102,27 +117,38 @@ impl Allocation {
     pub fn materialize(self, target: &dyn TargetRegalloc) -> crate::Result<MachineFunction> {
         let Self {
             mut source,
-            entry,
+            mut entry,
             mut instructions,
             frame,
-            edges,
+            mut edges,
         } = self;
+        super::rematerialize::rewrite(&source, target, &mut instructions, &mut entry, &mut edges);
         source.stack_frame.append(frame);
         let mut block = source.blocks().next();
         while let Some(current_block) = block {
+            let mut cache = super::spill_cache::SpillCache::default();
             let next_block = source.layout().next_block(current_block);
             let mut cursor = source.layout().first_inst(current_block);
             while let Some(id) = cursor {
                 let next_id = source.layout().next_inst(id);
                 let plan = core::mem::take(&mut instructions[id]);
                 let mut edit = source.editor();
-                for inst in plan.before {
-                    inst.emit(target, edit.before(id).writer())?;
+                for transfer in plan.before {
+                    if let Some(action) = cache.simplify(transfer) {
+                        let emitted = action.emit(target, edit.before(id).writer())?;
+                        cache.invalidate(edit.inst(emitted));
+                    }
+                    cache.record(transfer);
                 }
                 edit.assign_registers(id, &plan.results, &plan.locations);
+                cache.invalidate(edit.inst(id));
                 let mut after = id;
-                for inst in plan.after {
-                    after = inst.emit(target, edit.after(after).writer())?;
+                for transfer in plan.after {
+                    if let Some(action) = cache.simplify(transfer) {
+                        after = action.emit(target, edit.after(after).writer())?;
+                        cache.invalidate(edit.inst(after));
+                    }
+                    cache.record(transfer);
                 }
                 cursor = next_id;
             }
@@ -144,13 +170,8 @@ impl Allocation {
                 transfer.emit(target, source.editor().at_end(block).writer())?;
             }
             target.jump_instruction(source.editor().at_end(block).writer(), edge.target)?;
-            let successor = source
-                .inst(edge.branch)
-                .edge_ids()
-                .next()
-                .expect("branch edge");
-            source.editor().redirect_edge(successor, block);
-            source.editor().set_edge_args(successor, &[]);
+            source.editor().redirect_edge(edge.edge, block);
+            source.editor().set_edge_args(edge.edge, &[]);
         }
         let mut block = source.blocks().next();
         while let Some(current_block) = block {

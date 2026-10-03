@@ -29,13 +29,58 @@ impl PassManager {
         )
     }
 
+    /// Native object pipeline. Immutable synthesized data and direct calls bind
+    /// within this module; runtimes without module data support use `o1`.
+    pub fn native_o1(layout: veloc_types::DataLayout) -> Self {
+        let mut config = OptConfig::default();
+        config.data_layout = Some(layout);
+        let mut pm = Self::new(config.clone());
+        pm.add_module_pass(crate::passes::affine::AffinePass);
+        pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
+        pm.add_function_pass(crate::SimplifyPass);
+        pm.add_function_pass(crate::passes::cfg::CfgPass);
+        pm.add_function_pass(crate::SimplifyPass);
+        pm.add_module_pass(crate::passes::inline::InlinePass);
+        pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
+        pm.add_module_pass(crate::passes::inline::DevirtualizePass);
+        pm.add_module_pass(crate::passes::inline::InlinePass);
+        pm.add_module_pass(crate::passes::partial_inline::PartialInlinePass);
+        pm.passes
+            .append(&mut Self::o1(config, crate::passes::expression::Budget::DEFAULT).passes);
+        pm.add_module_pass(crate::passes::bits::ReturnBitsPass);
+        pm.add_function_pass(crate::SimplifyPass);
+        pm.add_function_pass(dce::DcePass);
+        pm
+    }
+
     /// Prepare constants and local identities before memory forwarding, then
     /// spend the equality-search budget once on the resulting expressions.
     pub fn o1(config: OptConfig, budget: crate::passes::expression::Budget) -> Self {
         let mut pm = Self::new(config);
         pm.add_function_pass(crate::SimplifyPass);
+        pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
+        pm.add_function_pass(crate::passes::cfg::CfgPass);
+        pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
+        pm.add_function_pass(crate::SimplifyPass);
         pm.add_function_pass(crate::passes::MemoryPass);
+        pm.add_function_pass(crate::passes::promote::PromotePass);
+        pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
         pm.add_function_pass(crate::ExpressionPass { budget });
+        pm.add_function_pass(crate::passes::licm::LicmPass);
+        pm.add_function_pass(crate::passes::strength::StrengthPass);
+        pm.add_function_pass(crate::SimplifyPass);
+        pm.add_function_pass(crate::passes::cse::CsePass);
+        pm.add_function_pass(crate::passes::loop_memory::LoopMemoryPass);
+        pm.add_function_pass(crate::passes::load_cse::LoadCsePass);
+        pm.add_function_pass(crate::passes::rotate::RotatePass);
+        // Expression extraction canonicalizes addresses before validity queries.
+        pm.add_function_pass(crate::passes::memory_validity::MemoryValidityPass);
+        pm.add_function_pass(crate::passes::bits::BitsPass);
+        pm.add_function_pass(crate::SimplifyPass);
+        pm.add_function_pass(dce::DcePass);
+        pm.add_function_pass(crate::passes::cfg::CfgPass);
+        pm.add_function_pass(crate::SimplifyPass);
+        pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
         pm.add_function_pass(dce::DcePass);
         pm
     }

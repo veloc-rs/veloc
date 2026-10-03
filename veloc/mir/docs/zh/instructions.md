@@ -27,7 +27,7 @@ Veloc IR（Intermediate Representation）是一种面向栈式虚拟机和寄存
 | `Block` | 基本块标识符 |
 | `FuncId` | 函数标识符 |
 | `SigId` | 函数签名标识符 |
-| `BlockCall` | 块调用（带参数）|
+| `Successor` | 后继边（带参数）|
 | `JumpTable` | 跳转表标识符 |
 
 ---
@@ -157,7 +157,7 @@ Veloc IR（Intermediate Representation）是一种面向栈式虚拟机和寄存
 #### `Jump`
 | 属性 | 说明 |
 |------|------|
-| **操作数** | `dest: BlockCall` |
+| **操作数** | `dest: Successor` |
 | **返回类型** | `Void` |
 | **描述** | 无条件跳转到目标基本块 |
 
@@ -171,7 +171,7 @@ Veloc IR（Intermediate Representation）是一种面向栈式虚拟机和寄存
 #### `Br`（条件分支）
 | 属性 | 说明 |
 |------|------|
-| **操作数** | `condition: Value`, `then_dest: BlockCall`, `else_dest: BlockCall` |
+| **操作数** | `condition: Value`, `then_dest: Successor`, `else_dest: Successor` |
 | **返回类型** | `Void` |
 | **描述** | 如果 `condition` 为真，跳转到 `then_dest`，否则跳转到 `else_dest` |
 
@@ -281,7 +281,7 @@ Veloc IR（Intermediate Representation）是一种面向栈式虚拟机和寄存
 
 **约束条件：**
 - `func_id` 必须是模块中声明的有效函数
-- `args` 的数量和类型必须与被调用函数的签名匹配
+- 固定参数签名要求实参的数量和类型完全匹配。可变参数签名要求匹配声明中的固定参数前缀，额外实参的类型由 SSA 值携带。例如 `(ptr, ...) -> i32` 声明了一个固定参数。
 - 返回类型由函数签名决定
 
 ---
@@ -296,7 +296,7 @@ Veloc IR（Intermediate Representation）是一种面向栈式虚拟机和寄存
 **约束条件：**
 - `ptr` 必须是 `Ptr` 类型
 - `sig_id` 必须是模块中声明的有效签名
-- `args` 的数量和类型必须与签名匹配
+- 实参检查与 `Call` 相同，包括可变参数签名中的固定参数前缀
 - 运行时 `ptr` 必须指向与签名兼容的函数
 
 ---

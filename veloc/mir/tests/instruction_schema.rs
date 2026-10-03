@@ -1,7 +1,7 @@
 use veloc_mir::dfg::DataFlowGraph;
 use veloc_mir::inst::OpFormat;
 use veloc_mir::inst::VectorExtData;
-use veloc_mir::{Arguments, BlockCall, InstView};
+use veloc_mir::{Arguments, InstView, SuccessorData};
 use veloc_mir::{
     Block, CallConv, Linkage, MemFlags, ModuleBuilder, Opcode, Type, Value, VectorMemOptions,
 };
@@ -48,18 +48,18 @@ fn branch_table_rewriting_visits_successor_arguments() {
     let new = Value(2);
     let left_args = Arguments::from_slice(&[old, keep]);
     let right_args = Arguments::from_slice(&[keep, old]);
-    let left = BlockCall {
+    let left = SuccessorData {
         block: Block(0),
         args: left_args,
     };
-    let right = BlockCall {
+    let right = SuccessorData {
         block: Block(1),
         args: right_args,
     };
     let table = [left, right];
     let inst = dfg
         .writer()
-        .br_table(old, table.iter().map(BlockCall::as_view));
+        .br_table(old, table.iter().map(SuccessorData::as_view));
     let branch = dfg.inst(inst);
     assert_eq!(operands(&branch, false), [old, old, keep, keep, old]);
     dfg.replace_all_uses(old, new);

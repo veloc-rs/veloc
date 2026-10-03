@@ -164,7 +164,7 @@ impl Plan {
         for f in features {
             writeln!(out, "#[doc = {:?}] {},", f.doc, f.name).unwrap();
         }
-        out.push_str("}\nconst ALL_FEATURES: &[Feature] = &[\n");
+        out.push_str("}\npub const ALL_FEATURES: &[Feature] = &[\n");
         for f in features {
             writeln!(out, "Feature::{},", f.name).unwrap();
         }

@@ -24,14 +24,14 @@ pub use error::{Error, Result};
 pub use function::{EdgeRef, FuncBody, FuncDecl, FunctionRef, InstCursor};
 pub use inst::type_methods;
 pub use inst::{
-    Arguments, FloatCC, Inst, InstView, InstWriter, IntCC, MemFlags, Opcode, Successor,
-    SuccessorMut, Successors, VectorMemOptions,
+    Arguments, FloatCC, Inst, InstView, InstWriter, IntCC, MemFlags, Opcode, Successor, Successors,
+    VectorMemOptions,
 };
 pub use intrinsic::{Intrinsic, ids as intrinsic_ids};
-pub use module::{Global, Linkage, Module};
+pub use module::{DataRelocation, Global, GlobalData, Linkage, Module};
 pub use text::{ModuleParser, ParseError};
 pub use types::{
-    Block, BlockCall, CallConv, CallableKind, ConstId, FuncId, ModuleId, ScalarType, SigId,
-    Signature, Type, TypeBits, TypeInfo, TypeSize, Value, ValueDef, ValueList, Variable,
-    VectorType,
+    Block, CallConv, CallableKind, ConstId, FuncId, GlobalId, ModuleId, ScalarType, SigId,
+    Signature, SuccessorData, Type, TypeBits, TypeInfo, TypeSize, Value, ValueDef, ValueList,
+    Variable, VectorType,
 };

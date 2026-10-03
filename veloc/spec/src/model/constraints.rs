@@ -60,7 +60,7 @@ pub(crate) fn emit_signature(
     op: &Op,
     projections: &BTreeMap<String, String>,
     resolve: impl Fn(&super::SignatureSource, &str) -> String,
-    validate: impl Fn(&str, &str, &str) -> String,
+    validate: impl Fn(&str, &str, &str, &str) -> String,
     results: &str,
 ) -> String {
     let Some(source) = &op.signature_source else {
@@ -79,8 +79,8 @@ pub(crate) fn emit_signature(
     let args = format!("&({args})");
     format!(
         "let signature = {signature};\n{}\n{}\n",
-        validate("value", &args, "signature.0"),
-        validate("result", results, "signature.1")
+        validate("value", &args, "signature.0", "signature.2"),
+        validate("result", results, "signature.1", "false")
     )
 }
 
@@ -234,11 +234,11 @@ fn emit_body(
                         "_dfg.value_type({value}).as_callable().ok_or_else(|| {error})?.0"
                     ),
                 };
-                format!("{{ let signature = _module.signatures().get({id}).ok_or_else(|| {error})?; (signature.params(), signature.returns()) }}")
+                format!("{{ let signature = _module.signatures().get({id}).ok_or_else(|| {error})?; (signature.params(), signature.returns(), signature.variadic) }}")
             },
-            |role, values, types| {
+            |role, values, types, variadic| {
                 format!(
-                    "self.validate_values({:?}, {role:?}, {values}, {types}.iter().copied())?;",
+                    "self.validate_values({:?}, {role:?}, {values}, {types}.iter().copied(), {variadic})?;",
                     op.mnemonic
                 )
             },

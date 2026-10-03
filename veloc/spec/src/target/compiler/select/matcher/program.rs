@@ -44,7 +44,16 @@ impl<'a> Adapters<'a> {
         }
         let mut params = vec![format!(
             "{}writer: veloc_lir::InstWriter<'_>",
-            if call { "mut " } else { "" }
+            if call
+                || definition
+                    .operands
+                    .iter()
+                    .any(|op| matches!(op, OperandConstraint::Attribute(_, AttributeKind::Blocks)))
+            {
+                "mut "
+            } else {
+                ""
+            }
         )];
         let mut args = Vec::new();
         let mut results = Vec::new();
@@ -59,9 +68,20 @@ impl<'a> Adapters<'a> {
             let ty = attribute.as_ref().map_or("Reg", |ty| ty.rust_type);
             let name = format!("operand_{}", sanitize_ident(op.name()));
             params.push(format!("{name}: {ty}"));
-            args.push(name.clone());
+            args.push(
+                if matches!(op, OperandConstraint::Attribute(_, AttributeKind::Blocks)) {
+                    format!("&{name}")
+                } else {
+                    name.clone()
+                },
+            );
             if let Some(attribute) = attribute {
                 let variant = attribute.field_variant;
+                if matches!(op, OperandConstraint::Attribute(_, AttributeKind::Blocks)) {
+                    writeln!(reads, "let {name}: Vec<_> = fields.by_ref().map(|v| {{ let FieldValue::Edge(edge) = v else {{ unreachable!(\"successor field\") }}; edge }}).collect();").unwrap();
+                    fields.push((variant, name, Shape::Sequence));
+                    continue;
+                }
                 writeln!(reads, "let FieldValue::{variant}({name}) = fields.next().expect(\"generated field\") else {{ unreachable!(\"generated field type\") }};").unwrap();
                 fields.push((variant, name, Shape::One));
             } else {
@@ -301,6 +321,18 @@ impl Code {
         failure: usize,
     ) {
         match test {
+            Test::SameValue(lhs, rhs) => {
+                self.read_reg(plan, adapters, root, lhs, 0);
+                self.read_reg(plan, adapters, root, rhs, 1);
+                self.branch(
+                    Op::CheckSameValue {
+                        lhs: 0,
+                        rhs: 1,
+                        failure: 0,
+                    },
+                    failure,
+                );
+            }
             Test::Definition(slot) => {
                 let def = &plan.definitions[*slot];
                 self.read_reg(plan, adapters, root, &def.input, 0);
@@ -490,8 +522,15 @@ impl Code {
                         Constructor::Variable(name) => {
                             let (node, schema, field) =
                                 resolve_field(plan, &rule.opcode, &fields[name]);
-                            let index = adapters.attribute(schema, field);
-                            self.op(Op::ReadField { dst, node, index });
+                            if matches!(
+                                operand,
+                                OperandConstraint::Attribute(_, AttributeKind::Blocks)
+                            ) {
+                                self.op(Op::ReadSuccessors { dst, node });
+                            } else {
+                                let index = adapters.attribute(schema, field);
+                                self.op(Op::ReadField { dst, node, index });
+                            }
                         }
                         _ => panic!("invalid target payload"),
                     }
@@ -520,12 +559,14 @@ impl Code {
         let op = Op::read(&mut Reader { bytes: inst, pc: 0 });
         match op {
             Op::ReadReg { dst, node, operand } => format!("v{dst} <- n{node} {operand:?}"),
+            Op::ReadSuccessors { dst, node } => format!("f{dst} <- n{node} successors"),
             Op::ReadField { dst, node, index } => format!("f{dst} <- n{node} attribute {index:?}"),
             Op::GetDef { dst, value, .. } => format!("n{dst} <- def(v{value})"),
             Op::CheckOpcode { node, opcode, .. } => format!("n{node} opcode == {opcode}"),
             Op::CheckType { value, set, .. } => {
                 format!("v{value} in [{}]", self.types[set].join(", "))
             }
+            Op::CheckSameValue { lhs, rhs, .. } => format!("v{lhs} == v{rhs}"),
             Op::CheckInt {
                 node,
                 index,

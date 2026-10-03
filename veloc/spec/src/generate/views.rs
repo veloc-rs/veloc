@@ -27,6 +27,7 @@ pub(crate) struct View {
     pub name: String,
     pub variants: Vec<Variant>,
     pub representation: Representation,
+    pub equality: bool,
 }
 
 impl View {
@@ -38,7 +39,12 @@ impl View {
         let mut out = String::new();
         writeln!(
             out,
-            "#[derive(Debug, Clone, Copy)] pub enum {}{} {{",
+            "#[derive(Debug, Clone, Copy{})] pub enum {}{} {{",
+            if self.equality {
+                ", PartialEq, Eq, Hash"
+            } else {
+                ""
+            },
             self.name,
             self.lifetime()
         )

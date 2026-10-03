@@ -602,12 +602,12 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
             ],
             Some("CallIntrinsic"),
         ),
-        "Jump" => (&[("dest", "BlockCall")], Some("Jump")),
+        "Jump" => (&[("dest", "Successor")], Some("Jump")),
         "Br" => (
             &[
                 ("condition", "Value"),
-                ("then_dest", "BlockCall"),
-                ("else_dest", "BlockCall"),
+                ("then_dest", "Successor"),
+                ("else_dest", "Successor"),
             ],
             Some("Br"),
         ),

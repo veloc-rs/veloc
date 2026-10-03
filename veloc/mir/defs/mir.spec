@@ -28,6 +28,8 @@ op ClosureNew(func_id: FuncId, move captures: sequence(Value), cleanup: FuncId) 
         let func = ctx.function_signature(func_id)?;
         let sig = ctx.signature(result.signature()?)?;
         let cleanup_sig = ctx.function_signature(cleanup)?;
+        require(func.is_variadic() == sig.is_variadic(), "callable variadic signature mismatch");
+        require(!cleanup_sig.is_variadic(), "cleanup must have a fixed signature");
         require(result.is_owned(), "callable ownership kind mismatch");
         require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
         require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");
@@ -46,6 +48,7 @@ op ClosureLocal(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Ca
         let func = ctx.function_signature(func_id)?;
         let sig = ctx.signature(result.signature()?)?;
         require(result.is_local(), "callable ownership kind mismatch");
+        require(func.is_variadic() == sig.is_variadic(), "callable variadic signature mismatch");
         require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
         require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| !v.ty().is_owned()), "capture would escape a borrow or duplicate an owned environment");
@@ -62,6 +65,7 @@ op ClosureShared(func_id: FuncId, captures: sequence(Value)) -> (result: Value<C
         let func = ctx.function_signature(func_id)?;
         let sig = ctx.signature(result.signature()?)?;
         require(result.is_shared(), "callable ownership kind mismatch");
+        require(func.is_variadic() == sig.is_variadic(), "callable variadic signature mismatch");
         require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
         require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| (v.ty().is_compact() && !v.ty().is_ptr()) || v.ty().is_shared()), "capture would escape a borrow or duplicate an owned environment");
@@ -76,7 +80,8 @@ op TailCall(func_id: FuncId, move args: sequence(Value)) -> () {
 
     verify(ctx: VerifyContext) {
         let func = ctx.function_signature(func_id)?;
-        require(matches_types(args, func.params()), "tail-call parameter type mismatch");
+        require(len(args) >= len(func.params()) && (func.is_variadic() || len(args) == len(func.params())), "tail-call argument count mismatch");
+        require(matches_types(prefix(args, len(func.params())), func.params()), "tail-call parameter type mismatch");
         require(func.returns() == ctx.current_signature()?.returns(), "tail-call answer type mismatch");
     }
 }
@@ -89,7 +94,8 @@ op TailCallValue(move callee: Value<Callable>, move args: sequence(Value)) -> ()
 
     verify(ctx: VerifyContext) {
         let callee_sig = ctx.signature(callee.ty().signature()?)?;
-        require(matches_types(args, callee_sig.params()), "tail-call-value parameter type mismatch");
+        require(len(args) >= len(callee_sig.params()) && (callee_sig.is_variadic() || len(args) == len(callee_sig.params())), "tail-call-value argument count mismatch");
+        require(matches_types(prefix(args, len(callee_sig.params())), callee_sig.params()), "tail-call-value parameter type mismatch");
         require(callee_sig.returns() == ctx.current_signature()?.returns(), "tail-call-value answer type mismatch");
     }
 }
@@ -575,6 +581,26 @@ op Store(ptr: Value<Type::PTR>, value: Value<Any>, offset: u32, flags: MemFlags)
     }
 }
 
+op GlobalAddr(global: GlobalId) -> Value<Type::PTR> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "global-addr";
+    storage = GlobalAddr { global };
+    text = "{global}";
+    verify(ctx: VerifyContext) {
+        require(ctx.has_global(global), "unknown global");
+    }
+}
+
+op FuncAddr(func_id: FuncId) -> Value<Type::PTR> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "func-addr";
+    storage = FuncAddr { func_id };
+    text = "{func_id}";
+    verify(ctx: VerifyContext) {
+        let signature = ctx.function_signature(func_id)?;
+    }
+}
+
 // A fresh, uninitialized local object, valid until the invocation returns.
 // Physical resource exhaustion is outside MIR equivalence: unused objects may
 // be eliminated, but distinct live objects must not be merged or speculated.
@@ -615,6 +641,7 @@ op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
     text = "{func_id}({args}) : {function(func_id)}";
 }
 
+
 op CallIndirect(sig_id: SigId, ptr: Value<Type::PTR>, move args: sequence(Value)) -> signature {
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
     mnemonic = "call-indirect";
@@ -637,6 +664,7 @@ op CallIntrinsic(intrinsic: Intrinsic, sig_id: SigId, move args: sequence(Value)
 
     verify(ctx: VerifyContext) {
         let sig = ctx.signature(sig_id)?;
+        require(!sig.is_variadic(), "intrinsic calls require a fixed signature");
         require(all(sig.types(), |t| !t.is_callable()), "indirect and intrinsic callable calls require an ownership-aware callable type");
     }
 }

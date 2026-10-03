@@ -448,6 +448,12 @@ op StackAddr(slot: StackSlot) -> (dst: Value<Type::PTR>) {
     storage = StackAddr { dst, slot };
 }
 
+struct SymbolAddress { dst: Reg, target: SymbolId, }
+op SymbolAddr(target: SymbolId) -> (dst: Value<Type::PTR>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = SymbolAddress { dst, target };
+}
+
 op Load<T: Any>(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
     storage = Load { dst, base, offset, flags };

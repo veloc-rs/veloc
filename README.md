@@ -22,7 +22,7 @@ cargo build --workspace --release
 Run the bundled CoreMark WebAssembly module with the interpreter:
 
 ```bash
-cargo run --release -p veloc-wasm --bin veloc-wasm -- \
+cargo run --release -p veloc-wasm --bin veloc-wasm -- run \
   crates/veloc-wasm/tests/wasm/coremark.wasm \
   --strategy interpreter
 ```
@@ -30,7 +30,7 @@ cargo run --release -p veloc-wasm --bin veloc-wasm -- \
 Use the native x86-64 JIT instead:
 
 ```bash
-cargo run --release -p veloc-wasm --bin veloc-wasm -- crates/veloc-wasm/tests/wasm/coremark.wasm --strategy jit
+cargo run --release -p veloc-wasm --bin veloc-wasm -- run crates/veloc-wasm/tests/wasm/coremark.wasm --strategy jit
 ```
 
 On x86-64 Linux, run the full JIT CoreMark regression (checks the validation message and CRCs):
@@ -40,38 +40,69 @@ CARGO_INCREMENTAL=0 cargo test --release -p veloc-wasm --test jit \
   coremark_validates_under_jit -- --ignored --nocapture
 ```
 
-The CLI accepts `.wasm` and `.wat` files, invokes `_start` by default, and supports `interpreter`, `jit`, and `auto` execution strategies.
+The `run` command invokes `_start` by default using the interpreter. Strategies are
+`interpreter`, `jit`, `fast-jit` (Linux x86-64) and `auto` (currently JIT).
+WAT input requires building with `--features wat`.
 
-On Linux x86-64 with glibc, the interpreter can use protected virtual memory for Wasm load/store bounds checks:
+`--memory-checks auto` is the default: native execution uses guard pages on
+Linux x86-64 and RV64 with glibc, and software bounds checks elsewhere.
+Use `--memory-checks software` to force explicit checks. On Linux x86-64 with
+glibc, interpreter guard pages can also be requested explicitly:
 
 ```bash
-cargo run --release -p veloc-wasm --bin veloc-wasm -- \
-  path/to/module.wasm --strategy interpreter --hardware-memory-checks
+cargo run --release -p veloc-wasm --bin veloc-wasm -- run \
+  path/to/module.wasm --strategy interpreter --memory-checks guarded
 ```
 
-This is opt-in. The JIT continues to use software bounds checks.
-Enabling it installs process-wide SIGSEGV/SIGBUS handlers and requires unwind-enabled Rust builds.
+Guarded execution installs process-wide SIGSEGV/SIGBUS handlers. Native faults
+return through a C trap boundary; interpreter guards require Rust unwinding.
+RV64 guarded stores probe their last byte before writing, preserving memory
+when an unaligned store would cross into a guard page. Explicit guarded object
+emission is also available during cross compilation; loading it requires a
+compatible runtime.
 
 ## Inspect generated code
 
 ```bash
 # Print Veloc IR without executing the module
-cargo run -p veloc-wasm --features wat --bin veloc-wasm -- path/to/module.wat --dump-ir
+cargo run -p veloc-wasm --features wat --bin veloc-wasm -- emit path/to/module.wat --emit mir
 
 # Write Veloc IR to a file
-cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
-  --output-ir module.veloc-mir
+cargo run -p veloc-wasm --bin veloc-wasm -- emit path/to/module.wasm --emit mir -o module.veloc-mir
 
 # Print interpreter bytecode
-cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
-  --strategy interpreter --dump-bytecode
+cargo run -p veloc-wasm --bin veloc-wasm -- emit path/to/module.wasm --emit bytecode
 
 # Print optimizer statistics and write a Chrome trace
-cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
+cargo run -p veloc-wasm --bin veloc-wasm -- run path/to/module.wasm \
   -O 1 --print-stats --trace-file optimizer-trace.json
 ```
 
 Run `cargo run -p veloc-wasm --bin veloc-wasm -- --help` for all CLI options.
+
+The CLI has three commands: `run`, `emit`, and `inspect`. Direct file invocation,
+`--output-ir`, and `--compile-only` are no longer supported. `-O0` and `-O1`
+select both MIR and native-code pipelines; other levels are rejected.
+All `--dump-*` options print diagnostics to stderr and continue the requested
+command. `emit` writes only the requested product, without linking imports or
+instantiating the module (including its start function).
+
+```sh
+# Call an export with typed arguments
+veloc-wasm run add.wasm --invoke add --arg i32:1 --arg i32:2
+# Pass WASI arguments and explicitly selected environment entries
+veloc-wasm run app.wasm --env MODE=fast -- input.txt
+# Query the same target declarations used by code generation
+veloc-wasm inspect cpus --target riscv64
+veloc-wasm inspect features --target riscv64
+# Cross-compile an ELF object without loading it
+veloc-wasm emit module.wasm --emit object --target riscv64 --cpu c908 -o module.o
+```
+
+Text products default to stdout; `-o -` explicitly selects stdout. Object emission
+requires `-o`. Objects reference Veloc's runtime ABI and are not standalone executables.
+The library uses `Config.codegen.opt_level` as its single optimization setting;
+`Engine::new` and `Engine::with_config` return `Result`.
 
 ## How it works
 

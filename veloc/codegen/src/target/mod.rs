@@ -19,10 +19,10 @@ use veloc_mir::Type;
 
 pub use abi::{AbiAssignment, AbiDescriptor, AbiLocation, AbiPlan, AbiState, StackArea};
 pub use callconv::CallConv;
-pub use features::FeatureSetRef;
+pub use features::{FeatureSetRef, TargetCapabilities, capabilities};
 pub use types::{
-    RegClass, RegClassInfo, RegInfo, RegisterFile, RegisterView, RegisterWrite, SpecialRegs,
-    TargetArch, TargetConfig, TargetDescription,
+    ExternalCalls, RegClass, RegClassInfo, RegInfo, RegisterFile, RegisterView, RegisterWrite,
+    SpecialRegs, TargetArch, TargetConfig, TargetDescription,
 };
 
 /// Operand rendering and symbol naming belong to the assembly host. Instruction
@@ -95,6 +95,11 @@ pub trait TargetSchedule: TargetInfo + TargetInstructions {
 
 /// Required primitives for the allocation algorithm; no late unsupported defaults.
 pub trait TargetRegalloc: TargetInfo + TargetInstructions {
+    /// An input-free, one-result immediate instruction cheap enough to recreate
+    /// instead of loading a spill. It must have no traps, state or clobbers.
+    fn rematerializable_constant(&self, _inst: veloc_lir::InstRef<'_>) -> Option<i64> {
+        None
+    }
     /// Reserved temporaries must not overlap any allocatable register set.
     fn spill_scratch(&self, class: RegClass) -> &'static [Reg];
     fn jump_instruction(
@@ -234,6 +239,12 @@ pub trait TargetEmitter: Send + Sync {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TargetMemoryAccess {
+    pub effect: veloc_types::MemoryEffects,
+    pub bytes: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetInstMetadata {
     pub constraints: &'static [veloc_lir::OperandConstraint],
     /// Hardware state operands must name these physical units after selection.
@@ -243,6 +254,9 @@ pub struct TargetInstMetadata {
     /// The target guarantees local reordering is safe when register and state
     /// dependencies and memory/trap order are preserved. Unknown effects remain barriers.
     pub movable: bool,
+    /// Access properties from the instruction schema; absence supplies no
+    /// alias proof for unknown effects, which remain scheduling boundaries.
+    pub memory: Option<TargetMemoryAccess>,
     /// Destroyed physical storage roots, without defining result values.
     /// Per-call ABI destruction is supplied separately by CallInfo.
     pub clobbers: &'static [Reg],

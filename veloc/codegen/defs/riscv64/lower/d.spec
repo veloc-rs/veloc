@@ -56,7 +56,7 @@ op RvStoreF64Stack(src: Value<Type::F64>, slot: StackSlot, flags: MemFlags) -> (
 
 op RvSelectF64(cond: Value<Type::BOOL>, v1: Value<Type::F64>, v2: Value<Type::F64>) -> (dst: Value<Type::F64>) {
     schedule = Select;
-    encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Move(dst,v1,64), Instruction::J(Reg::X0,8), Instruction::Move(dst,v2,64)]);
+    encoding = Emission::instructions([Instruction::B(0,cond,Reg::X0,12), Instruction::Copy(dst,v1,64), Instruction::J(Reg::X0,8), Instruction::Copy(dst,v2,64)]);
     registers = { dst: FPR, cond: GPR, v1: FPR, v2: FPR };
     assembly = {
         lines: [{ mnemonic: "selectf64", operands: [] }]

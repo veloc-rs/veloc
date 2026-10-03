@@ -67,6 +67,14 @@ pub(crate) fn reduce(
     properties: &[IntCC],
     mut constant: impl FnMut(Value) -> Option<ScalarConst>,
 ) -> Option<smallvec::SmallVec<[Fold; 2]>> {
+    if opcode == Opcode::Icmp
+        && args.len() == 2
+        && args[0] == args[1]
+        && let [kind] = properties
+    {
+        let value = ScalarConst::from_bits(Type::BOOL, u64::from(kind.test(64, 0, 0))).unwrap();
+        return Some(smallvec::smallvec![Fold::Constant(value)]);
+    }
     if let [ty] = results
         && properties.is_empty()
         && let Some(fold) = local::fold(opcode, *ty, args, &mut constant)

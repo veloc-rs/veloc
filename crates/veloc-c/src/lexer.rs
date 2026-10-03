@@ -2,6 +2,7 @@
 //!
 //! Tokenizes C source code into a stream of tokens.
 
+use crate::ast::{FloatLiteral, IntegerLiteral};
 use crate::error::{Error, Result};
 use std::format;
 use std::string::String;
@@ -11,9 +12,8 @@ use std::vec::Vec;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind {
     // Literals
-    Integer(i64),
-    UnsignedInteger(u64),
-    FloatLit(f64),
+    Integer(IntegerLiteral),
+    FloatLit(FloatLiteral),
     CharLit(char),
     StringLit,
     Identifier,
@@ -23,6 +23,7 @@ pub enum TokenKind {
     Break,
     Case,
     CharKw,
+    BoolKw,
     Const,
     Continue,
     Default,
@@ -68,27 +69,33 @@ pub enum TokenKind {
     MulAssign,   // *=
     DivAssign,   // /=
     ModAssign,   // %=
-    Eq,          // ==
-    Ne,          // !=
-    Lt,          // <
-    Le,          // <=
-    Gt,          // >
-    Ge,          // >=
-    And,         // &
-    Or,          // |
-    Xor,         // ^
-    Not,         // !
-    LogicalAnd,  // &&
-    LogicalOr,   // ||
-    ShiftLeft,   // <<
-    ShiftRight,  // >>
-    Tilde,       // ~
-    Arrow,       // ->
-    Dot,         // .
-    Comma,       // ,
-    Colon,       // :
-    Semicolon,   // ;
-    Question,    // ?
+    AndAssign,
+    OrAssign,
+    XorAssign,
+    ShlAssign,
+    ShrAssign,
+    Ellipsis,
+    Eq,         // ==
+    Ne,         // !=
+    Lt,         // <
+    Le,         // <=
+    Gt,         // >
+    Ge,         // >=
+    And,        // &
+    Or,         // |
+    Xor,        // ^
+    Not,        // !
+    LogicalAnd, // &&
+    LogicalOr,  // ||
+    ShiftLeft,  // <<
+    ShiftRight, // >>
+    Tilde,      // ~
+    Arrow,      // ->
+    Dot,        // .
+    Comma,      // ,
+    Colon,      // :
+    Semicolon,  // ;
+    Question,   // ?
 
     // Delimiters
     LParen,   // (
@@ -115,6 +122,7 @@ impl TokenKind {
             self,
             TokenKind::Void
                 | TokenKind::CharKw
+                | TokenKind::BoolKw
                 | TokenKind::Short
                 | TokenKind::Int
                 | TokenKind::Long
@@ -159,6 +167,7 @@ impl Token {
 }
 
 /// C Language Lexer
+#[derive(Clone)]
 pub struct Lexer<'a> {
     source: &'a str,
     chars: std::str::Chars<'a>,
@@ -395,6 +404,15 @@ impl<'a> Lexer<'a> {
                             }
                             Some('<') => {
                                 self.advance();
+                                if self.peek_char() == Some('=') {
+                                    self.advance();
+                                    return Ok(Token::new(
+                                        TokenKind::ShlAssign,
+                                        "<<=",
+                                        start_line,
+                                        start_col,
+                                    ));
+                                }
                                 Ok(Token::new(
                                     TokenKind::ShiftLeft,
                                     "<<",
@@ -414,6 +432,15 @@ impl<'a> Lexer<'a> {
                             }
                             Some('>') => {
                                 self.advance();
+                                if self.peek_char() == Some('=') {
+                                    self.advance();
+                                    return Ok(Token::new(
+                                        TokenKind::ShrAssign,
+                                        ">>=",
+                                        start_line,
+                                        start_col,
+                                    ));
+                                }
                                 Ok(Token::new(
                                     TokenKind::ShiftRight,
                                     ">>",
@@ -426,6 +453,15 @@ impl<'a> Lexer<'a> {
                     }
                     '&' => {
                         self.advance();
+                        if self.peek_char() == Some('=') {
+                            self.advance();
+                            return Ok(Token::new(
+                                TokenKind::AndAssign,
+                                "&=",
+                                start_line,
+                                start_col,
+                            ));
+                        }
                         if self.peek_char() == Some('&') {
                             self.advance();
                             Ok(Token::new(
@@ -440,6 +476,15 @@ impl<'a> Lexer<'a> {
                     }
                     '|' => {
                         self.advance();
+                        if self.peek_char() == Some('=') {
+                            self.advance();
+                            return Ok(Token::new(
+                                TokenKind::OrAssign,
+                                "|=",
+                                start_line,
+                                start_col,
+                            ));
+                        }
                         if self.peek_char() == Some('|') {
                             self.advance();
                             Ok(Token::new(
@@ -454,6 +499,15 @@ impl<'a> Lexer<'a> {
                     }
                     '^' => {
                         self.advance();
+                        if self.peek_char() == Some('=') {
+                            self.advance();
+                            return Ok(Token::new(
+                                TokenKind::XorAssign,
+                                "^=",
+                                start_line,
+                                start_col,
+                            ));
+                        }
                         Ok(Token::new(TokenKind::Xor, "^", start_line, start_col))
                     }
                     '~' => {
@@ -462,6 +516,18 @@ impl<'a> Lexer<'a> {
                     }
                     '.' => {
                         self.advance();
+                        if self.peek_char() == Some('.') {
+                            self.advance();
+                            if self.advance() != Some('.') {
+                                return Err(Error::lexical("expected ...", start_line, start_col));
+                            }
+                            return Ok(Token::new(
+                                TokenKind::Ellipsis,
+                                "...",
+                                start_line,
+                                start_col,
+                            ));
+                        }
                         Ok(Token::new(TokenKind::Dot, ".", start_line, start_col))
                     }
                     ',' => {
@@ -593,43 +659,65 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let kind =
-            if is_float || lexeme.contains('.') || lexeme.contains('e') || lexeme.contains('E') {
-                match lexeme.parse::<f64>() {
-                    Ok(val) => TokenKind::FloatLit(val),
-                    Err(_) => {
-                        return Err(Error::lexical(
-                            "Invalid float literal",
-                            start_line,
-                            start_col,
-                        ));
-                    }
-                }
+        let invalid = || Error::lexical("invalid numeric literal", start_line, start_col);
+        let kind = if is_float {
+            if lexeme.ends_with(['l', 'L']) {
+                return Err(Error::lexical(
+                    "long double literals are not supported",
+                    start_line,
+                    start_col,
+                ));
+            }
+            let bits = if lexeme.ends_with(['f', 'F']) { 32 } else { 64 };
+            TokenKind::FloatLit(FloatLiteral {
+                value: lexeme
+                    .trim_end_matches(['f', 'F'])
+                    .parse()
+                    .map_err(|_| invalid())?,
+                bits,
+            })
+        } else {
+            let digits = lexeme.trim_end_matches(['u', 'U', 'l', 'L']);
+            let suffix = lexeme[digits.len()..].to_ascii_lowercase();
+            if !["", "u", "l", "ll", "ul", "lu", "ull", "llu"].contains(&suffix.as_str()) {
+                return Err(invalid());
+            }
+            let (digits, radix) = if is_hex {
+                (&digits[2..], 16)
+            } else if digits.len() > 1 && digits.starts_with('0') {
+                (digits, 8)
             } else {
-                if is_hex {
-                    match i64::from_str_radix(&lexeme[2..], 16) {
-                        Ok(val) => TokenKind::Integer(val),
-                        Err(_) => {
-                            return Err(Error::lexical(
-                                "Invalid hexadecimal literal",
-                                start_line,
-                                start_col,
-                            ));
-                        }
-                    }
-                } else {
-                    match lexeme.parse::<i64>() {
-                        Ok(val) => TokenKind::Integer(val),
-                        Err(_) => {
-                            return Err(Error::lexical(
-                                "Invalid integer literal",
-                                start_line,
-                                start_col,
-                            ));
-                        }
-                    }
-                }
+                (digits, 10)
             };
+            let bits = u64::from_str_radix(digits, radix).map_err(|_| invalid())?;
+            let unsigned = suffix.contains('u');
+            let long = suffix.contains('l');
+            let (width, signed) = if unsigned {
+                (
+                    if long || bits > u32::MAX as u64 {
+                        64
+                    } else {
+                        32
+                    },
+                    false,
+                )
+            } else if !long && bits <= i32::MAX as u64 {
+                (32, true)
+            } else if !long && radix != 10 && bits <= u32::MAX as u64 {
+                (32, false)
+            } else if bits <= i64::MAX as u64 {
+                (64, true)
+            } else if radix != 10 {
+                (64, false)
+            } else {
+                return Err(invalid());
+            };
+            TokenKind::Integer(IntegerLiteral {
+                value: bits,
+                bits: width,
+                signed,
+            })
+        };
 
         Ok(Token::new(kind, lexeme, start_line, start_col))
     }
@@ -807,6 +895,7 @@ impl<'a> Lexer<'a> {
             "break" => TokenKind::Break,
             "case" => TokenKind::Case,
             "char" => TokenKind::CharKw,
+            "_Bool" => TokenKind::BoolKw,
             "const" => TokenKind::Const,
             "continue" => TokenKind::Continue,
             "default" => TokenKind::Default,
@@ -881,8 +970,8 @@ mod tests {
     fn test_numbers() {
         let lexer = Lexer::new("42 3.14 0xFF");
         let tokens: Vec<_> = lexer.filter_map(|t| t.ok()).collect();
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[0].kind, TokenKind::Integer(IntegerLiteral::int(42)));
         assert!(matches!(tokens[1].kind, TokenKind::FloatLit(_)));
-        assert_eq!(tokens[2].kind, TokenKind::Integer(255));
+        assert_eq!(tokens[2].kind, TokenKind::Integer(IntegerLiteral::int(255)));
     }
 }

@@ -196,6 +196,14 @@ pub(super) fn generate_target_inst_metadata(
         .unwrap();
         writeln!(output, "    schedule_class: {schedule},").unwrap();
         writeln!(output, "    movable: {},", inst_def.movable).unwrap();
+        let memory = match &inst_def.memory {
+            Some((kind, bytes)) => format!(
+                "Some(crate::target::TargetMemoryAccess {{ effect: veloc_types::MemoryEffects::{}, bytes: {bytes} }})",
+                kind.to_uppercase()
+            ),
+            None => "None".into(),
+        };
+        writeln!(output, "    memory: {memory},").unwrap();
         let constraints = inst_def.operands.iter().filter_map(|op| match op {
             OperandConstraint::Def(n) => Some((n, true)),
             OperandConstraint::Use(n) => Some((n, false)),
@@ -365,7 +373,14 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
             .any(|op| matches!(op, OperandConstraint::Attribute(_, AttributeKind::Call)));
         let boundary = call || instruction.flow == "Return";
         let count = if boundary { "<" } else { "!=" };
-        let mut checks = vec![format!("inst.fields().len() != {fields}")];
+        let sequence = instruction
+            .operands
+            .iter()
+            .any(|op| matches!(op, OperandConstraint::Attribute(_, AttributeKind::Blocks)));
+        let mut checks = vec![format!(
+            "inst.fields().len() {} {fields}",
+            if sequence { "<" } else { "!=" }
+        )];
         for (domain, length) in [("results", results), ("inputs", inputs)] {
             if !boundary || length != 0 {
                 checks.push(format!("inst.{domain}().len() {count} {length}"));
@@ -397,6 +412,10 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
             let OperandConstraint::Attribute(field_name, kind) = op else {
                 continue;
             };
+            if *kind == AttributeKind::Blocks {
+                writeln!(out, "if inst.fields().successors().len() != inst.fields().len() {{ return Err(invalid()); }}").unwrap();
+                continue;
+            }
             let variant = kind.description().field_variant;
             let (index, _) = find_operand_info(field_name, &instruction.operands).unwrap();
             writeln!(out, "if !matches!(inst.fields().read({index}), veloc_lir::FieldValueRef::{variant}(_)) {{ return Err(invalid()); }}").unwrap();

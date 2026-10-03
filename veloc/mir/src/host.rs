@@ -15,6 +15,9 @@ impl SignatureInfo for veloc_types::Signature {
     fn types(&self) -> &[Type] {
         self.types()
     }
+    fn is_variadic(&self) -> bool {
+        self.variadic
+    }
 }
 
 pub struct VerifyContext<'a> {
@@ -27,6 +30,9 @@ impl<'a> VerifyContext<'a> {
     }
 }
 impl VerifyContextInfo for VerifyContext<'_> {
+    fn has_global(&self, global: crate::GlobalId) -> bool {
+        self.module.globals().get(global.0 as usize).is_some()
+    }
     fn vector_constant(&self, value: crate::Value) -> Option<&VectorConst> {
         self.function.body?.dfg().as_const(value)?.as_vector()
     }

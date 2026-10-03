@@ -84,6 +84,8 @@ select(inst: lir::StackAddr) {
     legal(inst);
 }
 
+select(inst: lir::SymbolAddr) { legal(inst); }
+
 select<T: Scalar | Type::PTR>(inst: lir::Load<T>) {
     choose {
         case {
@@ -203,6 +205,10 @@ select(inst: lir::Sext<Type::I64, Type::I32>) {
 select<T: SmallInt, U: Word>(inst: lir::Trunc<T, U>) {
     legal(inst);
 }
+
+select<T: Narrow, U: Narrow>(inst: lir::Trunc<T, U>) { legal(inst); }
+select<T: Narrow, U: Narrow>(inst: lir::Zext<T, U> | lir::Sext<T, U>) { legal(inst); }
+select<T: Narrow>(inst: lir::Zext<T, Type::BOOL>) { legal(inst); }
 
 select(inst: lir::Inttoptr<Type::I64>) {
     legal(inst);

@@ -88,6 +88,24 @@ impl<'a> FunctionSession<'a> {
         );
         self.function.editor().erase_block(block);
     }
+    /// Change physical block order without changing instructions or explicit edges.
+    pub fn reorder_blocks(&mut self, order: &[BlockId]) {
+        assert_eq!(order.first().copied(), Some(self.function.entry_block()));
+        assert_eq!(order.len(), self.function.num_blocks());
+        let mut seen = cranelift_entity::SecondaryMap::<BlockId, bool>::new();
+        for &block in order {
+            assert!(self.function.layout().contains_block(block) && !seen[block]);
+            seen[block] = true;
+        }
+        if self.function.blocks().eq(order.iter().copied()) {
+            return;
+        }
+        self.analyses.apply(ChangeSet::BLOCK_LAYOUT);
+        let mut edit = self.function.editor();
+        for pair in order.windows(2).rev() {
+            edit.move_block_before(pair[0], pair[1]);
+        }
+    }
 }
 
 pub struct FunctionEdit<'a> {

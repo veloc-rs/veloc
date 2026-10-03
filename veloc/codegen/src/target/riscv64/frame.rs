@@ -6,11 +6,14 @@ impl TargetFrameLowering for Frame {
         16
     }
     fn finalize_stack_frame(&self, f: &mut FuncEditor<'_>, _: CallConv) -> crate::Result<()> {
-        let mut saved = vec![Reg(1)]; // ra is overwritten by every call.
+        let mut saved = Vec::new();
         let mut outgoing = 0u32;
         for block in f.blocks() {
             for id in f.block_insts(block) {
                 if let Some(info) = f.try_call_info(id) {
+                    if !saved.contains(&Reg(1)) {
+                        saved.push(Reg(1)); // Calls overwrite the link register.
+                    }
                     let area = info
                         .frame
                         .and_then(|id| f.stack_frame.call(id))
@@ -21,7 +24,7 @@ impl TargetFrameLowering for Frame {
                     outgoing = outgoing.max(area.size);
                 }
                 for r in f.inst(id).register_access().writes() {
-                    if ABI.preserved.contains(&r) && !saved.contains(&r) {
+                    if (r == Reg(1) || ABI.preserved.contains(&r)) && !saved.contains(&r) {
                         saved.push(r);
                     }
                 }
@@ -91,6 +94,9 @@ impl TargetFrameLowering for Frame {
     fn insert_prologue_epilogue(&self, f: &mut FuncEditor<'_>) {
         let layout = f.stack_frame.layout().unwrap();
         let total = layout.total_size as i64;
+        if total == 0 {
+            return;
+        }
         let saves = layout.saves.clone();
         let entry = f.entry_block();
         {

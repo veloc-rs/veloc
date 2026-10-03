@@ -44,6 +44,7 @@ cranelift_entity::entity_impl!(CallFrameId, "callframe");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallInfo {
+    /// Declared signature. Actual argument types belong to the call operands.
     pub sig: Signature,
     /// Registers whose pre-call contents cannot survive this call.
     pub clobbers: crate::RegMask,

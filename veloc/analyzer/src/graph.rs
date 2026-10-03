@@ -1,7 +1,7 @@
 //! IR-independent control-flow analyses over dense entity IDs.
 //! Instruction semantics and cache invalidation remain with each IR adapter.
 use alloc::vec::Vec;
-use cranelift_entity::EntityRef;
+use cranelift_entity::{EntityRef, SecondaryMap};
 
 #[cfg(test)]
 mod tests {
@@ -108,6 +108,7 @@ impl<B: EntityRef> Default for PostDominatorTree<B> {
 #[derive(Debug, Clone)]
 pub struct LoopInfo<B: EntityRef> {
     backedges: Vec<(B, B)>,
+    depth: SecondaryMap<B, u32>,
 }
 impl<B: EntityRef> LoopInfo<B> {
     pub fn compute(cfg: &ControlFlowGraph<B>, dom: &DominatorTree<B>) -> Self {
@@ -122,16 +123,48 @@ impl<B: EntityRef> LoopInfo<B> {
                 }
             }
         }
-        Self { backedges }
+        // Merge latches with the same header before counting nesting. Walking
+        // predecessors stops at the header, which dominates every latch.
+        let mut depth = SecondaryMap::new();
+        let mut headers = Vec::new();
+        for &(_, header) in &backedges {
+            if headers.contains(&header) {
+                continue;
+            }
+            headers.push(header);
+            let mut members = SecondaryMap::<B, bool>::new();
+            members[header] = true;
+            let mut pending: Vec<_> = backedges
+                .iter()
+                .filter_map(|&(latch, h)| (h == header).then_some(latch))
+                .collect();
+            while let Some(block) = pending.pop() {
+                if members[block] {
+                    continue;
+                }
+                members[block] = true;
+                pending.extend_from_slice(cfg.preds(block));
+            }
+            for &block in cfg.blocks() {
+                if members[block] {
+                    depth[block] += 1;
+                }
+            }
+        }
+        Self { backedges, depth }
     }
     pub fn backedges(&self) -> &[(B, B)] {
         &self.backedges
+    }
+    pub fn depth(&self, block: B) -> u32 {
+        self.depth[block]
     }
 }
 impl<B: EntityRef> Default for LoopInfo<B> {
     fn default() -> Self {
         Self {
             backedges: Vec::new(),
+            depth: SecondaryMap::new(),
         }
     }
 }

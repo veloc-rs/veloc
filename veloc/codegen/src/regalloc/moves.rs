@@ -74,11 +74,22 @@ impl MoveResolver {
                     .max_by_key(|(size, _)| *size)
                     .unwrap()
                     .1;
-                let (size, align) = storage(target, ty)?;
-                let slot = *self.cycle_slots.entry((size, align)).or_insert_with(|| {
-                    frame.alloc_object(veloc_lir::StackObject::Local, size, align)
-                });
-                let saved = Location::Stack(slot);
+                let class = target.desc().reg_class_for_vreg(&ty, None);
+                let saved = if let Some(reg) = target
+                    .spill_scratch(class)
+                    .iter()
+                    .copied()
+                    .find(|reg| !protected.iter().any(|(r, _)| r == reg))
+                {
+                    protected.push((reg, Some(ty)));
+                    Location::Reg(reg)
+                } else {
+                    let (size, align) = storage(target, ty)?;
+                    let slot = *self.cycle_slots.entry((size, align)).or_insert_with(|| {
+                        frame.alloc_object(veloc_lir::StackObject::Local, size, align)
+                    });
+                    Location::Stack(slot)
+                };
                 self.emit(
                     target,
                     frame,

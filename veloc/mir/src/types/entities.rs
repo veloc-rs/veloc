@@ -40,18 +40,35 @@ entity_impl!(ConstId, "const");
 pub struct Block(pub u32);
 entity_impl!(Block, "block");
 
-/// Construction-time successor. Installed arguments live in the operand array.
+/// Owned successor data for construction and editing. Installed arguments live
+/// in the instruction's operand array and are accessed through `Successor`.
 #[derive(Debug, Clone)]
-pub struct BlockCall {
+pub struct SuccessorData {
     pub block: Block,
     pub args: smallvec::SmallVec<[Value; 4]>,
 }
 
-impl BlockCall {
+impl SuccessorData {
     pub fn new(block: Block, args: &[Value]) -> Self {
         Self {
             block,
             args: smallvec::SmallVec::from_slice(args),
+        }
+    }
+
+    pub fn set_args(&mut self, args: &[Value]) {
+        self.args.clear();
+        self.args.extend_from_slice(args);
+    }
+
+    /// Set a construction-time argument, filling incomplete earlier positions.
+    /// Explicit validation checks the completed edge's parameter contract.
+    pub(crate) fn set_arg(&mut self, index: usize, value: Value) {
+        if index >= self.args.len() {
+            let len = index.checked_add(1).expect("too many successor arguments");
+            self.args.resize(len, value);
+        } else {
+            self.args[index] = value;
         }
     }
 }
@@ -65,6 +82,11 @@ entity_impl!(ModuleId, "module");
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FuncId(pub u32);
 entity_impl!(FuncId, "func");
+
+/// A module data symbol.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GlobalId(pub u32);
+entity_impl!(GlobalId, "global");
 
 /// A reference to a variable (SSA variable used in function building).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

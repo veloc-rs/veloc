@@ -39,6 +39,23 @@ pub struct Global {
     pub name: String,
     pub ty: Type,
     pub linkage: Linkage,
+    pub data: Option<GlobalData>,
+}
+
+/// A data definition and relocations resolved by the native linker.
+#[derive(Debug, Clone)]
+pub struct GlobalData {
+    pub bytes: Vec<u8>,
+    pub align: u64,
+    pub writable: bool,
+    pub relocations: Vec<DataRelocation>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DataRelocation {
+    pub offset: u64,
+    pub symbol: String,
+    pub addend: i64,
 }
 
 /// Owned MIR data. Cloning copies declarations and function bodies; callers
@@ -64,6 +81,25 @@ impl Module {
     pub fn body_mut(&mut self, id: FuncId) -> Option<&mut FuncBody> {
         assert!(self.decls.get(id).is_some(), "unknown function");
         self.bodies[id].as_deref_mut()
+    }
+
+    /// Install a transformed definition for a newly declared function. Module
+    /// transformations can construct an owned body without an SSA builder.
+    pub fn define_function(&mut self, id: FuncId, body: FuncBody) {
+        let declaration = &self.decls[id];
+        assert!(self.bodies[id].is_none(), "function already defined");
+        assert!(
+            body.dfg()
+                .block_params(body.entry_block())
+                .iter()
+                .map(|&v| body.dfg().value_type(v))
+                .eq(self.signatures()[declaration.signature]
+                    .params()
+                    .iter()
+                    .copied()),
+            "entry parameters must match the declaration"
+        );
+        self.bodies[id] = Some(Box::new(body));
     }
 
     /// Iterate existing definitions without exposing body insertion or removal.
@@ -156,7 +192,23 @@ impl Module {
         (&self.decls, self.types.signatures(), body)
     }
 
-    pub fn add_global(&mut self, name: String, ty: Type, linkage: Linkage) {
-        self.globals.push(Global { name, ty, linkage });
+    pub fn add_global(&mut self, name: String, ty: Type, linkage: Linkage) -> crate::GlobalId {
+        let id = crate::GlobalId(self.globals.len().try_into().expect("too many globals"));
+        self.globals.push(Global {
+            name,
+            ty,
+            linkage,
+            data: None,
+        });
+        id
+    }
+
+    pub fn define_global(&mut self, id: crate::GlobalId, data: GlobalData) {
+        assert!(data.align.is_power_of_two(), "invalid data alignment");
+        let global = &mut self.globals[id.0 as usize];
+        if global.linkage == Linkage::Import {
+            global.linkage = Linkage::Export;
+        }
+        global.data = Some(data);
     }
 }

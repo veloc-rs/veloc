@@ -19,6 +19,10 @@ pub enum Target {
 pub enum RelocationKind {
     RelativeBranch32,
     Absolute64,
+    /// AUIPC/ADDI pair; the low relocation refers to the AUIPC's location.
+    RiscvPcRelativeAddress,
+    /// A linker-resolved AUIPC/JALR pair with a fixed eight-byte footprint.
+    RiscvCall,
 }
 #[derive(Debug, Clone)]
 pub struct ExternalRelocation {
@@ -94,6 +98,15 @@ impl CodeForm {
             ..Self::bytes(bytes)
         }
     }
+    pub fn relative_field<const N: usize>(encoding: &Encoded<N>) -> Result<Self> {
+        let field = encoding
+            .fixup
+            .ok_or_else(|| Error::codegen("relative form needs a fixup"))?;
+        Ok(Self {
+            relative: Some(Relative::Field(field)),
+            ..Self::bytes(encoding.bytes())
+        })
+    }
     pub fn relocated(bytes: &[u8], relocation: ExternalRelocation) -> Self {
         Self {
             relocations: vec![relocation],
@@ -113,6 +126,13 @@ impl CodeForm {
 struct Fragment {
     target: Option<Target>,
     forms: Vec<CodeForm>,
+    branch: Option<Branch>,
+}
+
+#[derive(Debug, Clone)]
+enum Branch {
+    Jump,
+    Conditional { inverted: Vec<CodeForm> },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -133,6 +153,7 @@ impl Emitter {
             .flat_map(|form| form.relocations.iter().map(|relocation| relocation.symbol))
     }
     pub fn mark_block(&mut self, block: Block) {
+        self.fold_fallthrough(block);
         assert!(
             self.labels.insert(block, self.fragments.len()).is_none(),
             "duplicate block label"
@@ -141,19 +162,47 @@ impl Emitter {
         self.fragments.push(Fragment {
             target: None,
             forms: vec![CodeForm::bytes(&[])],
+            branch: None,
         });
     }
+    /// A fixed fragment whose start requires target-specific padding.
+    pub fn aligned_bytes(&mut self, bytes: &[u8], alignment: usize, padding: &[u8]) {
+        self.fragments.push(Fragment {
+            target: None,
+            forms: vec![CodeForm::bytes(bytes).aligned(alignment, padding)],
+            branch: None,
+        });
+    }
+
+    /// A signed 32-bit offset from this entry to a local block.
+    pub fn block_offset(&mut self, block: Block) {
+        let form = CodeForm {
+            relative: Some(Relative::Field(Fixup {
+                offset: 0,
+                bytes: 4,
+                base: 0,
+                addend: 0,
+            })),
+            ..CodeForm::bytes(&[0; 4])
+        };
+        self.alternatives(Target::Block(block), vec![form]);
+    }
+
     pub fn bytes(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
         if let Some(fragment) = self.fragments.last_mut()
             && fragment.target.is_none()
         {
-            // Only this method and mark_block create target-free fragments.
+            // Target-free fragments are ordinary bytes or empty boundaries.
             fragment.forms[0].bytes.extend_from_slice(bytes);
             return;
         }
         self.fragments.push(Fragment {
             target: None,
             forms: vec![CodeForm::bytes(bytes)],
+            branch: None,
         });
     }
     /// Alternatives may grow in size or relax a distance restriction. Layout
@@ -163,7 +212,54 @@ impl Emitter {
         self.fragments.push(Fragment {
             target: Some(target),
             forms,
+            branch: None,
         });
+    }
+    /// Explicit branch semantics let final block layout choose fallthroughs
+    /// independently of instruction encoding and register allocation.
+    pub fn jump(&mut self, target: Block, forms: Vec<CodeForm>) {
+        self.alternatives(Target::Block(target), forms);
+        self.fragments.last_mut().unwrap().branch = Some(Branch::Jump);
+    }
+
+    pub fn conditional_branch(
+        &mut self,
+        target: Block,
+        forms: Vec<CodeForm>,
+        inverted: Vec<CodeForm>,
+    ) {
+        assert!(!inverted.is_empty());
+        self.alternatives(Target::Block(target), forms);
+        self.fragments.last_mut().unwrap().branch = Some(Branch::Conditional { inverted });
+    }
+
+    fn fold_fallthrough(&mut self, next: Block) {
+        let Some((jump, prefix)) = self.fragments.split_last_mut() else {
+            return;
+        };
+        if !matches!(jump.branch, Some(Branch::Jump)) {
+            return;
+        }
+        if !matches!(jump.target, Some(Target::Block(block)) if block == next) {
+            // branch-if C to next; jump elsewhere => branch-if !C elsewhere.
+            let Some(condition) = prefix.last_mut() else {
+                return;
+            };
+            if !matches!(condition.target, Some(Target::Block(block)) if block == next) {
+                return;
+            }
+            let Some(Branch::Conditional { inverted }) = &mut condition.branch else {
+                return;
+            };
+            core::mem::swap(&mut condition.forms, inverted);
+            condition.target = jump.target;
+        }
+        // Keep fragment identities: existing labels refer to boundaries.
+        *jump = Fragment {
+            target: None,
+            forms: vec![CodeForm::bytes(&[])],
+            branch: None,
+        };
     }
     pub fn instruction<const N: usize>(
         &mut self,
@@ -200,29 +296,8 @@ impl Emitter {
         self.fragments.push(Fragment {
             target,
             forms: vec![form],
+            branch: None,
         });
-        Ok(())
-    }
-    /// Adapter for encoders exposing contiguous relative fields (currently x86).
-    pub fn branch<const N: usize>(
-        &mut self,
-        target: Block,
-        short: &Encoded<N>,
-        long: &Encoded<N>,
-    ) -> Result<()> {
-        let forms = [short, long]
-            .into_iter()
-            .map(|encoding| {
-                let field = encoding
-                    .fixup
-                    .ok_or_else(|| Error::codegen("branch form needs a relative fixup"))?;
-                Ok(CodeForm {
-                    relative: Some(Relative::Field(field)),
-                    ..CodeForm::bytes(encoding.bytes())
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        self.alternatives(Target::Block(target), forms);
         Ok(())
     }
     /// Standalone functions cannot bind calls to other independently placed code.
