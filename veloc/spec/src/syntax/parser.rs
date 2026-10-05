@@ -304,9 +304,11 @@ impl<'a> Parser<'a> {
             let signature = self.signature(None, false, true)?;
             self.expect(TokenKind::LBrace)?;
             let mut cases = Vec::new();
+            let mut group_fields = BTreeMap::new();
             while !self.at(TokenKind::RBrace) {
                 let at = self.token.offset;
                 self.expect(TokenKind::Name("case"))?;
+                let canonical = self.eat(TokenKind::Name("canonical"))?;
                 self.expect(TokenKind::LParen)?;
                 let args =
                     self.sequence(TokenKind::RParen, |p| p.expression(0, Context::Rewrite))?;
@@ -317,6 +319,15 @@ impl<'a> Parser<'a> {
                         kind: Kind::List(args),
                     },
                 )]);
+                if canonical {
+                    fields.insert(
+                        "canonical".into(),
+                        Node {
+                            offset: at,
+                            kind: Kind::Name("true".into()),
+                        },
+                    );
+                }
                 if self.eat(TokenKind::Name("if"))? {
                     fields.insert("when".into(), self.expression(0, Context::Condition)?);
                 }
@@ -329,17 +340,18 @@ impl<'a> Parser<'a> {
                 });
             }
             self.expect(TokenKind::RBrace)?;
+            group_fields.insert(
+                "cases".into(),
+                Node {
+                    offset,
+                    kind: Kind::List(cases),
+                },
+            );
             return Ok(Decl {
                 offset,
                 name: String::new(),
                 kind: DeclKind::Rule(signature),
-                fields: BTreeMap::from([(
-                    "cases".into(),
-                    Node {
-                        offset,
-                        kind: Kind::List(cases),
-                    },
-                )]),
+                fields: group_fields,
             });
         }
         let name = self.name()?;

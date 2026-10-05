@@ -1,7 +1,7 @@
 //! C declarations and initializers are resolved before constructing function SSA.
 use crate::ast::*;
 use crate::error::{Error, Result};
-use crate::types::{CType, FunctionType, Types, fail};
+use crate::types::{CTargetModel, CType, FunctionType, Types, fail};
 use std::collections::HashMap;
 use veloc_mir::{
     DataRelocation, FuncId, GlobalData, GlobalId, Linkage, Module, ModuleBuilder, SigId, Signature,
@@ -26,7 +26,6 @@ struct StringSymbol {
     name: String,
 }
 
-#[derive(Default)]
 pub struct CodeGenContext {
     module: ModuleBuilder,
     types: Types,
@@ -37,8 +36,15 @@ pub struct CodeGenContext {
 }
 
 impl CodeGenContext {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(target: CTargetModel) -> Self {
+        Self {
+            module: ModuleBuilder::new(),
+            types: Types::new(target),
+            functions: HashMap::new(),
+            globals: HashMap::new(),
+            strings: HashMap::new(),
+            signatures: HashMap::new(),
+        }
     }
 
     pub fn generate(mut self, tu: &TranslationUnit) -> Result<Module> {
@@ -442,6 +448,6 @@ fn string_bytes(text: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-pub fn compile_to_ir(source: &str) -> Result<Module> {
-    CodeGenContext::new().generate(&crate::parse(source)?)
+pub fn compile_to_ir(source: &str, target: CTargetModel) -> Result<Module> {
+    CodeGenContext::new(target).generate(&crate::parse(source)?)
 }

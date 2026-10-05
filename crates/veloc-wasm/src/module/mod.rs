@@ -242,6 +242,7 @@ impl Module {
     }
 
     pub fn new(engine: &Engine, wasm_bin: &[u8]) -> Result<Self> {
+        engine.validate_execution()?;
         Self::profiled(engine, wasm_bin, |profile| {
             let prepared = Self::prepare(engine, wasm_bin, profile)?;
             Self::load(engine, prepared, profile)
@@ -343,10 +344,7 @@ impl Module {
                     ir_sig_ids.push(metadata.signatures[i].intern_veloc_sig(&mut ir));
                 }
 
-                let mut strategy = engine.strategy();
-                if strategy == Strategy::Auto {
-                    strategy = Strategy::Jit;
-                }
+                let strategy = engine.strategy();
                 let hardware_memory_checks = engine.uses_guarded_memory();
 
                 // 1. Declare runtime functions and offsets
@@ -443,7 +441,8 @@ impl Module {
             );
 
             pm = pm
-                .with_layout(engine.backend().target().desc().data_layout)
+                .with_layout(engine.data_layout())
+                .with_policy(engine.config().codegen.policy.clone())
                 .with_profile(profile.clone());
             pm.run_on_module(&mut ir);
         }
@@ -472,18 +471,6 @@ impl Module {
                 crate::trap::install()?;
             } else {
                 crate::trap::native::install()?;
-            }
-        }
-        if strategy != Strategy::Interpreter {
-            let host = if cfg!(target_arch = "x86_64") {
-                Some(veloc::codegen::TargetArch::X86_64)
-            } else if cfg!(target_arch = "riscv64") {
-                Some(veloc::codegen::TargetArch::Riscv64)
-            } else {
-                None
-            };
-            if host != Some(engine.config().target) {
-                return Err(crate::error::Error::Unsupported("native execution requires the host target; use Module::emit for cross compilation".into()));
             }
         }
 

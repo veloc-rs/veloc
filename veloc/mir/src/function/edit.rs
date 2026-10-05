@@ -163,6 +163,24 @@ impl<'a> FuncEditor<'a> {
         self.body.dfg.append_block_param(block, ty)
     }
 
+    /// Extend the function inputs when constructing a new definition.
+    /// The containing module must give this body a matching signature.
+    pub fn append_function_param(&mut self, ty: Type) -> Value {
+        let index = crate::ParamIndex(
+            self.body
+                .params
+                .len()
+                .try_into()
+                .expect("too many parameters"),
+        );
+        let value = self.body.dfg.values.push(crate::types::ValueData {
+            ty,
+            def: crate::ValueDef::FunctionParam(index),
+        });
+        self.body.params.push(value);
+        value
+    }
+
     pub(crate) fn create_inst(&mut self, build: impl FnOnce(InstWriter<'_>) -> Inst) -> Inst {
         self.body.dfg.create_inst(build)
     }
@@ -181,7 +199,7 @@ impl<'a> FuncEditor<'a> {
         while self.body.dfg.values.len() <= value.0 as usize {
             self.body.dfg.values.push(crate::types::ValueData {
                 ty: Type::INVALID,
-                def: crate::ValueDef::Param(self.body.entry_block),
+                def: crate::ValueDef::BlockParam(self.body.entry_block),
             });
         }
     }
@@ -189,7 +207,7 @@ impl<'a> FuncEditor<'a> {
     pub(crate) fn bind_param(&mut self, block: Block, value: Value, ty: Type) {
         self.body.dfg.values[value] = crate::types::ValueData {
             ty,
-            def: crate::ValueDef::Param(block),
+            def: crate::ValueDef::BlockParam(block),
         };
         self.body.dfg.blocks[block].params.push(value);
     }
@@ -228,36 +246,14 @@ impl<'a> FuncEditor<'a> {
     /// Remove parameter positions and their incoming arguments together. The
     /// caller must remove all uses of discarded values in the complete edit.
     pub fn retain_block_params(&mut self, block: Block, keep: &[bool]) {
-        assert_ne!(
-            block, self.body.entry_block,
-            "entry parameters belong to the signature"
-        );
         assert_eq!(keep.len(), self.body.dfg.block_params(block).len());
-        let incoming: Vec<_> = self
-            .body
-            .cfg
-            .preds(block)
-            .iter()
-            .copied()
-            .map(|pred| {
-                self.body
-                    .layout
-                    .last_inst(pred)
-                    .expect("predecessor has no terminator")
-            })
-            .collect();
-        for inst in incoming {
-            self.edit_successors(inst, |edge| {
-                if edge.block == block {
-                    let args: Vec<_> = edge
-                        .args
-                        .iter()
-                        .zip(keep)
-                        .filter_map(|(&arg, &keep)| keep.then_some(arg))
-                        .collect();
-                    edge.set_args(&args);
-                }
-            });
+        for &pred in self.body.cfg.preds(block) {
+            let inst = self
+                .body
+                .layout
+                .last_inst(pred)
+                .expect("predecessor has no terminator");
+            self.body.dfg.retain_edge_args(inst, block, keep);
         }
         let mut index = 0;
         self.body.dfg.blocks[block].params.retain(|_| {
@@ -271,41 +267,36 @@ impl<'a> FuncEditor<'a> {
     /// adjacency. Type and dominance contracts remain explicit validation.
     pub fn redirect_edge(&mut self, edge: EdgeRef, target: Block, args: &[Value]) {
         assert!(self.body.dfg.blocks.get(target).is_some(), "unknown target");
-        self.edit_edge(edge, |successor| {
-            successor.block = target;
-            successor.set_args(args);
-        });
-    }
-
-    pub fn set_edge_arg(&mut self, edge: EdgeRef, index: usize, value: Value) {
-        self.edit_edge(edge, |successor| {
-            successor.args[index] = value;
-        });
-    }
-
-    fn edit_edge(&mut self, edge: EdgeRef, edit: impl FnOnce(&mut SuccessorData)) {
         let block = self
             .body
             .layout
             .inst_block(edge.inst)
             .expect("edge instruction not placed");
-        let mut count = 0;
+        if self.body.dfg.redirect_edge(edge, target, args) {
+            self.sync_edges(block);
+        }
+    }
+
+    /// Update one use in place. Argument values do not affect CFG adjacency.
+    pub fn set_edge_arg(&mut self, edge: EdgeRef, index: usize, value: Value) {
+        let (_, args) = self.body.dfg.edge_args(edge);
+        assert!(
+            index < (args.end - args.start) as usize,
+            "successor argument index out of bounds"
+        );
         self.body
             .dfg
-            .inst(edge.inst)
-            .visit_successors(|_| count += 1);
-        assert!(
-            (edge.index as usize) < count,
-            "successor position out of bounds"
-        );
-        let mut edit = Some(edit);
-        let mut index = 0;
-        self.body.dfg.edit_successors(edge.inst, |successor| {
-            if index == edge.index {
-                edit.take().expect("unique successor position")(successor);
-            }
-            index += 1;
-        });
+            .set_operand(edge.inst, args.start + index as u32, value);
+    }
+
+    /// Replace a branch with a jump along the selected edge, retaining its args.
+    pub fn fold_to_edge(&mut self, edge: EdgeRef) {
+        let block = self
+            .body
+            .layout
+            .inst_block(edge.inst)
+            .expect("edge instruction not placed");
+        self.body.dfg.fold_to_edge(edge);
         self.sync_edges(block);
     }
 

@@ -17,7 +17,7 @@ fn evaluate(
     let types: Vec<_> = args.iter().map(|c| c.ty()).collect();
     let mut body = veloc_mir::FuncBody::new(&types);
     let block = body.entry_block();
-    let inputs = body.dfg().block_params(block).to_vec();
+    let inputs = body.params().to_vec();
     let inst = body.edit().append_inst(
         block,
         |w| {

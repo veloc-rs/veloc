@@ -3,7 +3,7 @@
 //! Imports and indirect calls remain unknown. Recursive cycles start unknown
 //! and gain only facts proved from their bodies, without optimistic assumptions.
 use super::{KnownBits, fact, known_bits_with_returns, simplify_conversions};
-use crate::{ModulePass, OptConfig, PreservedAnalyses, Profile};
+use crate::{ModulePass, OptConfig, PassOutcome, Profile};
 use cranelift_entity::SecondaryMap;
 use std::collections::VecDeque;
 use veloc_mir::{FuncId, InstView, Module};
@@ -15,7 +15,7 @@ impl ModulePass for ReturnBitsPass {
         "ReturnBitsPass"
     }
 
-    fn run(&self, module: &mut Module, _: &OptConfig, metrics: &Profile) -> PreservedAnalyses {
+    fn run(&self, module: &mut Module, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         let mut summaries = SecondaryMap::<FuncId, Vec<KnownBits>>::new();
         let mut callers = SecondaryMap::<FuncId, Vec<FuncId>>::new();
         let mut pending = VecDeque::new();
@@ -85,9 +85,9 @@ impl ModulePass for ReturnBitsPass {
         }
         metrics.count("return_bits.simplified", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }

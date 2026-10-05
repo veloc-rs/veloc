@@ -132,8 +132,8 @@ fn full_unsigned_memory_offsets_do_not_sign_extend_disp32() {
     for offset in [0x7fff_ffffu32, 0x8000_0000, 0xffff_ffff] {
         source += &format!(
             "
-export function offset_{offset}(ptr, i64) -> i64
-block0(v0: ptr, v1: i64):
+export function offset_{offset}(v0: ptr, v1: i64) -> i64
+block0():
   store.volatile v1, v0, offset={offset}
   v2: i64 = load.volatile v0, offset={offset}
   return v2
@@ -171,8 +171,8 @@ fn narrow_integer_legalization_preserves_modular_arithmetic() {
         ] {
             source += &format!(
                 "
-export function {op}{width}(i{width}, i{width}) -> i{width}
-block0(v0: i{width}, v1: i{width}):
+export function {op}{width}(v0: i{width}, v1: i{width}) -> i{width}
+block0():
   v2: i{width} = {op} v0, v1
   return v2
 "
@@ -200,8 +200,8 @@ fn narrow_memory_and_negative_pointer_offsets_execute() {
     for width in [8, 16] {
         source += &format!(
             "
-export function copy{width}(ptr, i{width}) -> i{width}
-block0(v0: ptr, v1: i{width}):
+export function copy{width}(v0: ptr, v1: i{width}) -> i{width}
+block0():
   store.volatile v1, v0, offset=1
   v2: i{width} = load.volatile v0, offset=1
   return v2
@@ -210,15 +210,15 @@ block0(v0: ptr, v1: i{width}):
         harness += &format!("extern uint{width}_t copy{width}(void *, uint{width}_t);\n");
     }
     source += "
-export function previous(ptr, i64) -> i64
-block0(v0: ptr, v1: i64):
+export function previous(v0: ptr, v1: i64) -> i64
+block0():
   v2: ptr = ptr-offset v0, -8
   store v1, v2, offset=0
   v3: i64 = load v2, offset=0
   return v3
 
-export function pointer_slot(ptr, ptr) -> ptr
-block0(v0: ptr, v1: ptr):
+export function pointer_slot(v0: ptr, v1: ptr) -> ptr
+block0():
   store v1, v0, offset=0
   v2: ptr = load v0, offset=0
   return v2
@@ -377,15 +377,15 @@ fn backend_benchmark() {
 fn indirect_calls_and_escaping_stack_addresses() {
     run(
         r#"
-export function indirect(ptr, i64) -> i64
-block0(v0: ptr, v1: i64):
+export function indirect(v0: ptr, v1: i64) -> i64
+block0():
   v2: i64 = call-indirect v0(v1) : (i64) -> i64
   v3: i64 = iadd v2, v1
   return v3
 import function fill(ptr, i64) -> void
-export function address(i64) -> i64
+export function address(v0: i64) -> i64
 
-block0(v0: i64):
+block0():
   ss0: ptr = alloca size=16, align=8
   v1: ptr = ptr-offset ss0, 0
   call fill(v1, v0) : (ptr, i64) -> void
@@ -445,7 +445,7 @@ fn scalar_division_remainders_and_rotations_execute() {
             let name = format!("{}_{bits}", op.replace('-', "_"));
             let ty = format!("{}int{bits}_t", if signed { "" } else { "u" });
             source += &format!(
-                "\nexport function {name}(i{bits}, i{bits}) -> i{bits}\nblock0(v0: i{bits}, v1: i{bits}):\n  v2: i{bits} = {op} v0, v1\n  return v2\n"
+                "\nexport function {name}(v0: i{bits}, v1: i{bits}) -> i{bits}\nblock0():\n  v2: i{bits} = {op} v0, v1\n  return v2\n"
             );
             harness += &format!("extern {ty} {name}({ty}, {ty});\n");
             checks += &format!(
@@ -474,13 +474,13 @@ fn scalar_float_conversions_and_sign_bits_execute() {
                 let ctype = format!("{prefix}int{integer}_t");
                 let name = format!("convert_{sign}_{integer}_{bits}");
                 source += &format!(
-                    "\nexport function {name}(i{integer}) -> f{bits}\nblock0(v0: i{integer}):\n  v1: f{bits} = int-to-float-{sign} v0\n  return v1\n"
+                    "\nexport function {name}(v0: i{integer}) -> f{bits}\nblock0():\n  v1: f{bits} = int-to-float-{sign} v0\n  return v1\n"
                 );
                 harness += &format!("extern {cfloat} {name}({ctype});\n");
                 checks += &format!("assert({name}(({ctype})state)==({cfloat})({ctype})state);\n");
                 let name = format!("back_{sign}_{integer}_{bits}");
                 source += &format!(
-                    "\nexport function {name}(f{bits}) -> i{integer}\nblock0(v0: f{bits}):\n  v1: i{integer} = float-to-int-{sign} v0\n  return v1\n"
+                    "\nexport function {name}(v0: f{bits}) -> i{integer}\nblock0():\n  v1: i{integer} = float-to-int-{sign} v0\n  return v1\n"
                 );
                 harness += &format!("extern {ctype} {name}({cfloat});\n");
                 // Keep rounding away from overflow while covering both halves
@@ -515,7 +515,7 @@ fn scalar_float_conversions_and_sign_bits_execute() {
         ] {
             let name = format!("bits_{op}_{bits}");
             source += &format!(
-                "\nexport function {name}(i{bits}) -> i{bits}\nblock0(v0: i{bits}):\n  v1: f{bits} = reinterpret v0\n  v2: f{bits} = {op} v1\n  v3: i{bits} = reinterpret v2\n  return v3\n"
+                "\nexport function {name}(v0: i{bits}) -> i{bits}\nblock0():\n  v1: f{bits} = reinterpret v0\n  v2: f{bits} = {op} v1\n  v3: i{bits} = reinterpret v2\n  return v3\n"
             );
             harness += &format!("extern uint{bits}_t {name}(uint{bits}_t);\n");
             checks += &format!(
@@ -547,13 +547,13 @@ fn floating_comparisons_and_shared_select_inputs_execute() {
         ] {
             let name = format!("cmp_{cc}_{bits}");
             source += &format!(
-                "\nexport function {name}(f{bits}, f{bits}) -> i32\nblock0(v0: f{bits}, v1: f{bits}):\n  v2: bool = fcmp {cc} v0, v1\n  v3: i32 = extendu v2\n  return v3\n"
+                "\nexport function {name}(v0: f{bits}, v1: f{bits}) -> i32\nblock0():\n  v2: bool = fcmp {cc} v0, v1\n  v3: i32 = extendu v2\n  return v3\n"
             );
             harness += &format!("extern int {name}({ctype}, {ctype});\n");
             checks += &format!("assert({name}(a,b) == (a {op} b));\n");
         }
         source += &format!(
-            "\nexport function select_{bits}(i{bits}, i{bits}, i{bits}) -> i{bits}\nblock0(v0: i{bits}, v1: i{bits}, v2: i{bits}):\n  v3: bool = icmp gtu v0, v1\n  v4: i{bits} = select v3, v1, v2\n  v5: i{bits} = iadd v4, v1\n  v6: i{bits} = iadd v5, v2\n  v7: i{bits} = extendu v3\n  v8: i{bits} = iadd v6, v7\n  return v8\n"
+            "\nexport function select_{bits}(v0: i{bits}, v1: i{bits}, v2: i{bits}) -> i{bits}\nblock0():\n  v3: bool = icmp gtu v0, v1\n  v4: i{bits} = select v3, v1, v2\n  v5: i{bits} = iadd v4, v1\n  v6: i{bits} = iadd v5, v2\n  v7: i{bits} = extendu v3\n  v8: i{bits} = iadd v6, v7\n  return v8\n"
         );
         harness += &format!(
             "extern uint{bits}_t select_{bits}(uint{bits}_t,uint{bits}_t,uint{bits}_t);\n"
@@ -569,8 +569,8 @@ fn floating_comparisons_and_shared_select_inputs_execute() {
 fn loop_parameters_preserve_parallel_assignment() {
     run(
         r#"
-export function rotate(i64, i64, i64, i64) -> i64
-block0(v0: i64, v1: i64, v2: i64, v3: i64):
+export function rotate(v0: i64, v1: i64, v2: i64, v3: i64) -> i64
+block0():
   jump block1(v0, v1, v2, v3)
 block1(v4: i64, v5: i64, v6: i64, v7: i64):
   v9: bool = icmp eq v7, i64(0)
@@ -585,8 +585,8 @@ block2():
   v17: i64 = iadd v16, v6
   return v17
 
-export function chain(i64, i64, i64, i64) -> i64
-block0(v0: i64, v1: i64, v2: i64, v3: i64):
+export function chain(v0: i64, v1: i64, v2: i64, v3: i64) -> i64
+block0():
   jump block1(v0, v1, v2, v3)
 block1(v4: i64, v5: i64, v6: i64, v7: i64):
   v9: bool = icmp eq v7, i64(0)
@@ -621,7 +621,7 @@ int main(void) {
 #[test]
 fn ssa_edges_execute_spilled_cycles_and_duplicate_targets() {
     const N: usize = 40;
-    let mut source = String::from("export function rotate_spilled(i64) -> i64\nblock0(v0: i64):\n");
+    let mut source = String::from("export function rotate_spilled(v0: i64) -> i64\nblock0():\n");
     let initial = (1..=N)
         .map(|i| format!("i64({i})"))
         .collect::<Vec<_>>()
@@ -653,8 +653,8 @@ fn ssa_edges_execute_spilled_cycles_and_duplicate_targets() {
     }
     source += &format!("  return {sum}\n");
     source += r#"
-export function entry_loop(i64, i64) -> i64
-block0(v0: i64, v1: i64):
+export function entry_loop(v0: i64, v1: i64) -> i64
+block0():
   v3: bool = icmp eq v0, i64(0)
   br v3, block1(), block2()
 block1():
@@ -664,8 +664,8 @@ block2():
   v6: i64 = iadd v1, i64(1)
   jump block0(v5, v6)
 
-export function same_target(i64, i64, i64) -> i64
-block0(v0: i64, v1: i64, v2: i64):
+export function same_target(v0: i64, v1: i64, v2: i64) -> i64
+block0():
   v4: bool = icmp eq v0, i64(0)
   br v4, block1(v1, v2), block1(v2, v1)
 block1(v5: i64, v6: i64):
@@ -752,8 +752,8 @@ fn incoming_and_outgoing_stack_arguments() {
     run(
         r#"
 import function weighted(i64, i64, i64, i64, i64, i64, i64, i64) -> i64
-export function forward(i64, i64, i64, i64, i64, i64, i64, i64) -> i64
-block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64, v6: i64, v7: i64):
+export function forward(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64, v6: i64, v7: i64) -> i64
+block0():
   v8: i64 = call weighted(v7, v6, v5, v4, v3, v2, v1, v0) : (i64, i64, i64, i64, i64, i64, i64, i64) -> i64
   v9: i64 = iadd v8, v0
   return v9
@@ -774,8 +774,8 @@ int main(void) { for(uint64_t n=0;n<100;n++) assert(forward(n,2,3,4,5,6,7,8)==we
 fn loops_branches_and_stack_memory() {
     run(
         r#"
-export function sum(i64) -> i64
-block0(v0: i64):
+export function sum(v0: i64) -> i64
+block0():
   jump block1(v0, i64(0))
 block1(v3: i64, v4: i64):
   v5: bool = icmp eq v3, i64(0)
@@ -787,9 +787,9 @@ block2():
 block3(v8: i64):
   return v8
 
-export function memory(i64) -> i64
+export function memory(v0: i64) -> i64
 
-block0(v0: i64):
+block0():
   ss0: ptr = alloca size=16, align=8
   store v0, ss0, offset=8
   v1: i64 = load ss0, offset=8
@@ -808,8 +808,8 @@ int main(void) { for(uint64_t n=0;n<200;n++) { assert(sum(n)==n*(n+1)/2); assert
 fn conditional_edges_do_not_depend_on_block_layout() {
     run(
         r#"
-export function choose(i64) -> i64
-block0(v0: i64):
+export function choose(v0: i64) -> i64
+block0():
   v4: bool = icmp eq v0, i64(0)
   br v4, block2(i64(11)), block3(i64(22))
 block1():
@@ -832,8 +832,8 @@ int main(void) { for(uint64_t n=0;n<200;n++) assert(choose(n)==(n==0 ? 11 : 22))
 fn volatile_memory_accesses_preserve_width_offsets_and_order() {
     run(
         r#"
-export function memory_order(ptr, i32) -> i32
-block0(v0: ptr, v1: i32):
+export function memory_order(v0: ptr, v1: i32) -> i32
+block0():
   store.volatile.align4 v1, v0, offset=4
   v2: i32 = load.volatile.align4 v0, offset=4
   v4: i32 = iadd v2, i32(1)
@@ -859,7 +859,7 @@ int main(void) {
 #[test]
 fn calls_and_high_register_pressure() {
     let mut source = String::from(
-        "import function smash(i64) -> i64\nexport function pressure(i64) -> i64\nblock0(v0: i64):\n",
+        "import function smash(i64) -> i64\nexport function pressure(v0: i64) -> i64\nblock0():\n",
     );
     for i in 0..24 {
         source += &format!("  v{}: i64 = imul v0, i64({})\n", 2 * i + 2, i + 3);
@@ -891,8 +891,8 @@ fn floating_values_survive_calls() {
     run(
         r#"
 import function twice(f64) -> f64
-export function floats(f64) -> f64
-block0(v0: f64):
+export function floats(v0: f64) -> f64
+block0():
   v1: f64 = call twice(v0) : (f64) -> f64
   v2: f64 = fadd v0, v1
   return v2
@@ -909,28 +909,28 @@ int main(void) { for(int n=-100;n<100;n++) assert(floats(n*0.25)==n*0.75); }
 #[test]
 fn bit_counts_obey_target_features_and_preserve_results() {
     let source = r#"
-export function count32(i32) -> i32
-block0(v0: i32):
+export function count32(v0: i32) -> i32
+block0():
   v1: i32 = ipopcnt v0
   return v1
-export function count64(i64) -> i64
-block0(v0: i64):
+export function count64(v0: i64) -> i64
+block0():
   v1: i64 = ipopcnt v0
   return v1
-export function leading32(i32) -> i32
-block0(v0: i32):
+export function leading32(v0: i32) -> i32
+block0():
   v1: i32 = iclz v0
   return v1
-export function leading64(i64) -> i64
-block0(v0: i64):
+export function leading64(v0: i64) -> i64
+block0():
   v1: i64 = iclz v0
   return v1
-export function trailing32(i32) -> i32
-block0(v0: i32):
+export function trailing32(v0: i32) -> i32
+block0():
   v1: i32 = ictz v0
   return v1
-export function trailing64(i64) -> i64
-block0(v0: i64):
+export function trailing64(v0: i64) -> i64
+block0():
   v1: i64 = ictz v0
   return v1
 "#;
@@ -1077,16 +1077,16 @@ int main(void) {
 fn branch_tables_preserve_edge_arguments_and_unsigned_default() {
     run(
         r#"
-export function choose(i32, i64, i64) -> i64
-block0(v0: i32, v1: i64, v2: i64):
+export function choose(v0: i32, v1: i64, v2: i64) -> i64
+block0():
   br-table v0, [block1(v1), block1(v2), block2(v1)], block2(v2)
 block1(v3: i64):
   return v3
 block2(v4: i64):
   v6: i64 = iadd v4, i64(1)
   return v6
-export function fallback(i32, i64) -> i64
-block0(v0: i32, v1: i64):
+export function fallback(v0: i32, v1: i64) -> i64
+block0():
   br-table v0, [], block1(v1)
 block1(v2: i64):
   return v2

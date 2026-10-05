@@ -101,6 +101,22 @@ impl IntCC {
             None => unreachable!(),
         }
     }
+    /// Whether this true predicate proves or disproves another comparison of
+    /// the same operands. Signed and unsigned ordering need separate evidence.
+    pub const fn implies(self, other: Self) -> Option<bool> {
+        if (self.is_signed() && other.is_unsigned()) || (self.is_unsigned() && other.is_signed()) {
+            return None;
+        }
+        let possible = self.outcomes();
+        let accepted = other.outcomes();
+        if possible & accepted == 0 {
+            Some(false)
+        } else if possible & !accepted == 0 {
+            Some(true)
+        } else {
+            None
+        }
+    }
     /// Compare fixed-width bitvectors; discard any bits outside the width.
     pub const fn test(self, bits: u16, lhs: u128, rhs: u128) -> bool {
         assert!(bits > 0 && bits as u32 <= u128::BITS);

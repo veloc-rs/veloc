@@ -390,8 +390,105 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
         )
         .unwrap();
     }
-    out.push_str("};\ndebug_assert!(reader.0.is_empty(), \"unconsumed operands\");\nview\n} }\n");
+    out.push_str("};\ndebug_assert!(reader.0.is_empty(), \"unconsumed operands\");\nview\n}\n");
+    edge_access(&mut out, layouts, records, false);
+    edge_access(&mut out, layouts, records, true);
+    out.push_str("}\n");
     out
+}
+
+/// Locate successor arguments from the same storage layout used by the reader.
+/// Edits report original offsets, so callers can compact operands in one pass.
+fn edge_access(out: &mut String, layouts: &[Layout], records: &[RecordDef], mutable: bool) {
+    let (method, borrow, argument, get) = if mutable {
+        ("edit_edges", "&mut ", "&mut storage::Edge", "get_mut")
+    } else {
+        ("visit_edges", "&", "storage::Edge", "get")
+    };
+    writeln!(out, "pub(crate) fn {method}({borrow}self, pool: {borrow}FieldPool, operand_len: u32, mut visit: impl FnMut({argument}, core::ops::Range<u32>)) {{ match self {{").unwrap();
+    for layout in layouts.iter().filter(|layout| {
+        layout
+            .fields
+            .iter()
+            .any(|f| matches!(f.access(), Some(Access::Edge | Access::Edges)))
+    }) {
+        let hot = inline(layout, records);
+        if hot {
+            writeln!(out, "{} => {{", pattern(layout, records, true, "Self")).unwrap();
+        } else {
+            writeln!(out, "Self::{}(id) => {{", layout.name).unwrap();
+            let fields = layout
+                .fields
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| stored_type(f, records).is_some())
+                .map(|(i, f)| (f.name.clone(), format!("_f{i}")));
+            writeln!(
+                out,
+                "let {} = pool.{get}(*id);",
+                construct(&format!("{}Fields", layout.name), fields)
+            )
+            .unwrap();
+        }
+        out.push_str("let mut offset = 0u32;\n");
+        for (i, f) in layout.fields.iter().enumerate() {
+            match f.access() {
+                Some(Access::Value) => out.push_str("offset += 1;\n"),
+                Some(Access::Array) => {
+                    let super::FieldType::Values(n) = f.ty else {
+                        unreachable!()
+                    };
+                    writeln!(out, "offset += {n};").unwrap();
+                }
+                Some(Access::Values) if hot && omitted(layout, records, i) => {
+                    out.push_str("offset = operand_len;\n");
+                }
+                Some(Access::Values) => writeln!(out, "offset += *_f{i};").unwrap(),
+                Some(Access::Edges) => {
+                    writeln!(out, "_f{i}.{method}(&mut offset, &mut visit);").unwrap();
+                }
+                Some(Access::Edge) => {
+                    out.push_str("let start = offset;\n");
+                    if hot && omitted(layout, records, i) {
+                        let mutability = if mutable { "mut " } else { "" };
+                        writeln!(out, "let {mutability}edge = storage::Edge {{ block: *_f{i}, len: operand_len - offset }}; offset = operand_len;").unwrap();
+                        if mutable {
+                            writeln!(out, "visit(&mut edge, start..offset); *_f{i} = edge.block;")
+                                .unwrap();
+                        } else {
+                            out.push_str("visit(edge, start..offset);\n");
+                        }
+                    } else {
+                        writeln!(out, "offset += _f{i}.len;").unwrap();
+                        let edge = if mutable {
+                            format!("_f{i}")
+                        } else {
+                            format!("*_f{i}")
+                        };
+                        writeln!(out, "visit({edge}, start..offset);").unwrap();
+                    }
+                }
+                None => {
+                    if let Some(record) = record(f, records) {
+                        for member in &record.fields {
+                            match &member.ty {
+                                PropertyType::Optional(_) => {
+                                    writeln!(out, "offset += u32::from(_f{i}.{});", member.name)
+                                        .unwrap()
+                                }
+                                PropertyType::Named(_) if member.policy.references.is_operand() => {
+                                    out.push_str("offset += 1;\n")
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out.push_str("debug_assert_eq!(offset, operand_len);\n},\n");
+    }
+    out.push_str("_ => {} } }\n");
 }
 
 /// Normalize packed field adapters into the common logical access plan.

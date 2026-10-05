@@ -5,7 +5,7 @@
 use crate::error::{Error, Result};
 use cranelift_entity::PrimaryMap;
 use smallvec::SmallVec;
-use std::{format, vec::Vec};
+use std::format;
 use veloc_lir::InstBuild;
 use veloc_lir::{BlockId, CallInfo, MachineFunction, MachineModule, Reg};
 use veloc_mir::{InstView, Module, Opcode, TypeInfo, Value};
@@ -142,27 +142,15 @@ impl<'a> FuncTranslator<'a> {
             core::iter::once(entry)
                 .chain(func.layout().block_order().filter(|&block| block != entry))
         };
-        let incoming = (!func.cfg().preds(entry).is_empty()).then_some(self.mfunc.entry_block());
         for block in order() {
-            self.block_map[block] = Some(if block == entry && incoming.is_none() {
+            self.block_map[block] = Some(if block == entry {
                 self.mfunc.entry_block()
             } else {
                 self.mfunc.editor().create_block()
             });
         }
-        // The caller enters once; a backedge must enter the MIR block instead.
-        if let Some(incoming) = incoming {
-            let mut args = Vec::with_capacity(func.params().len());
-            for &value in func.params() {
-                let reg = self.mfunc.editor().alloc_vreg(func.dfg().value_type(value));
-                self.mfunc.editor().append_param(reg);
-                args.push(reg);
-            }
-            let edge = self
-                .mfunc
-                .editor()
-                .create_edge(self.block_map[entry].unwrap(), &args);
-            self.mfunc.editor().at_end(incoming).br(edge);
+        for &value in func.params() {
+            self.mfunc.editor().append_param(self.value_map[value]);
         }
         for block_id in order() {
             let mblock = self.block_map[block_id].unwrap();

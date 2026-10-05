@@ -1,18 +1,15 @@
-//! One equality-graph pipeline; fast mode changes budgets, not semantics.
-//!
-//! Rewrites create ordinary, detached MIR instructions. A Value denotes one
-//! concrete result; union-find adds equivalence without changing its definition.
-//! Rebuilding repairs indexes, not MIR edges. Extraction then copies the chosen
-//! expressions into dominance-valid positions and commits only executable uses.
-//! The candidate session releases its use-def links before dead-code removal.
+//! Equality search over compact expressions, with original MIR kept intact.
+//! Spec supplies shared operation semantics. Extraction builds an owned plan;
+//! only plan application allocates MIR values and updates executable uses.
 mod extract;
 mod graph;
 mod matching;
+mod storage;
 
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use graph::{Graph, InstKind};
+use storage::{Expressions, Storage, Value as ExprValue};
 use veloc_analyzer::{AnalysisManager, Dominators};
-use veloc_mir::function::{Expressions, FrozenExpressions};
 use veloc_mir::{FuncBody, Inst};
 
 /// Relative costs of movable operations, not total
@@ -50,17 +47,18 @@ impl FunctionPass for ExpressionPass {
         am: &mut AnalysisManager<'_>,
         config: &OptConfig,
         metrics: &Profile,
-    ) -> PreservedAnalyses {
+    ) -> PassOutcome {
         if run_with_analyses(
             am,
             self.budget,
             &GenericCost,
+            config.data_layout,
             config.is_debug_enabled("simplify"),
             metrics,
         ) {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         } else {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         }
     }
 }
@@ -80,6 +78,7 @@ pub fn run_with_cost(
         &mut AnalysisManager::new(func).with_profile(metrics.clone()),
         budget,
         cost,
+        None,
         debug,
         metrics,
     )
@@ -89,13 +88,14 @@ fn run_with_analyses(
     am: &mut AnalysisManager<'_>,
     budget: Budget,
     cost: &dyn CostModel,
+    layout: Option<veloc_types::DataLayout>,
     debug: bool,
     metrics: &Profile,
 ) -> bool {
     // Expression selection preserves CFG topology. Own the snapshot
     // while editing instructions, without holding a borrow of the manager.
     let dom = am.take_dominators();
-    let changed = optimize_function(am.function_mut(), budget, cost, &dom, metrics);
+    let changed = optimize_function(am.function_mut(), budget, cost, &dom, layout, metrics);
     if changed && debug {
         log::info!("Optimized expression graph");
     }
@@ -106,7 +106,7 @@ fn run_with_analyses(
 /// run the same graph optimizer; neither is a separate greedy rewrite engine.
 #[derive(Clone, Copy)]
 pub struct Budget {
-    /// New detached instructions allowed across all rewrite rounds. Imports,
+    /// New candidate instructions allowed across all rewrite rounds. Imports,
     /// literals, reuse and operations folded during construction do not count.
     /// Later folding does not refund an instruction's allocation.
     pub graph_nodes: usize,
@@ -145,7 +145,7 @@ impl Budget {
     };
 }
 
-/// One owner of the MIR candidate arena and its equality indexes.
+/// One owner of search expressions and their equality indexes.
 struct EqualitySession<'a> {
     ir: Expressions<'a>,
     graph: Graph,
@@ -153,26 +153,28 @@ struct EqualitySession<'a> {
 }
 
 impl<'a> EqualitySession<'a> {
-    fn new(f: &'a mut FuncBody, budget: Budget) -> Self {
+    fn new(f: &'a FuncBody, budget: Budget) -> Self {
+        let mut ir = Expressions::new(f);
         let mut graph = Graph::new();
         let mut anchors = Vec::new();
         for block in f.cfg().compute_rpo(f.entry_block()) {
-            for &param in f.dfg().block_params(block) {
-                graph.register_value(f, param);
-            }
-            for inst in f.layout().block_insts(block) {
-                graph.register_inst(f, inst);
-                if graph.kinds[inst] != InstKind::Floating {
-                    anchors.push(inst);
+            for original in f.layout().block_insts(block) {
+                let inst = ir.import_inst(original);
+                if inst.is_none_or(|inst| !ir.can_speculate(inst)) {
+                    anchors.push(original);
                 }
             }
         }
-        graph.remaining_nodes = budget.graph_nodes;
-        Self {
-            ir: f.expressions(),
-            graph,
-            anchors,
+        // Import all definitions before indexing: an input may be defined in a
+        // later RPO block. Only referenced leaves and supported operations exist.
+        for value in ir.values() {
+            graph.register_value(&ir, value);
         }
+        for inst in ir.insts() {
+            graph.register_inst(&ir, inst);
+        }
+        graph.remaining_nodes = budget.graph_nodes;
+        Self { ir, graph, anchors }
     }
 
     fn saturate(&mut self, rounds: usize, matches: usize, fuel: &mut usize) -> Stop {
@@ -190,59 +192,68 @@ impl<'a> EqualitySession<'a> {
         dom: &Dominators,
         rank: &mut usize,
         work: &mut usize,
-    ) -> u64 {
+    ) -> OptimizationPlan {
         let Self {
-            ir,
+            mut ir,
             mut graph,
             mut anchors,
         } = self;
-        let mut ir = ir.freeze();
-        let mut changed = Self::commit_folds(&mut graph, &mut ir);
-        anchors.retain(|&inst| graph.kinds[inst] != InstKind::Folded);
-        // Selection reads simplified executable operands. Keep old instructions
-        // alive as source templates until selection and emission have finished.
-        let extraction = graph.extract(ir.body(), &anchors, model, dom, rank, work);
-        changed += extraction.apply(&mut ir);
-        // Instruction state is the only deletion authority. This temporary
-        // batch excludes detached candidates, which the session releases itself.
-        let folded: Vec<_> = ir
-            .body()
-            .layout()
-            .block_order()
-            .flat_map(|block| ir.body().layout().block_insts(block))
-            .filter(|&inst| graph.kinds[inst] == InstKind::Folded)
-            .collect();
-        changed += folded.len() as u64;
-        ir.commit(&folded);
-        changed
-    }
-
-    /// End search by committing established folds to executable uses. Matching
-    /// indexes must not be queried afterwards. Replacements stay in the same
-    /// classes, preserving dependencies for ranking; templates stay immutable.
-    fn commit_folds(graph: &mut Graph, ir: &mut FrozenExpressions<'_>) -> u64 {
-        let mut changed = 0;
-        // Actual operand witnesses dominate the original executable uses; class
-        // representatives and detached alternatives are never used as aliases.
-        let mut uses = Vec::new();
+        let mut aliases = hashbrown::HashMap::new();
+        let mut folds = Vec::new();
         for index in 0..graph.values.len() {
             let value = graph.values[index];
-            let replacement = graph.resolve_alias(ir.body(), value);
-            if value == replacement {
-                continue;
-            }
-            uses.extend(ir.body().dfg().uses(value).filter_map(|site| {
-                ir.body()
-                    .layout()
-                    .inst_block(site.inst())
-                    .map(|_| (site.inst(), site.index()))
-            }));
-            for (inst, index) in uses.drain(..) {
-                ir.replace_input(inst, index, replacement);
-                changed += 1;
+            let replacement = graph.resolve_alias(&ir, value);
+            if value != replacement
+                && let Some(original) = ir.original_value(value)
+            {
+                aliases.insert(value, replacement);
+                folds.push((original, replacement));
             }
         }
-        changed
+        // Price and select through the proven fold mapping. Formal uses stay intact
+        // until the complete plan is applied, including when extraction stops.
+        ir.set_replacements(aliases);
+        anchors.retain(|&inst| {
+            ir.imported_inst(inst)
+                .is_none_or(|i| graph.kinds[i] != InstKind::Folded)
+        });
+        let extraction = graph.extract(&ir, &anchors, model, dom, rank, work);
+        let replaced = ir
+            .insts()
+            .filter(|&inst| graph.kinds[inst] == InstKind::Folded)
+            .filter_map(|inst| ir.original_inst(inst))
+            .collect();
+        OptimizationPlan {
+            ir: ir.into_storage(),
+            extraction,
+            folds,
+            replaced,
+            metrics: graph.profile,
+        }
+    }
+}
+
+/// Own every candidate needed for emission. Dropping this plan leaves MIR
+/// unchanged; applying it is the only operation that publishes search results.
+struct OptimizationPlan {
+    ir: Storage,
+    extraction: extract::Extraction,
+    folds: Vec<(veloc_mir::Value, ExprValue)>,
+    replaced: Vec<Inst>,
+    metrics: Profile,
+}
+
+impl OptimizationPlan {
+    fn apply(self, body: &mut FuncBody) -> u64 {
+        let mut changed = 0;
+        for (old, replacement) in self.folds {
+            let value = self.ir.materialize(body, replacement);
+            changed += body.dfg().uses(old).count() as u64;
+            body.edit().replace_all_uses(old, value);
+        }
+        changed += self.extraction.apply(body, &self.ir, &self.metrics);
+        body.edit().erase_insts(&self.replaced);
+        changed + self.replaced.len() as u64
     }
 }
 
@@ -267,7 +278,7 @@ enum Limit {
 
 fn saturate(
     graph: &mut Graph,
-    ir: &mut Expressions<'_>,
+    ir: &mut Expressions,
     rounds: usize,
     matches: usize,
     fuel: &mut usize,
@@ -283,7 +294,7 @@ fn saturate(
             return Stop::Limited(Limit::MatchWork);
         }
         queries.clear();
-        graph.schedule(ir.body(), &mut queries);
+        graph.schedule(ir, &mut queries);
         // Nothing relevant to a rule changed. Analysis is already drained by
         // rebuilding, so an empty query set really is a fixed point.
         if queries.is_empty() {
@@ -292,7 +303,7 @@ fn saturate(
 
         // All roots see the same immutable graph. Even a partial search has
         // sound matches worth applying before returning a budget stop.
-        let searched = machine.search(graph, ir.body(), &queries, matches, fuel);
+        let searched = machine.search(graph, ir, &queries, matches, fuel);
         let applied = machine.apply(graph, ir);
         graph.rebuild(ir);
         if let Err(limit) = searched {
@@ -316,18 +327,15 @@ fn optimize_function(
     budget: Budget,
     model: &dyn CostModel,
     dom: &Dominators,
+    layout: Option<veloc_types::DataLayout>,
     metrics: &Profile,
 ) -> bool {
     let scope = metrics.scope("egraph.import", 0);
     let mut session = EqualitySession::new(f, budget);
     session.graph.profile = metrics.clone();
+    session.graph.layout = layout;
     scope.success();
-    if !session
-        .graph
-        .kinds
-        .values()
-        .any(|&kind| kind != InstKind::Unsupported)
-    {
+    if session.ir.insts().next().is_none() {
         return false;
     }
     let mut fuel = budget.match_steps;
@@ -346,7 +354,8 @@ fn optimize_function(
     let mut rank = budget.rank_steps;
     let mut work = budget.extract_steps;
     let scope = metrics.scope("egraph.extract", 0);
-    let changed = session.finish(model, dom, &mut rank, &mut work);
+    let plan = session.finish(model, dom, &mut rank, &mut work);
+    let changed = plan.apply(f);
     scope.success();
     metrics.count("egraph.rank_steps", (budget.rank_steps - rank) as u64);
     metrics.count("egraph.extract_steps", (budget.extract_steps - work) as u64);
@@ -356,10 +365,11 @@ fn optimize_function(
 }
 #[cfg(test)]
 mod tests {
+    use super::storage::Value;
     use super::*;
     use crate::Profile;
     use veloc_mir::constant::ScalarConst;
-    use veloc_mir::{Opcode as Op, Type, Value};
+    use veloc_mir::{Opcode as Op, Type, Value as MirValue};
     use veloc_types::TypeInfo;
 
     #[test]
@@ -367,8 +377,8 @@ mod tests {
         let mut module = veloc_mir::ModuleParser::new()
             .parse(
                 r#"
-local function identities(i64) -> (i64, i64, i64)
-block0(v0: i64):
+local function identities(v0: i64) -> (i64, i64, i64)
+block0():
   v2: i64 = isub v0, i64(0)
   v3: i64 = isub v0, i64(0)
   v4: i64 = iadd v0, i64(1)
@@ -386,36 +396,49 @@ block0(v0: i64):
         let ir = &mut session.ir;
         // Import folding removes both concrete identities from search.
         for &inst in &insts[..2] {
-            assert!(graph.kinds[inst] == InstKind::Folded);
+            assert!(graph.kinds[ir.imported_inst(inst).unwrap()] == InstKind::Folded);
         }
         // Cancellation is still an ordinary equality: keep this alternative.
-        assert!(graph.kinds[insts[3]] == InstKind::Floating);
-        let other = ir.body().dfg().inst_results(insts[3])[0];
+        assert!(graph.kinds[ir.imported_inst(insts[3]).unwrap()] == InstKind::Floating);
+        let other = ir.inst_results(ir.imported_inst(insts[3]).unwrap())[0];
         assert_eq!(graph.find(other), graph.find(Value(0)));
         assert_eq!(graph.alternatives(graph.find(other), Op::ISub), [other]);
 
         // Construction returns the input, without allocating or consulting a tombstone.
         let count = graph.values.len();
-        let inst_count = ir.body().dfg().inst_count();
+        let inst_count = ir.inst_count();
         graph.remaining_nodes = 0;
         let zero = ir.constant(ScalarConst::from(0i64).into());
         let rebuilt = graph
-            .build(ir, Op::ISub, &[Value(0), zero], Type::I64)
+            .build(
+                ir,
+                Op::ISub,
+                &[Value(0), zero],
+                Type::I64,
+                crate::evaluate::Properties::None,
+            )
             .unwrap();
         assert_eq!(graph.values.len(), count);
         assert_eq!(rebuilt, Value(0));
-        assert!(ir.body().dfg().value_inst(rebuilt).is_none());
+        assert!(ir.value_inst(rebuilt).is_none());
         let one = ir.constant(ScalarConst::from(1i64).into());
-        let folded = graph.build(ir, Op::IAdd, &[one, one], Type::I64).unwrap();
-        assert_eq!(
-            ir.body().dfg().as_scalar_const(folded),
-            Some(ScalarConst::from(2i64))
-        );
-        assert_eq!(ir.body().dfg().inst_count(), inst_count);
+        let folded = graph
+            .build(
+                ir,
+                Op::IAdd,
+                &[one, one],
+                Type::I64,
+                crate::evaluate::Properties::None,
+            )
+            .unwrap();
+        assert_eq!(ir.as_scalar_const(folded), Some(ScalarConst::from(2i64)));
+        assert_eq!(ir.inst_count(), inst_count);
 
-        let dom = Dominators::compute(ir.body().cfg(), ir.body().entry_block());
+        let dom = Dominators::compute(body.cfg(), body.entry_block());
         // Even without extraction fuel, executable uses get the original operand.
-        session.finish(&GenericCost, &dom, &mut 0, &mut 0);
+        session
+            .finish(&GenericCost, &dom, &mut 0, &mut 0)
+            .apply(body);
         assert_eq!(
             body.layout()
                 .block_insts(body.entry_block())
@@ -424,7 +447,7 @@ block0(v0: i64):
         );
         assert_eq!(
             &body.dfg().operands(*insts.last().unwrap())[..2],
-            &[Value(0), Value(0)]
+            &[MirValue(0), MirValue(0)]
         );
         module.validate().unwrap();
     }
@@ -448,7 +471,9 @@ block0():
             // Import reduction is independent of exploratory matching fuel.
             session.saturate(0, Budget::DEFAULT.matches, &mut 0);
             let mut rank = 0;
-            session.finish(&GenericCost, &dom, &mut rank, &mut work);
+            session
+                .finish(&GenericCost, &dom, &mut rank, &mut work)
+                .apply(body);
             let insts: Vec<_> = body.layout().block_insts(body.entry_block()).collect();
             assert_eq!(insts.len(), 1, "folded arithmetic must be dead");
             let value = body.dfg().operands(insts[0])[0];
@@ -462,29 +487,36 @@ block0():
 
     #[test]
     fn constants_remain_roots_and_wake_new_users() {
-        let mut body = FuncBody::new(&[Type::I32; 7]);
+        let body = FuncBody::new(&[Type::I32; 7]);
+        let mut ir = Expressions::new(&body);
         let mut graph = Graph::new();
         for index in 0..7 {
-            graph.register_value(&body, Value(index));
+            let value = ir.import_value(MirValue(index));
+            graph.register_value(&ir, value);
         }
         // Form a larger nonconstant class before attaching it to a literal.
-        graph.union(&body, Value(0), Value(1));
-        graph.union(&body, Value(2), Value(0));
-        let mut ir = body.expressions();
+        graph.union(&ir, Value(0), Value(1));
+        graph.union(&ir, Value(2), Value(0));
         let sum = graph
-            .build(&mut ir, Op::IAdd, &[Value(2), Value(4)], Type::I32)
+            .build(
+                &mut ir,
+                Op::IAdd,
+                &[Value(2), Value(4)],
+                Type::I32,
+                crate::evaluate::Properties::None,
+            )
             .unwrap();
         let one = graph.literal(&mut ir, ScalarConst::from(1i32));
 
-        graph.union(ir.body(), Value(2), one);
+        graph.union(&ir, Value(2), one);
         for index in 0..3 {
             assert_eq!(graph.find(Value(index)).value(), one);
         }
         // Both argument orders preserve the literal root. The last merge must
         // wake the addition even though this constant root was already known.
-        graph.union(ir.body(), one, Value(3));
-        graph.union(ir.body(), Value(4), one);
-        graph.union(ir.body(), Value(0), Value(4));
+        graph.union(&ir, one, Value(3));
+        graph.union(&ir, Value(4), one);
+        graph.union(&ir, Value(0), Value(4));
         for index in 0..5 {
             assert_eq!(graph.find(Value(index)).value(), one);
         }
@@ -497,7 +529,13 @@ block0():
         // Only the subsequent merge can reveal the parent's x + 0 identity.
         let zero = graph.literal(&mut ir, ScalarConst::from(0i32));
         let parent = graph
-            .build(&mut ir, Op::IAdd, &[Value(5), Value(6)], Type::I32)
+            .build(
+                &mut ir,
+                Op::IAdd,
+                &[Value(5), Value(6)],
+                Type::I32,
+                crate::evaluate::Properties::None,
+            )
             .unwrap();
         let mut fuel = Budget::DEFAULT.match_steps;
         super::saturate(
@@ -507,7 +545,7 @@ block0():
             Budget::DEFAULT.matches,
             &mut fuel,
         );
-        graph.union(ir.body(), Value(6), zero);
+        graph.union(&ir, Value(6), zero);
         super::saturate(
             &mut graph,
             &mut ir,
@@ -521,12 +559,12 @@ block0():
     #[test]
     #[should_panic(expected = "rewrite equated distinct constants")]
     fn distinct_constants_cannot_be_equated() {
-        let mut body = FuncBody::new(&[]);
-        let mut ir = body.expressions();
+        let body = FuncBody::new(&[]);
+        let mut ir = Expressions::new(&body);
         let mut graph = Graph::new();
         let one = graph.literal(&mut ir, ScalarConst::from(1i32));
         let two = graph.literal(&mut ir, ScalarConst::from(2i32));
-        graph.union(ir.body(), one, two);
+        graph.union(&ir, one, two);
     }
 
     #[test]
@@ -534,8 +572,8 @@ block0():
         let parsed = veloc_mir::ModuleParser::new()
             .parse(
                 r#"
-local function cross(i64, ptr) -> i64
-block0(v0: i64, v1: ptr):
+local function cross(v0: i64, v1: ptr) -> i64
+block0():
   v3: i64 = iadd v0, i64(3)
   jump block1()
 block1():
@@ -579,23 +617,55 @@ block1():
     #[test]
     fn generated_rules_combine_with_wrapping_evaluation() {
         for ty in [Type::I8, Type::I16, Type::I32, Type::I64] {
-            let mut body = FuncBody::new(&[ty, ty]);
-            let x = Value(0);
-            let y = Value(1);
+            let body = FuncBody::new(&[ty, ty]);
+            let mut ir = Expressions::new(&body);
+            let x = ir.import_value(MirValue(0));
+            let y = ir.import_value(MirValue(1));
             let mut graph = Graph::new();
             graph.remaining_nodes = Budget::DEFAULT.graph_nodes;
-            graph.register_value(&body, x);
-            graph.register_value(&body, y);
-            let mut ir = body.expressions();
-            let sum = graph.build(&mut ir, Op::IAdd, &[x, y], ty).unwrap();
-            let cancel = graph.build(&mut ir, Op::ISub, &[sum, x], ty).unwrap();
+            graph.register_value(&ir, x);
+            graph.register_value(&ir, y);
+            let sum = graph
+                .build(
+                    &mut ir,
+                    Op::IAdd,
+                    &[x, y],
+                    ty,
+                    crate::evaluate::Properties::None,
+                )
+                .unwrap();
+            let cancel = graph
+                .build(
+                    &mut ir,
+                    Op::ISub,
+                    &[sum, x],
+                    ty,
+                    crate::evaluate::Properties::None,
+                )
+                .unwrap();
             let max = graph.literal(
                 &mut ir,
                 ScalarConst::from_bits(ty, u64::MAX >> (64 - ty.element_bits().unwrap())).unwrap(),
             );
             let one = graph.literal(&mut ir, ScalarConst::from_bits(ty, 1).unwrap());
-            let left = graph.build(&mut ir, Op::IAdd, &[x, max], ty).unwrap();
-            let wrapped = graph.build(&mut ir, Op::IAdd, &[left, one], ty).unwrap();
+            let left = graph
+                .build(
+                    &mut ir,
+                    Op::IAdd,
+                    &[x, max],
+                    ty,
+                    crate::evaluate::Properties::None,
+                )
+                .unwrap();
+            let wrapped = graph
+                .build(
+                    &mut ir,
+                    Op::IAdd,
+                    &[left, one],
+                    ty,
+                    crate::evaluate::Properties::None,
+                )
+                .unwrap();
             let mut fuel = Budget::DEFAULT.match_steps;
             super::saturate(
                 &mut graph,
@@ -617,8 +687,8 @@ block1():
             let mut module = veloc_mir::ModuleParser::new()
                 .parse(
                     r#"
-local function siblings(bool, i64, i64) -> i64
-block0(v0: bool, v1: i64, v2: i64):
+local function siblings(v0: bool, v1: i64, v2: i64) -> i64
+block0():
   br v0, block1(), block2()
 block1():
   v3: i64 = iadd v1, v2
@@ -647,8 +717,8 @@ block2():
             let mut module = veloc_mir::ModuleParser::new()
                 .parse(
                     r#"
-local function identity(i64) -> i64
-block0(v0: i64):
+local function identity(v0: i64) -> i64
+block0():
   v2: i64 = iadd v0, i64(0)
   return v2
 "#,
@@ -666,7 +736,7 @@ block0(v0: i64):
                 .block_insts(body.entry_block())
                 .last()
                 .unwrap();
-            assert_eq!(body.dfg().operands(ret), &[Value(0)]);
+            assert_eq!(body.dfg().operands(ret), &[MirValue(0)]);
             module.validate().unwrap();
         }
     }
@@ -676,8 +746,8 @@ block0(v0: i64):
         let mut module = veloc_mir::ModuleParser::new()
             .parse(
                 r#"
-local function shared(i64, ptr) -> i64
-block0(v0: i64, v1: ptr):
+local function shared(v0: i64, v1: ptr) -> i64
+block0():
   v4: i64 = imul v0, i64(3)
   store v4, v1, offset=0
   v5: i64 = imul v0, i64(3)
@@ -694,8 +764,10 @@ block0(v0: i64, v1: ptr):
         // sharing does not require retrying complete selections.
         let mut rank = Budget::DEFAULT.rank_steps;
         let mut work = Budget::DEFAULT.extract_steps;
-        let dom = Dominators::compute(session.ir.body().cfg(), session.ir.body().entry_block());
-        let changed = session.finish(&GenericCost, &dom, &mut rank, &mut work);
+        let dom = Dominators::compute(body.cfg(), body.entry_block());
+        let changed = session
+            .finish(&GenericCost, &dom, &mut rank, &mut work)
+            .apply(body);
         assert_eq!(changed, 1);
         crate::DcePass.run(
             &mut AnalysisManager::new(body),

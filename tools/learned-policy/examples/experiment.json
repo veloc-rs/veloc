@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "variables": {
+    "compiler": "veloc-c",
+    "target": "riscv64",
+    "cpu": "generic",
+    "linker": "riscv64-linux-gnu-gcc",
+    "link_flags": [],
+    "adapter": "benchmark-adapter.o"
+  },
+  "compile": ["{compiler}", "{source}", "-O1", "--target", "{target}", "--cpu", "{cpu}", "--verify-ir", "--policy", "{policy}", "--policy-trace", "{trace}", "-o", "{output}"],
+  "link": ["{linker}", "{link_flags}", "{objects}", "{adapter}", "-lm", "-o", "{output}"],
+  "decisions": {"inline": {"max_deviations": 1}},
+  "evaluators": {
+    "runtime": {
+      "fidelity": "measured",
+      "metric": "elapsed_seconds",
+      "direction": "min",
+      "command": ["{artifact}", "{repeats}"],
+      "value": {"kind": "regex", "pattern": "^([0-9.eE+-]+)\\s"},
+      "checksum": "^[0-9.eE+-]+\\s+(\\d+)\\s+1\\s*$",
+      "checks": ["\\s1\\s*$"]
+    }
+  },
+  "programs": [
+    {"name": "program-a", "group": "family-a", "split": "train", "sources": ["input/a.i"], "run_variables": {"repeats": "1000"}},
+    {"name": "program-b", "group": "family-b", "split": "validation", "sources": ["input/b.i"], "run_variables": {"repeats": "1000"}},
+    {"name": "program-c", "group": "family-c", "split": "calibration", "sources": ["input/c.i"], "run_variables": {"repeats": "1000"}},
+    {"name": "program-d", "group": "family-d", "split": "test", "sources": ["input/d.i"], "run_variables": {"repeats": "1000"}}
+  ]
+}

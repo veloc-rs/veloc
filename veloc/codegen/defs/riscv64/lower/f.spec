@@ -14,7 +14,7 @@ op RvLoadF32(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Valu
     schedule = Load;
     encoding = Emission::instructions([Instruction::Load(7,dst,Address { base: base, offset: offset },2)]);
     registers = { dst: FPR, base: GPR };
-    memory = { kind: Read, bytes: 4 };
+    memory = { kind: Read, bytes: 4, address: { base: base, offset: offset } };
     assembly = {
         lines: [{ mnemonic: "loadf32", operands: [] }]
     };
@@ -37,7 +37,7 @@ op RvStoreF32(src: Value<Type::F32>, base: Value<Type::PTR>, offset: i64, flags:
     schedule = Store;
     encoding = Emission::instructions([Instruction::Store(39,src,Address { base: base, offset: offset },2)]);
     registers = { src: FPR, base: GPR };
-    memory = { kind: Write, bytes: 4 };
+    memory = { kind: Write, bytes: 4, address: { base: base, offset: offset } };
     assembly = {
         lines: [{ mnemonic: "storef32", operands: [] }]
     };

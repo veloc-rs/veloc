@@ -1,10 +1,10 @@
 // ----- algebra
 // run: simplify
-// check: block0($(arg=v\d+): i32):
+// check: function algebra($(arg=v\d+): i32)
 // check: $(sum=v\d+): i32 = iadd $arg, $arg
 // check: return $arg, $arg, $arg, i32(-1), i32(0), $sum
-local function algebra(i32) -> (i32, i32, i32, i32, i32, i32)
-block0(v0: i32):
+local function algebra(v0: i32) -> (i32, i32, i32, i32, i32, i32)
+block0():
   v3: i32 = iadd v0, i32(0)
   v4: i32 = iadd i32(0), v3
   v5: i32 = iand v4, v4
@@ -15,10 +15,10 @@ block0(v0: i32):
 
 // ----- retired-identities
 // run: simplify
-// check: block0($(arg=v\d+): i64):
+// check: function identities($(arg=v\d+): i64)
 // check: return $arg, $arg, $arg
-local function identities(i64) -> (i64, i64, i64)
-block0(v0: i64):
+local function identities(v0: i64) -> (i64, i64, i64)
+block0():
   v2: i64 = isub v0, i64(0)
   v3: i64 = isub v0, i64(0)
   v4: i64 = iadd v2, i64(0)
@@ -29,8 +29,8 @@ block0(v0: i64):
 // run: simplify
 // check: $(sum=v\d+): i32 = iadd
 // check: return $sum, $sum
-local function partial(i32) -> (i32, i32)
-block0(v0: i32):
+local function partial(v0: i32) -> (i32, i32)
+block0():
   v2: i32 = iadd v0, i32(1)
   v3: i32 = iadd i32(1), v0
   return v2, v3
@@ -75,10 +75,10 @@ block0():
 
 // ----- select-partial
 // run: simplify
-// check: block0($(c=v\d+): bool, $(x=v\d+): i64, $(y=v\d+): i64):
+// check: function select_partial($(c=v\d+): bool, $(x=v\d+): i64, $(y=v\d+): i64)
 // check: return $x, $y, $x
-local function select_partial(bool, i64, i64) -> (i64, i64, i64)
-block0(v0: bool, v1: i64, v2: i64):
+local function select_partial(v0: bool, v1: i64, v2: i64) -> (i64, i64, i64)
+block0():
   v3: i64 = select bool(true), v1, v2
   v4: i64 = select bool(false), v1, v2
   v5: i64 = select v0, v3, v1
@@ -86,10 +86,10 @@ block0(v0: bool, v1: i64, v2: i64):
 
 // ----- select-types
 // run: simplify
-// check: block0($(c=v\d+): bool, $(p=v\d+): ptr, $(f=v\d+): f64, $(v=v\d+): i32<4>):
+// check: function select_types($(c=v\d+): bool, $(p=v\d+): ptr, $(f=v\d+): f64, $(v=v\d+): i32<4>)
 // check: return $p, $f, $v
-local function select_types(bool, ptr, f64, i32<4>) -> (ptr, f64, i32<4>)
-block0(v0: bool, v1: ptr, v2: f64, v3: i32<4>):
+local function select_types(v0: bool, v1: ptr, v2: f64, v3: i32<4>) -> (ptr, f64, i32<4>)
+block0():
   v4: ptr = select v0, v1, v1
   v5: f64 = select bool(true), v2, f64(0)
   v6: i32<4> = select bool(false), i32<4>(splat(0)), v3

@@ -3,8 +3,8 @@
 // check: ss0.$(id1=v\d+): i32 = iadd input.$(id0=v\d+), i32(1)
 // check: (sum.$(id3=v\d+): i32, overflow.$(id4=v\d+): bool) = iadd-with-overflow ss0.$id1, i32(1)
 // check: return sum.$id3, overflow.$id4
-local function names(i32) -> (i32, bool)
-block0(input: i32):
+local function names(input: i32) -> (i32, bool)
+block0():
   ss0: i32 = iadd input, i32(1)
   (sum: i32, overflow: bool) = iadd-with-overflow ss0, i32(1)
   return sum, overflow
@@ -30,8 +30,8 @@ block0():
 // ----- second-result-type-is-preserved
 // run: parse
 // check: (v1: i32, v2: i64) = iadd-with-overflow v0, v0
-local function bad(i32) -> (i32, i64)
-block0(v0: i32):
+local function bad(v0: i32) -> (i32, i64)
+block0():
   (v1: i32, v2: i64) = iadd-with-overflow v0, v0
   return v1, v2
 
@@ -40,8 +40,8 @@ block0(v0: i32):
 // check: iadd-with-overflow type scheme violation
 // check: results: true, index: 1
 // check: got: I64
-local function bad(i32) -> (i32, i64)
-block0(v0: i32):
+local function bad(v0: i32) -> (i32, i64)
+block0():
   (v1: i32, v2: i64) = iadd-with-overflow v0, v0
   return v1, v2
 
@@ -56,8 +56,8 @@ block0():
 // ----- every-result-needs-a-type
 // run: parse-error
 // check: expected Colon
-local function bad(i32) -> (i32, bool)
-block0(v0: i32):
+local function bad(v0: i32) -> (i32, bool)
+block0():
   (v1: i32, v2) = iadd-with-overflow v0, v0
   return v1, v2
 
@@ -105,15 +105,15 @@ block0():
 // ----- duplicate-result-declaration
 // run: parse-error
 // check: SSA value `sum` aliases already-defined `sum`
-local function bad(i32) -> i32
-block0(input: i32):
+local function bad(input: i32) -> i32
+block0():
   (sum: i32, sum: bool) = iadd-with-overflow input, input
   return sum
 
 // ----- aliased-result-declaration
 // run: parse-error
 // check: SSA value `overflow.v1` aliases already-defined `sum.v1`
-local function bad(i32) -> i32
-block0(v0: i32):
+local function bad(v0: i32) -> i32
+block0():
   (sum.v1: i32, overflow.v1: bool) = iadd-with-overflow v0, v0
   return sum.v1

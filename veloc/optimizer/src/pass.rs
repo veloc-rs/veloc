@@ -1,74 +1,43 @@
 use crate::{Error, Profile, Result};
-use alloc::boxed::Box;
-use core::any::TypeId;
 use hashbrown::HashSet;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::Module;
 
-/// 声明在 Pass 执行后保留的分析结果。
-pub struct PreservedAnalyses {
-    preserved_ids: HashSet<TypeId>,
-    preserve_all: bool,
+/// Whether a pass changed IR. Analysis invalidation belongs to the editor,
+/// independently of whether a pass ultimately reports a change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassOutcome {
+    Unchanged,
+    Changed,
 }
 
-impl PreservedAnalyses {
-    pub fn none() -> Self {
-        Self {
-            preserved_ids: HashSet::new(),
-            preserve_all: false,
-        }
-    }
-
-    pub fn all() -> Self {
-        Self {
-            preserved_ids: HashSet::new(),
-            preserve_all: true,
-        }
-    }
-
-    pub fn preserve<A: 'static>(&mut self) {
-        self.preserved_ids.insert(TypeId::of::<A>());
-    }
-
-    pub fn is_preserved_id(&self, id: TypeId) -> bool {
-        self.preserve_all || self.preserved_ids.contains(&id)
-    }
-
-    pub fn changed(&self) -> bool {
-        !self.preserve_all
+impl PassOutcome {
+    pub fn changed(self) -> bool {
+        self == Self::Changed
     }
 }
 
 /// 作用于单个函数的优化 Pass。
 pub trait FunctionPass {
     fn name(&self) -> &'static str;
+    /// Opt in only when instances sharing this key have identical behavior for
+    /// the same IR and OptConfig. The manager caches an unchanged result until
+    /// a pass reports a change or a module-pass boundary; changed runs are never cached.
+    fn reuse_key(&self) -> Option<core::any::TypeId> {
+        None
+    }
     fn run(
         &self,
         am: &mut AnalysisManager<'_>,
         config: &OptConfig,
         metrics: &Profile,
-    ) -> PreservedAnalyses;
+    ) -> PassOutcome;
 }
 
 /// 作用于整个模块的优化 Pass。
 pub trait ModulePass {
     fn name(&self) -> &'static str;
-    fn run(&self, module: &mut Module, config: &OptConfig, metrics: &Profile) -> PreservedAnalyses;
-}
-
-/// 优化 Pass 的类型包装。
-pub enum Pass {
-    Function(Box<dyn FunctionPass>),
-    Module(Box<dyn ModulePass>),
-}
-
-impl Pass {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Pass::Function(f) => f.name(),
-            Pass::Module(m) => m.name(),
-        }
-    }
+    fn run(&self, module: &mut Module, config: &OptConfig, metrics: &Profile) -> PassOutcome;
 }
 
 /// 优化配置。
@@ -76,6 +45,8 @@ impl Pass {
 pub struct OptConfig {
     /// None disables optimizations that depend on target memory representation.
     pub data_layout: Option<veloc_types::DataLayout>,
+    /// Optional learned profitability decisions; passes still enforce legality.
+    pub policy: Option<std::sync::Arc<veloc_policy::Policy>>,
     /// 调试标签系统，用于控制细粒度的输出，如 "dce", "liveness" 等
     debug_tags: HashSet<String>,
 }

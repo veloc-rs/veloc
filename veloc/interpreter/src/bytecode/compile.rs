@@ -12,14 +12,14 @@ macro_rules! unary_dispatch_op {
         match $ty {
             Type::F32 => emit::$f32_op($code, $dst, $arg_reg),
             Type::F64 => emit::$f64_op($code, $dst, $arg_reg),
-            _ => panic!("Unsupported op for type {:?}", $ty),
+            _ => return None,
         }
     };
     ($arg_reg:expr, $dst:expr, $ty:expr, $code:expr, $i32_op:ident, $i64_op:ident, int) => {
         match $ty {
             Type::I32 => emit::$i32_op($code, $dst, $arg_reg),
             Type::I64 => emit::$i64_op($code, $dst, $arg_reg),
-            _ => panic!("Unsupported op for type {:?}", $ty),
+            _ => return None,
         }
     };
 }
@@ -32,7 +32,7 @@ macro_rules! convert_op {
             (Type::F64, Type::I32) => emit::$f64_i32($code, $dst, $arg),
             (Type::F32, Type::I64) => emit::$f32_i64($code, $dst, $arg),
             (Type::F64, Type::I64) => emit::$f64_i64($code, $dst, $arg),
-            _ => panic!("Unsupported conversion: {:?} -> {:?}", $from_ty, $to_ty),
+            _ => return None,
         }
     };
 }
@@ -45,7 +45,7 @@ macro_rules! convert_int_to_float_op {
             (Type::I64, Type::F32) => emit::$i64_f32($code, $dst, $arg),
             (Type::I32, Type::F64) => emit::$i32_f64($code, $dst, $arg),
             (Type::I64, Type::F64) => emit::$i64_f64($code, $dst, $arg),
-            _ => panic!("Unsupported conversion: {:?} -> {:?}", $from_ty, $to_ty),
+            _ => return None,
         }
     };
 }
@@ -410,7 +410,7 @@ impl<'a> Compiler<'a> {
         br_offset
     }
 
-    fn emit_binary(&mut self, inst: Inst, opcode: IrOpcode, args: &[Value; 2]) {
+    fn emit_binary(&mut self, inst: Inst, opcode: IrOpcode, args: &[Value; 2]) -> Option<()> {
         let res = self.func.dfg().first_result(inst).unwrap();
         let ty = self.func.dfg().value_type(res);
         let mut bin = |imm_f: &dyn Fn(&mut Vec<CodeWord>, Reg, Reg, i64),
@@ -654,14 +654,15 @@ impl<'a> Compiler<'a> {
                     (IrOpcode::FCopysign, false) => {
                         emit::F64CopySign(&mut self.code, dst, lhs, rhs)
                     }
-                    _ => todo!("Unsupported float opcode {:?} for {:?}", opcode, ty),
+                    _ => return None,
                 }
             }
-            _ => todo!("Unsupported binary opcode {:?} for type {:?}", opcode, ty),
+            _ => return None,
         }
+        Some(())
     }
 
-    fn emit_icmp(&mut self, inst: Inst, kind: veloc_mir::IntCC, args: &[Value; 2]) {
+    fn emit_icmp(&mut self, inst: Inst, kind: veloc_mir::IntCC, args: &[Value; 2]) -> Option<()> {
         let lhs = self.mapper.reg(args[0]);
         let rhs = self.mapper.reg(args[1]);
         let dst = self.mapper.reg(self.func.dfg().first_result(inst).unwrap());
@@ -697,11 +698,12 @@ impl<'a> Compiler<'a> {
             (Type::PTR, LeU) => emit::I64LeU(&mut self.code, dst, lhs, rhs),
             (Type::PTR, GtU) => emit::I64GtU(&mut self.code, dst, lhs, rhs),
             (Type::PTR, GeU) => emit::I64GeU(&mut self.code, dst, lhs, rhs),
-            _ => unreachable!("Invalid icmp type or kind: ty={:?}, kind={:?}", ty, kind),
+            _ => return None,
         }
+        Some(())
     }
 
-    fn emit_fcmp(&mut self, inst: Inst, kind: veloc_mir::FloatCC, args: &[Value; 2]) {
+    fn emit_fcmp(&mut self, inst: Inst, kind: veloc_mir::FloatCC, args: &[Value; 2]) -> Option<()> {
         let lhs = self.mapper.reg(args[0]);
         let rhs = self.mapper.reg(args[1]);
         let dst = self.mapper.reg(self.func.dfg().first_result(inst).unwrap());
@@ -721,11 +723,12 @@ impl<'a> Compiler<'a> {
             (Type::F64, Le) => emit::F64Le(&mut self.code, dst, lhs, rhs),
             (Type::F64, Gt) => emit::F64Gt(&mut self.code, dst, lhs, rhs),
             (Type::F64, Ge) => emit::F64Ge(&mut self.code, dst, lhs, rhs),
-            _ => unreachable!("Invalid fcmp type or kind: {:?}", ty),
+            _ => return None,
         }
+        Some(())
     }
 
-    fn emit_load(&mut self, inst: Inst, ptr: Value, offset: u32) {
+    fn emit_load(&mut self, inst: Inst, ptr: Value, offset: u32) -> Option<()> {
         let ptr_reg = self.mapper.reg(ptr);
         let res = self.func.dfg().first_result(inst).unwrap();
         let dst = self.mapper.reg(res);
@@ -738,8 +741,9 @@ impl<'a> Compiler<'a> {
             Type::F64 => emit::F64Load(&mut self.code, dst, ptr_reg, offset),
             Type::I8 => emit::I8Load(&mut self.code, dst, ptr_reg, offset),
             Type::I16 => emit::I16Load(&mut self.code, dst, ptr_reg, offset),
-            _ => panic!("Unsupported load type {:?}", ty),
+            _ => return None,
         }
+        Some(())
     }
 
     fn emit_jump(&mut self, dest: Successor<'_>) {
@@ -870,7 +874,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_unary(&mut self, inst: Inst, opcode: IrOpcode, arg: Value) {
+    fn emit_unary(&mut self, inst: Inst, opcode: IrOpcode, arg: Value) -> Option<()> {
         let from_ty = self.val_ty(arg);
         let res = self.func.dfg().first_result(inst).unwrap();
         let to_ty = self.val_ty(res);
@@ -888,27 +892,27 @@ impl<'a> Compiler<'a> {
                             Type::I8 => val as i8 as i64,
                             Type::I16 => val as i16 as i64,
                             Type::I32 => val as i32 as i64,
-                            _ => panic!("Unsupported ExtendS from_ty: {:?}", from_ty),
+                            _ => return None,
                         };
                         let dst = self.mapper.reg(res);
                         emit_auto::Iconst(&mut self.code, dst, res_val as u64);
-                        return;
+                        return Some(());
                     }
                     IrOpcode::ExtendU => {
                         let res_val = match from_ty {
                             Type::I8 => (val as u8) as u64 as i64,
                             Type::I16 => (val as u16) as u64 as i64,
                             Type::I32 => (val as u32) as u64 as i64,
-                            _ => panic!("Unsupported ExtendU from_ty: {:?}", from_ty),
+                            _ => return None,
                         };
                         let dst = self.mapper.reg(res);
                         emit_auto::Iconst(&mut self.code, dst, res_val as u64);
-                        return;
+                        return Some(());
                     }
                     IrOpcode::Wrap => {
                         let dst = self.mapper.reg(res);
                         emit_auto::Iconst(&mut self.code, dst, (val as u32) as u64);
-                        return;
+                        return Some(());
                     }
                     _ => {}
                 }
@@ -919,7 +923,7 @@ impl<'a> Compiler<'a> {
                             let f = f64_val as f32;
                             let dst = self.mapper.reg(res);
                             emit_auto::Fconst(&mut self.code, dst, f.to_bits() as u64);
-                            return;
+                            return Some(());
                         }
                     }
                     IrOpcode::FloatPromote => {
@@ -927,7 +931,7 @@ impl<'a> Compiler<'a> {
                             let f = f32_val as f64;
                             let dst = self.mapper.reg(res);
                             emit_auto::Fconst(&mut self.code, dst, f.to_bits());
-                            return;
+                            return Some(());
                         }
                     }
                     _ => {}
@@ -1091,15 +1095,16 @@ impl<'a> Compiler<'a> {
             IrOpcode::IEqz => {
                 unary_dispatch_op!(arg_reg, dst, from_ty, &mut self.code, I32Eqz, I64Eqz, int)
             }
-            _ => todo!("Implement other unary ops in emit_unary: {:?}", opcode),
+            _ => return None,
         }
+        Some(())
     }
 
     fn val_ty(&self, v: Value) -> Type {
         self.func.dfg().value_type(v)
     }
 
-    fn emit_store(&mut self, ptr: Value, value: Value, offset: u32) {
+    fn emit_store(&mut self, ptr: Value, value: Value, offset: u32) -> Option<()> {
         let ptr_reg = self.mapper.reg(ptr);
         let val_reg = self.mapper.reg(value);
         let ty = self.val_ty(value);
@@ -1111,8 +1116,9 @@ impl<'a> Compiler<'a> {
             Type::I64 | Type::PTR => emit::I64Store(&mut self.code, val_reg, ptr_reg, offset),
             Type::F32 => emit::F32Store(&mut self.code, val_reg, ptr_reg, offset),
             Type::F64 => emit::F64Store(&mut self.code, val_reg, ptr_reg, offset),
-            _ => panic!("Unsupported store type {:?}", ty),
+            _ => return None,
         }
+        Some(())
     }
 
     fn finish(mut self, module_id: ModuleId, func_id: FuncId) -> CompiledFunction {
@@ -1163,16 +1169,20 @@ pub(crate) fn compile_function(
     module_id: ModuleId,
     func_id: FuncId,
     func: &FuncBody,
-) -> CompiledFunction {
+) -> crate::error::Result<CompiledFunction> {
     // The register representation and opcode handlers currently support scalar
     // values only. Check before fusion/emission, including block parameters and
     // values moved or returned without going through a typed opcode dispatch.
     for value in func.dfg().values().keys() {
         let ty = func.dfg().value_type(value);
-        assert!(
-            ty.is_scalar() || ty.is_callable(),
-            "interpreter does not support value type {ty}"
-        );
+        if !ty.is_scalar() && !ty.is_callable() {
+            return Err(crate::Error::UnsupportedValueType {
+                module: module_id,
+                func: func_id,
+                value,
+                ty,
+            });
+        }
     }
     let entry = func.entry_block();
     let rpo = func.cfg().compute_rpo(entry);
@@ -1182,23 +1192,37 @@ pub(crate) fn compile_function(
     let mapper = ValueMapper::new(func, &liveness.intervals);
     let mut compiler = Compiler::new(func, mapper, &liveness);
 
-    compiler.apply_rpo(&rpo);
-    compiler.finish(module_id, func_id)
+    compiler
+        .apply_rpo(&rpo)
+        .map_err(|inst| crate::Error::UnsupportedInstruction {
+            module: module_id,
+            func: func_id,
+            inst,
+            opcode: func.dfg().opcode(inst),
+            types: func
+                .dfg()
+                .operands(inst)
+                .iter()
+                .chain(func.dfg().inst_results(inst))
+                .map(|&v| func.dfg().value_type(v))
+                .collect(),
+        })?;
+    Ok(compiler.finish(module_id, func_id))
 }
 
 impl<'a> Compiler<'a> {
-    fn apply_rpo(&mut self, rpo: &[Block]) {
-        let entry_block = self.func.entry_block();
-        for &param in self.func.dfg().block_params(entry_block) {
+    fn apply_rpo(&mut self, rpo: &[Block]) -> Result<(), Inst> {
+        for &param in self.func.params() {
             self.param_indices.push(self.mapper.reg(param));
         }
 
         for &block in rpo {
             self.block_to_pc[block] = self.code.len() as u32;
             for inst in self.func.layout().block_insts(block) {
-                self.compile_inst(inst);
+                self.compile_inst(inst).ok_or(inst)?;
             }
         }
+        Ok(())
     }
 
     fn closure_site(
@@ -1274,7 +1298,7 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn compile_inst(&mut self, inst: Inst) {
+    fn compile_inst(&mut self, inst: Inst) -> Option<()> {
         let dfg = self.func.dfg();
         // Fuse per use, not per literal: a constant used by a call may still
         // be an immediate in arithmetic. Scratch slots live for this op only.
@@ -1337,13 +1361,13 @@ impl<'a> Compiler<'a> {
             let site_id = self.data_section.controls.len() as u32;
             self.data_section.controls.push(site);
             emit::Control(&mut self.code, site_id);
-            return;
+            return Some(());
         }
 
         match idata {
-            InstView::Binary { opcode, args } => self.emit_binary(inst, *opcode, args),
-            InstView::IntCompare { kind, args, .. } => self.emit_icmp(inst, *kind, args),
-            InstView::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args),
+            InstView::Binary { opcode, args } => self.emit_binary(inst, *opcode, args)?,
+            InstView::IntCompare { kind, args, .. } => self.emit_icmp(inst, *kind, args)?,
+            InstView::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args)?,
             InstView::Alloca { .. } => {
                 let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
@@ -1365,7 +1389,7 @@ impl<'a> Compiler<'a> {
                         self.stack.offsets[object] + offset,
                     );
                 } else {
-                    self.emit_load(inst, *ptr, *offset);
+                    self.emit_load(inst, *ptr, *offset)?;
                 }
             }
             InstView::Store {
@@ -1386,7 +1410,7 @@ impl<'a> Compiler<'a> {
                         self.stack.offsets[object] + offset,
                     );
                 } else {
-                    self.emit_store(*ptr, *value, *offset);
+                    self.emit_store(*ptr, *value, *offset)?;
                 }
             }
             InstView::Jump { dest } => self.emit_jump(*dest),
@@ -1399,7 +1423,7 @@ impl<'a> Compiler<'a> {
             }
             InstView::BrTable { index, table } => self.emit_br_table(*index, *table),
             InstView::Return { values } => self.emit_return(*values),
-            InstView::Unary { opcode, arg, .. } => self.emit_unary(inst, *opcode, *arg),
+            InstView::Unary { opcode, arg, .. } => self.emit_unary(inst, *opcode, *arg)?,
             InstView::IntToPtr { arg } | InstView::PtrToInt { arg, .. } => {
                 let arg_reg = self.mapper.reg(*arg);
                 let res = self.func.dfg().first_result(inst).unwrap();
@@ -1446,8 +1470,9 @@ impl<'a> Compiler<'a> {
                 emit::Select(&mut self.code, dst, cond_reg, then_reg, else_reg);
             }
             InstView::Nop => {}
-            _ => todo!("Unsupported instruction: {:?}", idata),
+            _ => return None,
         }
+        Some(())
     }
 }
 
@@ -1522,7 +1547,6 @@ mod tests {
     use veloc_mir::{CallConv, Linkage, ModuleBuilder};
 
     #[test]
-    #[should_panic(expected = "interpreter does not support value type i32<4>")]
     fn rejects_vector_parameters_even_when_only_returned() {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(
@@ -1533,17 +1557,20 @@ mod tests {
         let func = module.declare_function("vector_identity".into(), sig, Linkage::Local);
         {
             let mut builder = module.define(func);
-            let entry = builder.func().entry_block();
-            let param = builder.func().dfg().block_params(entry)[0];
+            let param = builder.func().params()[0];
             builder.ins().ret(&[param]);
         }
         module.validate().unwrap();
         let module = module.build();
-        compile_function(
+        let result = compile_function(
             ModuleId::from_u32(0),
             func,
             module.function(func).body.unwrap(),
         );
+        assert!(matches!(
+            result,
+            Err(crate::Error::UnsupportedValueType { .. })
+        ));
     }
 
     #[test]
@@ -1589,7 +1616,8 @@ mod tests {
             ModuleId::from_u32(0),
             func,
             module.function(func).body.unwrap(),
-        );
+        )
+        .unwrap();
 
         assert!(
             compiled.register_count <= 3,

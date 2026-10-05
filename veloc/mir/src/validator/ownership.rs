@@ -28,8 +28,7 @@ pub(super) fn validate(func: &FunctionRef) -> Result<()> {
         pending: vec![entry],
     };
     ownership.entries[entry.0 as usize] = Some(
-        body.dfg().blocks[entry]
-            .params
+        body.params()
             .iter()
             .copied()
             .filter(|&v| body.dfg().value_type(v).is_owned())

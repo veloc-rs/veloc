@@ -2,8 +2,6 @@
 //!
 //! Recursive descent parser for C99/C11 language.
 
-#![allow(dead_code)]
-
 use crate::ast::*;
 use crate::error::{Error, Result};
 use crate::lexer::{Lexer, Token, TokenKind};
@@ -919,15 +917,17 @@ impl<'a> Parser<'a> {
 
     /// Check if the current position starts a type specifier
     fn is_type_specifier_start(&self) -> bool {
-        if self
-            .current
-            .as_ref()
+        self.token_starts_type(self.current.as_ref())
+    }
+
+    fn token_starts_type(&self, token: Option<&Token>) -> bool {
+        if token
             .is_some_and(|t| t.kind == TokenKind::Identifier && self.typedefs.contains(&t.lexeme))
         {
             return true;
         }
         matches!(
-            self.peek_kind(),
+            token.map(|t| &t.kind),
             Some(TokenKind::Int)
                 | Some(TokenKind::BoolKw)
                 | Some(TokenKind::CharKw)
@@ -1068,12 +1068,6 @@ impl<'a> Parser<'a> {
             }
             _ => Ok(lhs),
         }
-    }
-
-    /// Peek at the second next character from lexer
-    fn peek_char2(&self) -> Option<char> {
-        // Simplified - in production, you'd properly implement this
-        None
     }
 
     /// Parse conditional expression
@@ -1370,12 +1364,7 @@ impl<'a> Parser<'a> {
         for _ in 0..offset {
             token = lexer.next_token().ok();
         }
-        let lookahead = Parser {
-            lexer,
-            current: token,
-            typedefs: self.typedefs.clone(),
-        };
-        lookahead.is_type_specifier_start()
+        self.token_starts_type(token.as_ref())
     }
 
     /// Parse postfix expression

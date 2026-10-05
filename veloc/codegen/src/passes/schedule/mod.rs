@@ -10,6 +10,8 @@ use crate::target::{ScheduleClass, ScheduleClassId, TargetSchedule};
 use cranelift_entity::{EntityRef, PrimaryMap, entity_impl};
 mod graph;
 mod machine;
+mod memory;
+mod policy;
 mod pressure;
 mod timing;
 use graph::DependencyGraph;
@@ -52,10 +54,13 @@ impl<'a> Region<'a> {
 
 pub struct SchedulePass {
     verify: bool,
+    policy: Option<std::sync::Arc<veloc_policy::Policy>>,
 }
 impl SchedulePass {
-    pub fn new(verify: bool) -> Self {
-        Self { verify }
+    pub const POLICY_SCHEMA: veloc_policy::DecisionSchema = policy::SCHEMA;
+
+    pub fn new(verify: bool, policy: Option<std::sync::Arc<veloc_policy::Policy>>) -> Self {
+        Self { verify, policy }
     }
 }
 
@@ -69,8 +74,21 @@ impl FunctionPass for SchedulePass {
     }
     fn run(&self, cx: &mut FunctionSession<'_>) -> crate::Result<()> {
         let target = cx.target;
+        let policy = self
+            .policy
+            .as_deref()
+            .filter(|p| p.enabled(&Self::POLICY_SCHEMA))
+            .map(|p| p.session(&Self::POLICY_SCHEMA));
+        let loops = policy.as_ref().map(|_| cx.loop_info().clone());
         let plan = cx.with_liveness(|function, liveness| {
-            plan_schedule(function, target, liveness, self.verify)
+            plan_schedule(
+                function,
+                target,
+                liveness,
+                self.verify,
+                policy.as_ref(),
+                loops.as_ref(),
+            )
         });
         cx.profile
             .count("scheduled_regions", plan.changed_regions as u64);
@@ -96,11 +114,17 @@ fn plan_schedule(
     target: &dyn TargetSchedule,
     liveness: &LivenessInfo,
     verify: bool,
+    policy: Option<&veloc_policy::Session<'_>>,
+    loops: Option<&crate::analysis::LoopInfo>,
 ) -> SchedulePlan {
     let mut orders = Vec::new();
     let mut changed_regions = 0;
     for block in f.blocks() {
-        if let Some(result) = schedule_block(f, block, target, liveness, verify) {
+        let advice = policy::Context {
+            policy,
+            loop_depth: loops.map_or(0, |loops| loops.depth(block)),
+        };
+        if let Some(result) = schedule_block(f, block, target, liveness, verify, advice) {
             changed_regions += result.changed_regions;
             orders.push((block, result.order));
         }
@@ -117,6 +141,7 @@ fn schedule_block(
     target: &dyn TargetSchedule,
     liveness: &LivenessInfo,
     verify: bool,
+    advice: policy::Context<'_>,
 ) -> Option<BlockSchedule> {
     let original: Vec<_> = f.block_insts(block).collect();
     let mut order = original.clone();
@@ -133,7 +158,7 @@ fn schedule_block(
         let start = if start == end { end - 1 } else { start };
         let region = &original[start..end];
         if region.len() > 1 {
-            let scheduled = schedule_region(f, region, target, &live, verify);
+            let scheduled = schedule_region(f, region, target, &live, verify, advice);
             if scheduled != region {
                 order[start..end].copy_from_slice(&scheduled);
                 changed_regions += 1;
@@ -205,13 +230,14 @@ fn schedule_region(
     target: &dyn TargetSchedule,
     live_out: &RegSet,
     verify: bool,
+    advice: policy::Context<'_>,
 ) -> Vec<InstId> {
     let region = Region {
         function: f,
         insts: ids,
     };
     let graph = DependencyGraph::build(region, live_out, target);
-    schedule_order(region, target, live_out, &graph, verify)
+    schedule_order(region, target, live_out, &graph, verify, advice)
         .into_iter()
         .map(|node| region.inst_id(node))
         .collect()
@@ -223,8 +249,13 @@ fn schedule_order(
     live_out: &RegSet,
     graph: &DependencyGraph,
     verify: bool,
+    advice: policy::Context<'_>,
 ) -> Vec<NodeId> {
     let timing = ScheduleTiming::new(region, graph, target);
+    let strategy = advice.choose(region, graph, &timing, live_out, target);
+    if strategy == policy::Strategy::SourceOrder {
+        return region.nodes().collect();
+    }
     let mut pressure = PressureTracker::new(region, target.desc(), live_out);
     let mut machine = MachineState::new(target.schedule_model());
     let mut indegree = graph.indegree.clone();
@@ -247,12 +278,7 @@ fn schedule_order(
             .min_by_key(|&position| {
                 let node = unlocked[position];
                 let score = pressure.score(node);
-                (
-                    score.excess,
-                    core::cmp::Reverse(timing.height[node]),
-                    score.total,
-                    node,
-                )
+                strategy.priority(score, timing.height[node], graph.edges[node].len(), node)
             })
             .unwrap();
         let node = unlocked.swap_remove(best_position);

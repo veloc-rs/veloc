@@ -1,6 +1,6 @@
 //! Trace required computations through instructions and block parameters, then
 //! remove the unmarked set together, including dead loop-carried computations.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use cranelift_entity::SecondaryMap;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::text::printer::InstPrinter;
@@ -11,6 +11,9 @@ const DCE: &str = "dce";
 pub struct DcePass;
 
 impl FunctionPass for DcePass {
+    fn reuse_key(&self) -> Option<core::any::TypeId> {
+        Some(core::any::TypeId::of::<Self>())
+    }
     fn name(&self) -> &'static str {
         "DcePass"
     }
@@ -20,7 +23,7 @@ impl FunctionPass for DcePass {
         am: &mut AnalysisManager<'_>,
         config: &OptConfig,
         metrics: &Profile,
-    ) -> PreservedAnalyses {
+    ) -> PassOutcome {
         let func = am.function_mut();
         // Candidate sessions must have released their temporary uses before DCE.
         let live = Liveness::compute(func);
@@ -44,11 +47,7 @@ impl FunctionPass for DcePass {
         // Remove dead edge arguments before erasing their definitions. Remaining
         // uses of dead parameters belong to the instruction set erased below.
         let mut removed_params = 0;
-        let blocks: Vec<_> = func
-            .layout()
-            .block_order()
-            .filter(|&block| block != func.entry_block())
-            .collect();
+        let blocks: Vec<_> = func.layout().block_order().collect();
         for block in blocks {
             let keep: Vec<_> = func
                 .dfg()
@@ -66,9 +65,9 @@ impl FunctionPass for DcePass {
         metrics.count("dce.removed_params", removed_params as u64);
         metrics.count("dce.removed_insts", dead.len() as u64);
         if dead.is_empty() && removed_params == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }
@@ -104,12 +103,12 @@ impl Liveness {
         while let Some(value) = live.pending.pop() {
             match func.dfg().value_def(value) {
                 ValueDef::Inst(inst) => live.mark_inst(func, inst),
-                ValueDef::Param(_) => {
+                ValueDef::BlockParam(_) => {
                     for &arg in &incoming[value] {
                         live.mark_value(arg);
                     }
                 }
-                ValueDef::Const(_) => {}
+                ValueDef::FunctionParam(_) | ValueDef::Const(_) => {}
             }
         }
         live

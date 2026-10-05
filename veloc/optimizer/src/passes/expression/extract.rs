@@ -1,4 +1,5 @@
 //! Select expressions at executable uses, then commit a dominance-valid plan.
+use super::storage::{Expressions, Inst as ExprInst, Storage, Value};
 use super::{
     CostModel, Limit,
     graph::{Graph, InstKind, Root},
@@ -8,10 +9,10 @@ use hashbrown::HashSet;
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 use veloc_analyzer::Dominators;
-use veloc_mir::function::{FrozenExpressions, InstOrder};
-use veloc_mir::{Block, FuncBody, Inst, Value, ValueDef};
+use veloc_mir::function::InstOrder;
+use veloc_mir::{Block, FuncBody, Inst, ValueDef};
 
-/// References either executable MIR or one result of a planned instruction.
+/// References an imported value or literal, or one result of a planned instruction.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Input {
     Existing(Value),
@@ -21,9 +22,15 @@ enum Input {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct StepId(usize);
 
+#[derive(Clone, Copy)]
+enum Placement {
+    Before(Inst),
+    Update(Inst),
+}
+
 struct PlannedInst {
-    before: Inst,
-    source: Inst,
+    placement: Placement,
+    source: ExprInst,
     args: SmallVec<[Input; 3]>,
 }
 
@@ -44,31 +51,58 @@ pub(super) struct Extraction {
 }
 
 impl Extraction {
-    pub(super) fn apply(self, ir: &mut FrozenExpressions<'_>) -> u64 {
-        // Keep result slots indexed by the original StepId, including dead slots.
-        let mut results = vec![SmallVec::<[Value; 2]>::new(); self.steps.len()];
+    pub(super) fn apply(self, body: &mut FuncBody, ir: &Storage, metrics: &crate::Profile) -> u64 {
+        let mut results = vec![SmallVec::<[veloc_mir::Value; 2]>::new(); self.steps.len()];
+        let mut inserted = 0;
+        let mut updated = 0;
         for (id, step) in self.steps.into_iter().enumerate() {
             if !self.live[id] {
                 continue;
             }
-            let args: SmallVec<[Value; 3]> =
-                step.args.iter().map(|arg| arg.value(&results)).collect();
-            let inst = ir.place(step.before, step.source, &args);
-            results[id] = ir.body().dfg().inst_results(inst).into();
+            let args: SmallVec<[veloc_mir::Value; 3]> = step
+                .args
+                .iter()
+                .map(|&arg| arg.materialize(body, ir, &results))
+                .collect();
+            let inst = match step.placement {
+                Placement::Before(before) => {
+                    inserted += 1;
+                    ir.emit(body, before, step.source, &args)
+                }
+                Placement::Update(inst) => {
+                    // Only inputs change; later steps can still copy this
+                    // operation's original opcode, properties and result types.
+                    debug_assert_eq!(ir.original_inst(step.source), Some(inst));
+                    for (index, &arg) in args.iter().enumerate() {
+                        body.edit().set_operand(inst, index as u32, arg);
+                    }
+                    updated += 1;
+                    inst
+                }
+            };
+            results[id] = body.dfg().inst_results(inst).into();
         }
-        let changed = self.rewrites.len() as u64;
+        let changed = self.rewrites.len() as u64 + updated;
         for rewrite in self.rewrites {
-            let value = rewrite.input.value(&results);
-            ir.replace_input(rewrite.inst, rewrite.operand, value);
+            let value = rewrite.input.materialize(body, ir, &results);
+            body.edit()
+                .set_operand(rewrite.inst, rewrite.operand, value);
         }
+        metrics.count("egraph.inserted_insts", inserted);
+        metrics.count("egraph.updated_insts", updated);
         changed
     }
 }
 
 impl Input {
-    fn value(self, results: &[SmallVec<[Value; 2]>]) -> Value {
+    fn materialize(
+        self,
+        body: &mut FuncBody,
+        ir: &Storage,
+        results: &[SmallVec<[veloc_mir::Value; 2]>],
+    ) -> veloc_mir::Value {
         match self {
-            Self::Existing(value) => value,
+            Self::Existing(value) => ir.materialize(body, value),
             Self::Result { step, index } => results[step.0][index],
         }
     }
@@ -283,6 +317,7 @@ struct Candidate {
 struct Planner<'a> {
     graph: &'a Graph,
     body: &'a FuncBody,
+    ir: &'a Expressions<'a>,
     work: &'a mut usize,
     candidates: SecondaryMap<Root, SmallVec<[Candidate; 2]>>,
     dom: &'a Dominators,
@@ -292,15 +327,15 @@ struct Planner<'a> {
 impl Graph {
     fn estimate_rank(
         &self,
-        f: &FuncBody,
+        f: &Expressions,
         value: Value,
         model: &dyn CostModel,
         best: &SecondaryMap<Root, Rank>,
     ) -> Rank {
         if let Some(inst) = self.floating_inst(f, value) {
-            let result = f.dfg().inst_results(inst)[0];
+            let result = f.inst_results(inst)[0];
             Rank::operation(
-                model.operation(f.dfg().opcode(inst), f.dfg().value_type(result)),
+                model.operation(f.opcode(inst), f.value_type(result)),
                 self.args(f, value).iter().map(|&arg| best[self.find(arg)]),
             )
         } else {
@@ -319,7 +354,7 @@ impl Graph {
     /// still scan the graph once each, even when propagation runs out of fuel.
     fn candidates(
         &self,
-        f: &FuncBody,
+        f: &Expressions,
         model: &dyn CostModel,
         work: &mut usize,
     ) -> SecondaryMap<Root, SmallVec<[Candidate; 2]>> {
@@ -328,14 +363,13 @@ impl Graph {
         let mut queued = SecondaryMap::<Value, bool>::new();
         let mut pending = VecDeque::new();
         let values = self.values.iter().copied().filter(|&value| {
-            !f.dfg()
-                .value_inst(value)
+            !f.value_inst(value)
                 .is_some_and(|inst| self.kinds[inst] == InstKind::Folded)
         });
         for value in values.clone() {
             let class = self.find(value);
             // A literal is the answer, not an alternative to rank or place.
-            if f.dfg().as_const(class.value()).is_some() {
+            if f.as_const(class.value()).is_some() {
                 best[class] = Rank::ZERO;
                 continue;
             }
@@ -353,9 +387,8 @@ impl Graph {
             if rank.cost != usize::MAX && rank < best[class] {
                 best[class] = rank;
                 for &user in self.users(class) {
-                    for &result in f.dfg().inst_results(user) {
-                        if f.dfg().as_const(self.find(result).value()).is_none() && !queued[result]
-                        {
+                    for &result in f.inst_results(user) {
+                        if f.as_const(self.find(result).value()).is_none() && !queued[result] {
                             queued[result] = true;
                             pending.push_back(result);
                         }
@@ -372,7 +405,7 @@ impl Graph {
         let mut candidates = SecondaryMap::<Root, SmallVec<[Candidate; 2]>>::new();
         for value in values {
             let class = self.find(value);
-            if f.dfg().as_const(class.value()).is_none() {
+            if f.as_const(class.value()).is_none() {
                 candidates[class].push(Candidate {
                     value,
                     rank: self.estimate_rank(f, value, model, &best),
@@ -390,7 +423,7 @@ impl Graph {
 
     pub(super) fn extract(
         &self,
-        body: &FuncBody,
+        ir: &Expressions,
         anchors: &[Inst],
         model: &dyn CostModel,
         dom: &Dominators,
@@ -403,10 +436,11 @@ impl Graph {
         }
         // Ranking is optional guidance, not a prerequisite for placement.
         // Even zero ranking fuel must leave all candidates available to search.
-        let candidates = self.candidates(body, model, rank);
+        let candidates = self.candidates(ir, model, rank);
         let mut planner = Planner {
             graph: self,
-            body,
+            body: ir.body(),
+            ir,
             work,
             candidates,
             dom,
@@ -465,7 +499,7 @@ impl Planner<'_> {
                 }
                 Visit::Anchor(anchor) => anchor,
             };
-            for (operand, &root) in self.body.dfg().operands(anchor).iter().enumerate() {
+            for (operand, root) in self.ir.anchor_operands(anchor).enumerate() {
                 let class = self.graph.find(root);
                 let input = if *self.work == 0 {
                     Input::Existing(root)
@@ -496,10 +530,10 @@ impl Planner<'_> {
     /// Accept the full computation DAG before filtering unchanged uses. Preserve
     /// instruction IDs and transfer analyzed liveness directly to the final plan;
     /// search bindings are discarded, and emission only reads the liveness mask.
-    fn finish(&self, draft: Draft, anchors: &[Inst], model: &dyn CostModel) -> Extraction {
+    fn finish(&mut self, mut draft: Draft, anchors: &[Inst], model: &dyn CostModel) -> Extraction {
         let original = anchors
             .iter()
-            .flat_map(|&inst| self.body.dfg().operands(inst).iter().copied())
+            .flat_map(|&inst| self.ir.anchor_operands(inst))
             .map(Input::Existing);
         let original_cost = self.analyze(original, &[], model).cost;
         let analysis = self.analyze(
@@ -519,18 +553,70 @@ impl Planner<'_> {
         }
         self.graph.profile.count("egraph.accepted_plans", 1);
 
+        // Improve physical reuse only after the complete DAG passes pricing.
+        // Reuse preserves every result and cannot add computations to the plan.
+        self.reuse_definitions(&mut draft.steps, &analysis.live);
+
         let rewrites = draft
             .uses
             .into_iter()
             .filter(|usage| {
                 usage.input
-                    != Input::Existing(self.body.dfg().operands(usage.inst)[usage.operand as usize])
+                    != Input::Existing(
+                        self.ir
+                            .anchor_operands(usage.inst)
+                            .nth(usage.operand as usize)
+                            .expect("anchor operand"),
+                    )
             })
             .collect();
         Extraction {
             steps: draft.steps,
             live: analysis.live,
             rewrites,
+        }
+    }
+
+    /// An original pure operation can keep its result IDs when all selected
+    /// inputs are available at its original position. Each operation is edited
+    /// at most once. Other uses remain valid: every new input belongs to the
+    /// same equivalence class as the corresponding original input.
+    fn reuse_definitions(&mut self, steps: &mut [PlannedInst], live: &[bool]) {
+        let mut updated = HashSet::new();
+        for id in 0..steps.len() {
+            if !live[id] {
+                continue;
+            }
+            let Some(original) = self.ir.original_inst(steps[id].source) else {
+                continue;
+            };
+            let Placement::Before(anchor) = steps[id].placement else {
+                unreachable!("each planned occurrence is considered once");
+            };
+            // A movable template may originally occur after this use or in a
+            // sibling block. Updating it there cannot satisfy the planned use.
+            if !self.inst_dominates(original, anchor) {
+                continue;
+            }
+            if updated.contains(&original) {
+                continue;
+            }
+            let available = steps[id].args.iter().all(|&input| match input {
+                Input::Existing(value) => self.dominates(value, original),
+                Input::Result { step, .. } => {
+                    debug_assert!(step.0 < id, "dependency precedes its user");
+                    match steps[step.0].placement {
+                        Placement::Before(before) => {
+                            before == original || self.inst_dominates(before, original)
+                        }
+                        Placement::Update(def) => self.inst_dominates(def, original),
+                    }
+                }
+            });
+            if available {
+                steps[id].placement = Placement::Update(original);
+                updated.insert(original);
+            }
         }
     }
 
@@ -556,7 +642,7 @@ impl Planner<'_> {
         while let Some(input) = pending.pop() {
             let inst = match input {
                 Input::Existing(value) => {
-                    let ValueDef::Inst(inst) = self.body.dfg().value_def(value) else {
+                    let Some(inst) = self.ir.value_inst(value) else {
                         continue;
                     };
                     if !seen.insert(inst) {
@@ -566,14 +652,7 @@ impl Planner<'_> {
                         self.graph.kinds[inst],
                         InstKind::Floating | InstKind::Folded
                     ) {
-                        pending.extend(
-                            self.body
-                                .dfg()
-                                .operands(inst)
-                                .iter()
-                                .copied()
-                                .map(Input::Existing),
-                        );
+                        pending.extend(self.ir.folded_operands(inst).map(Input::Existing));
                         inst
                     } else {
                         continue;
@@ -589,12 +668,9 @@ impl Planner<'_> {
                     step.source
                 }
             };
-            let result = self.body.dfg().inst_results(inst)[0];
+            let result = self.ir.inst_results(inst)[0];
             let price = model
-                .operation(
-                    self.body.dfg().opcode(inst),
-                    self.body.dfg().value_type(result),
-                )
+                .operation(self.ir.opcode(inst), self.ir.value_type(result))
                 .max(1);
             analysis.cost = analysis.cost.saturating_add(price);
         }
@@ -619,9 +695,15 @@ impl Planner<'_> {
     }
 
     fn dominates(&mut self, value: Value, anchor: Inst) -> bool {
+        if self.ir.as_const(value).is_some() {
+            return true;
+        }
+        let Some(value) = self.ir.original_value(value) else {
+            return false;
+        };
         match self.body.dfg().value_def(value) {
-            ValueDef::Const(_) => true,
-            ValueDef::Param(block) => {
+            ValueDef::FunctionParam(_) | ValueDef::Const(_) => true,
+            ValueDef::BlockParam(block) => {
                 let use_block = self
                     .body
                     .layout()
@@ -645,12 +727,7 @@ impl Planner<'_> {
                 break;
             }
             let available = self.dominates(candidate.value, anchor);
-            if !available
-                && self
-                    .graph
-                    .floating_inst(self.body, candidate.value)
-                    .is_none()
-            {
+            if !available && self.graph.floating_inst(self.ir, candidate.value).is_none() {
                 continue;
             }
             if best.is_none() {
@@ -669,10 +746,10 @@ impl Planner<'_> {
     /// bind every result so later dependencies can share the same computation.
     fn plan_instruction(&mut self, anchor: Inst, value: Value, draft: &mut Draft) {
         debug_assert!(draft.bindings.inputs[self.graph.find(value)].is_none());
-        let args = self.graph.args(self.body, value);
+        let args = self.graph.args(self.ir, value);
         let source = self
             .graph
-            .floating_inst(self.body, value)
+            .floating_inst(self.ir, value)
             .expect("floating expression");
         let args: SmallVec<[Input; 3]> = args
             .iter()
@@ -680,18 +757,16 @@ impl Planner<'_> {
             .collect();
         let reuse = self.dominates(value, anchor)
             && self
-                .body
-                .dfg()
-                .operands(source)
-                .iter()
+                .ir
+                .folded_operands(source)
                 .zip(&args)
-                .all(|(&old, &new)| new == Input::Existing(old));
+                .all(|(old, &new)| new == Input::Existing(old));
         let step = if reuse {
             None
         } else {
             let step = StepId(draft.steps.len());
             draft.steps.push(PlannedInst {
-                before: anchor,
+                placement: Placement::Before(anchor),
                 source,
                 args,
             });
@@ -700,12 +775,12 @@ impl Planner<'_> {
         // Record the instruction and all its result bindings before the next
         // checkpoint. Rollback removes them together; success makes every result
         // available to later operands and dominated anchors without publishing.
-        for (index, &result) in self.body.dfg().inst_results(source).iter().enumerate() {
+        for (index, &result) in self.ir.inst_results(source).iter().enumerate() {
             let class = self.graph.find(result);
             if draft.bindings.inputs[class].is_some() {
                 continue;
             }
-            let input = if self.body.dfg().as_const(class.value()).is_some() {
+            let input = if self.ir.as_const(class.value()).is_some() {
                 Input::Existing(class.value())
             } else {
                 step.map_or(Input::Existing(result), |step| Input::Result {
@@ -751,7 +826,7 @@ impl Planner<'_> {
             }
             match frame.state {
                 State::Start => {
-                    if self.body.dfg().as_const(class.value()).is_some() {
+                    if self.ir.as_const(class.value()).is_some() {
                         draft.bindings.bind(class, Input::Existing(class.value()));
                         stack.pop();
                         continue;
@@ -771,7 +846,7 @@ impl Planner<'_> {
                         parent.retry(draft);
                         continue;
                     };
-                    if self.graph.floating_inst(self.body, value).is_none() {
+                    if self.graph.floating_inst(self.ir, value).is_none() {
                         if self.dominates(value, anchor) {
                             draft.bindings.bind(class, Input::Existing(value));
                             stack.pop();
@@ -781,7 +856,7 @@ impl Planner<'_> {
                     frame.state = State::Inputs { value, next: 0 };
                 }
                 State::Inputs { value, next } => {
-                    let args = self.graph.args(self.body, value);
+                    let args = self.graph.args(self.ir, value);
                     if let Some(&arg) = args.get(next) {
                         let arg = self.graph.find(arg);
                         if draft.bindings.inputs[arg].is_some() {

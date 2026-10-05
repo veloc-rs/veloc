@@ -1,0 +1,4 @@
+# Offline training only. Neither the compiler nor the board requires Python packages.
+numpy==2.0.2
+torch==2.8.0
+msgpack==1.1.2

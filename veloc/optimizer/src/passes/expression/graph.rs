@@ -1,13 +1,13 @@
-//! Equality indexes, congruence rebuilding and saturation over MIR values.
+//! Equality indexes, congruence rebuilding and saturation over search values.
+use super::storage::{Expressions, Inst, Value};
 use super::{Limit, matching};
-use crate::evaluate::Fold;
+use crate::evaluate::{Fold, Properties};
 use core::hash::BuildHasher;
-use cranelift_entity::{EntityRef, SecondaryMap, packed_option::PackedOption};
+use cranelift_entity::{EntityRef, PrimaryMap, SecondaryMap, packed_option::PackedOption};
 use hashbrown::{HashMap, HashTable, hash_map::DefaultHashBuilder};
 use smallvec::SmallVec;
+use veloc_mir::Opcode as Op;
 use veloc_mir::constant::ScalarConst;
-use veloc_mir::function::Expressions;
-use veloc_mir::{FuncBody, Inst, IntCC, Opcode as Op, Value, ValueDef};
 use veloc_types::Type;
 
 /// An equivalence-class identity, not an executable operand witness. A saved
@@ -17,8 +17,7 @@ use veloc_types::Type;
 pub(super) struct Root(Value);
 
 impl Root {
-    /// Expose MIR identity explicitly for metadata, constants or detached
-    /// candidates. This does not establish dominance at an executable use.
+    /// Expose search identity explicitly for metadata, constants or candidates. This does not establish dominance at an executable use.
     pub(super) fn value(self) -> Value {
         self.0
     }
@@ -34,7 +33,7 @@ impl EntityRef for Root {
     }
 }
 
-/// Equivalence is an overlay on MIR value identities. MIR definitions are never
+/// Equivalence is an overlay on search value identities. Definitions are never
 /// rewritten to union-find representatives during saturation.
 #[derive(Default)]
 struct UnionFind {
@@ -54,7 +53,7 @@ impl UnionFind {
 
     fn find(&self, mut value: Value) -> Root {
         loop {
-            let parent = self.parents[value].expect("registered MIR value");
+            let parent = self.parents[value].expect("registered search value");
             if parent == value {
                 return Root(value);
             }
@@ -64,7 +63,7 @@ impl UnionFind {
 
     fn find_mut(&mut self, mut value: Value) -> Root {
         loop {
-            let parent = self.parents[value].expect("registered MIR value");
+            let parent = self.parents[value].expect("registered search value");
             if parent == value {
                 return Root(value);
             }
@@ -114,7 +113,7 @@ impl<K: EntityRef> Worklist<K> {
     }
 }
 
-/// A temporary lookup key, reconstructed from MIR. The hash table stores only
+/// A temporary lookup key, reconstructed from search storage. The hash table stores only
 /// Inst IDs and cached hashes; it owns no second instruction representation.
 /// Properties are precisely those exposed by the supported semantic recipes.
 #[derive(PartialEq, Eq, Hash)]
@@ -123,15 +122,6 @@ struct Key {
     args: SmallVec<[Root; 3]>,
     results: SmallVec<[Type; 2]>,
     properties: Properties,
-}
-
-/// Congruence needs every semantic property, even for operations that have no
-/// constant evaluator. Pointer scale/offset must never be dropped from the key.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Properties {
-    Evaluated(SmallVec<[IntCC; 1]>),
-    PtrOffset(i32),
-    PtrIndex(veloc_mir::inst::PtrIndexImm),
 }
 
 /// Mutations are batched until congruence indexes have been repaired.
@@ -144,10 +134,8 @@ enum Change {
     Folded(Inst),
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum InstKind {
-    #[default]
-    Unsupported,
     /// Can be analyzed, but cannot be moved or speculated.
     Pinned,
     Floating,
@@ -177,12 +165,12 @@ impl ClassIndex {
         }
     }
 
-    fn compact(&mut self, f: &FuncBody, kinds: &SecondaryMap<Inst, InstKind>) {
+    fn compact(&mut self, f: &Expressions, kinds: &PrimaryMap<Inst, InstKind>) {
         self.users.retain(|&inst| kinds[inst] != InstKind::Folded);
         self.users.sort_unstable();
         self.users.dedup();
         let live = |&value: &Value| {
-            let inst = f.dfg().value_inst(value).expect("indexed expression");
+            let inst = f.value_inst(value).expect("indexed expression");
             kinds[inst] != InstKind::Folded
         };
         // Each expression is registered once and moves with its class. Keep
@@ -200,23 +188,24 @@ impl ClassIndex {
     }
 }
 
-/// All expression storage belongs to MIR. This structure holds equality and
-/// dependency indexes over existing values/instructions. A class containing a
-/// constant is rooted at that unique MIR literal; no separate fact table exists.
+/// Compact operations share one representation for imports and candidates. This
+/// structure holds equality and dependency indexes over them. A class
+/// containing a constant is rooted at its interned literal.
 pub(super) struct Graph {
     pub(super) profile: crate::Profile,
+    pub(super) layout: Option<veloc_types::DataLayout>,
     pub(super) values: Vec<Value>,
     classes: UnionFind,
-    pub(super) kinds: SecondaryMap<Inst, InstKind>,
+    pub(super) kinds: PrimaryMap<Inst, InstKind>,
     indexes: SecondaryMap<Root, ClassIndex>,
     changes: Vec<Change>,
     rebuild_work: Worklist<Inst>,
-    // Direct MIR operand witnesses, never arbitrary union-find representatives.
+    // Direct operand witnesses, never arbitrary union-find representatives.
     aliases: HashMap<Value, Value>,
     memo: HashTable<Inst>,
     hashes: SecondaryMap<Inst, u64>,
     hasher: DefaultHashBuilder,
-    /// Detached instructions still allowed; literals and import never consume it.
+    /// Candidate instructions still allowed; literals and import never consume it.
     pub(super) remaining_nodes: usize,
 }
 
@@ -224,9 +213,10 @@ impl Graph {
     pub(super) fn new() -> Self {
         Self {
             profile: crate::Profile::default(),
+            layout: None,
             values: Vec::new(),
             classes: UnionFind::default(),
-            kinds: SecondaryMap::new(),
+            kinds: PrimaryMap::new(),
             indexes: SecondaryMap::new(),
             rebuild_work: Worklist::default(),
             aliases: HashMap::new(),
@@ -257,107 +247,90 @@ impl Graph {
         &self.indexes[class].users
     }
 
-    pub(super) fn register_value(&mut self, f: &FuncBody, value: Value) {
+    pub(super) fn register_value(&mut self, f: &Expressions, value: Value) {
         if self.classes.insert(value) {
             self.values.push(value);
-            if f.dfg().as_const(value).is_some() {
+            if f.as_const(value).is_some() {
                 self.changes.push(Change::ClassChanged(Root(value)));
             }
         }
     }
 
-    pub(super) fn floating_inst(&self, f: &FuncBody, value: Value) -> Option<Inst> {
-        f.dfg()
-            .value_inst(value)
+    pub(super) fn floating_inst(&self, f: &Expressions, value: Value) -> Option<Inst> {
+        f.value_inst(value)
             .filter(|&inst| self.kinds[inst] == InstKind::Floating)
     }
 
-    pub(super) fn args<'a>(&self, f: &'a FuncBody, value: Value) -> &'a [Value] {
-        if f.dfg().as_const(self.find(value).value()).is_some() {
+    pub(super) fn args<'a>(&self, f: &'a Expressions<'_>, value: Value) -> &'a [Value] {
+        if f.as_const(self.find(value).value()).is_some() {
             return &[];
         }
         self.floating_inst(f, value)
-            .map_or(&[], |inst| f.dfg().operands(inst))
+            .map_or(&[], |inst| f.operands(inst))
     }
 
-    pub(super) fn canonical_args(&self, f: &FuncBody, inst: Inst) -> SmallVec<[Root; 3]> {
-        let args: SmallVec<[Root; 3]> = f
-            .dfg()
-            .operands(inst)
-            .iter()
-            .map(|&v| self.find(v))
-            .collect();
-        self.normalize_args(f.dfg().opcode(inst), &args)
-    }
-
-    fn normalize_args(&self, opcode: Op, args: &[Root]) -> SmallVec<[Root; 3]> {
-        let mut args: SmallVec<_> = args.iter().map(|&root| self.canonicalize(root)).collect();
-        if opcode.spec().is_commutative() && args.len() == 2 && args[0] > args[1] {
-            args.swap(0, 1);
-        }
+    pub(super) fn canonical_args(&self, f: &Expressions, inst: Inst) -> SmallVec<[Root; 3]> {
+        let mut args: SmallVec<[Root; 3]> =
+            f.operands(inst).iter().map(|&v| self.find(v)).collect();
+        Self::order_args(f.opcode(inst), &mut args);
         args
     }
 
-    fn key(&self, f: &FuncBody, inst: Inst) -> Key {
-        let dfg = f.dfg();
-        Key {
-            opcode: dfg.opcode(inst),
-            args: dfg.operands(inst).iter().map(|&v| self.find(v)).collect(),
-            results: dfg
-                .inst_results(inst)
-                .iter()
-                .map(|&v| dfg.value_type(v))
-                .collect(),
-            properties: match dfg.inst(inst) {
-                veloc_mir::InstView::PtrOffset { offset, .. } => Properties::PtrOffset(offset),
-                veloc_mir::InstView::PtrIndex { imm_id, .. } => Properties::PtrIndex(imm_id),
-                view => Properties::Evaluated(crate::evaluate::properties(&view)),
-            },
+    /// The caller has resolved every root against this immutable graph.
+    fn order_args(opcode: Op, args: &mut [Root]) {
+        if opcode.spec().is_commutative() && args.len() == 2 && args[0] > args[1] {
+            args.swap(0, 1);
         }
     }
 
-    fn lookup(&self, f: &FuncBody, key: &Key) -> Option<Inst> {
+    fn key(&self, f: &Expressions, inst: Inst) -> Key {
+        Key {
+            opcode: f.opcode(inst),
+            args: f.operands(inst).iter().map(|&v| self.find(v)).collect(),
+            results: f
+                .inst_results(inst)
+                .iter()
+                .map(|&v| f.value_type(v))
+                .collect(),
+            properties: f.properties(inst),
+        }
+    }
+
+    fn lookup(&self, f: &Expressions, key: &Key) -> Option<Inst> {
         self.memo
             .find(self.hasher.hash_one(key), |&inst| {
                 let mut stored = self.key(f, inst);
-                stored.args = self.normalize_args(stored.opcode, &stored.args);
+                Self::order_args(stored.opcode, &mut stored.args);
                 stored == *key
             })
             .copied()
     }
 
-    pub(super) fn register_inst(&mut self, f: &FuncBody, inst: Inst) {
-        for &v in f
-            .dfg()
-            .operands(inst)
-            .iter()
-            .chain(f.dfg().inst_results(inst))
-        {
+    pub(super) fn register_inst(&mut self, f: &Expressions, inst: Inst) {
+        for &v in f.operands(inst).iter().chain(f.inst_results(inst).iter()) {
             self.register_value(f, v);
         }
-        if !can_analyze(f, inst) {
-            return;
-        }
-        self.kinds[inst] = if f.dfg().inst(inst).can_speculate() {
+        let kind = if f.can_speculate(inst) {
             InstKind::Floating
         } else {
             InstKind::Pinned
         };
-        let mut args: SmallVec<[Root; 3]> = f
-            .dfg()
-            .operands(inst)
-            .iter()
-            .map(|&v| self.find(v))
-            .collect();
+        assert_eq!(
+            self.kinds.push(kind),
+            inst,
+            "register expressions in storage order"
+        );
+        let mut args: SmallVec<[Root; 3]> =
+            f.operands(inst).iter().map(|&v| self.find(v)).collect();
         args.sort_unstable();
         args.dedup();
         for arg in args {
             self.indexes[arg].users.push(inst);
         }
         if self.kinds[inst] == InstKind::Floating {
-            let result = f.dfg().first_result(inst).expect("expression result");
+            let result = f.first_result(inst).expect("expression result");
             let class = self.find(result);
-            let opcode = f.dfg().opcode(inst);
+            let opcode = f.opcode(inst);
             self.indexes[class]
                 .expressions
                 .entry(opcode)
@@ -367,7 +340,7 @@ impl Graph {
             // parent even when no operand or constant fact changes.
             self.changes.push(Change::Added(inst));
             for &column in matching::indexed_columns(opcode) {
-                let arg = self.find(f.dfg().operands(inst)[column]);
+                let arg = self.find(f.operands(inst)[column]);
                 self.indexes[arg]
                     .parents
                     .entry((opcode, column))
@@ -379,18 +352,18 @@ impl Graph {
         self.rebuild_work.push(inst);
     }
 
-    pub(super) fn union(&mut self, f: &FuncBody, a: Value, b: Value) {
+    pub(super) fn union(&mut self, f: &Expressions, a: Value, b: Value) {
         assert_eq!(
-            f.dfg().value_type(a),
-            f.dfg().value_type(b),
+            f.value_type(a),
+            f.value_type(b),
             "cannot equate different types"
         );
         let (mut a, mut b) = (self.classes.find_mut(a), self.classes.find_mut(b));
         if a == b {
             return;
         }
-        let a_const = matches!(f.dfg().value_def(a.value()), ValueDef::Const(_));
-        let b_const = matches!(f.dfg().value_def(b.value()), ValueDef::Const(_));
+        let a_const = f.as_const(a.value()).is_some();
+        let b_const = f.as_const(b.value()).is_some();
         assert!(!(a_const && b_const), "rewrite equated distinct constants");
         // Canonical literals are terminal roots. Other classes use union by
         // size; attaching one to a literal adds at most one final parent edge.
@@ -413,7 +386,7 @@ impl Graph {
             // A known result also makes its pure producers unnecessary.
             for values in self.indexes[a].expressions.values() {
                 for &value in values {
-                    let inst = f.dfg().value_inst(value).expect("indexed expression");
+                    let inst = f.value_inst(value).expect("indexed expression");
                     if self.kinds[inst] != InstKind::Folded {
                         self.rebuild_work.push(inst);
                     }
@@ -424,10 +397,10 @@ impl Graph {
 
     /// An executable replacement must follow actual operand edges, not the
     /// arbitrary representative chosen by union-by-size.
-    pub(super) fn replacement(&self, f: &FuncBody, mut value: Value) -> Value {
+    pub(super) fn replacement(&self, f: &Expressions, mut value: Value) -> Value {
         loop {
             let class = self.find(value);
-            if f.dfg().as_const(class.value()).is_some() {
+            if f.as_const(class.value()).is_some() {
                 return class.value();
             }
             match self.aliases.get(&value) {
@@ -437,8 +410,8 @@ impl Graph {
         }
     }
 
-    /// Resolve one replacement and compress its path while committing folds.
-    pub(super) fn resolve_alias(&mut self, f: &FuncBody, mut value: Value) -> Value {
+    /// Resolve one replacement and compress its path while planning folds.
+    pub(super) fn resolve_alias(&mut self, f: &Expressions, mut value: Value) -> Value {
         let result = self.replacement(f, value);
         while let Some(next) = self.aliases.get_mut(&value) {
             if *next == result {
@@ -450,66 +423,57 @@ impl Graph {
     }
 
     /// Bounded local reasoning over a not-yet-allocated operation. Argument
-    /// order is preserved so Operand(i) also identifies the original MIR input.
-    fn reduce(&self, f: &FuncBody, key: &Key) -> Option<SmallVec<[Fold; 2]>> {
-        let Properties::Evaluated(properties) = &key.properties else {
-            return None;
-        };
+    /// order is preserved so Operand(i) also identifies the source input.
+    fn reduce(&self, f: &Expressions, key: &Key) -> Option<SmallVec<[Fold; 2]>> {
         let args: SmallVec<[Value; 3]> = key.args.iter().map(|root| root.value()).collect();
-        crate::evaluate::reduce(key.opcode, &args, &key.results, properties, |value| {
-            f.dfg().as_scalar_const(value)
+        crate::evaluate::reduce(key.opcode, &args, &key.results, &key.properties, |value| {
+            f.as_scalar_const(value)
         })
     }
 
-    pub(super) fn fold_to(
-        &mut self,
-        ir: &mut Expressions<'_>,
-        value: Value,
-        constant: ScalarConst,
-    ) {
+    pub(super) fn fold_to(&mut self, ir: &mut Expressions, value: Value, constant: ScalarConst) {
         // Facts are not speculative alternatives: finish publishing a fold even
         // at the node limit. Each reduction publishes only its fixed results.
         let literal = ir.constant(constant.into());
-        self.register_value(ir.body(), literal);
-        self.union(ir.body(), value, literal);
+        self.register_value(ir, literal);
+        self.union(ir, value, literal);
     }
 
-    fn try_fold(&mut self, ir: &mut Expressions<'_>, inst: Inst, key: &Key) -> bool {
-        let results: SmallVec<[Value; 2]> = ir.body().dfg().inst_results(inst).into();
+    fn try_fold(&mut self, ir: &mut Expressions, inst: Inst, key: &Key) -> bool {
+        let results: SmallVec<[Value; 2]> = ir.inst_results(inst).iter().copied().collect();
         // A known value alone cannot discharge a pinned operation's trap.
         // Evaluate its actual inputs before granting permission to erase it.
         let known = self.kinds[inst] == InstKind::Floating
             && results
                 .iter()
-                .all(|&v| ir.body().dfg().as_const(self.find(v).value()).is_some());
+                .all(|&v| ir.as_const(self.find(v).value()).is_some());
         if !known {
-            let Some(reduced) = self.reduce(ir.body(), key) else {
+            let Some(reduced) = self.reduce(ir, key) else {
                 return false;
             };
             assert_eq!(reduced.len(), results.len(), "fold result arity");
             for (&value, fold) in results.iter().zip(reduced) {
                 match fold {
                     Fold::Operand(index) => {
-                        let operand = ir.body().dfg().operands(inst)[index];
-                        let replacement = self.replacement(ir.body(), operand);
+                        let operand = ir.operands(inst)[index];
+                        let replacement = self.replacement(ir, operand);
                         self.aliases.insert(value, replacement);
-                        self.union(ir.body(), value, operand);
+                        self.union(ir, value, operand);
                     }
                     Fold::Constant(c) => self.fold_to(ir, value, c),
                 }
             }
         }
         // Rebuilding already removed the memo entry. Lists are compacted once
-        // the entire wave has settled; MIR storage remains alive until commit.
+        // the entire wave has settled; search storage stays alive through extraction.
         self.kinds[inst] = InstKind::Folded;
         self.changes.push(Change::Folded(inst));
         true
     }
 
-    /// Normalize dirty expressions before exposing them to the matcher. This
-    /// bounded reduction never creates operations, only literals or equalities;
-    /// unlike exploratory rules it also completes when search fuel is exhausted.
-    pub(super) fn rebuild(&mut self, ir: &mut Expressions<'_>) {
+    /// Reduce dirty expressions before matching. Allocation-free folds finish
+    /// independently of the query and node budgets. Nested rules run in queries.
+    pub(super) fn rebuild(&mut self, ir: &mut Expressions) {
         let scope = self.profile.scope("egraph.rebuild", 0);
         while let Some(inst) = self.rebuild_work.pop() {
             if self.kinds[inst] == InstKind::Folded {
@@ -518,34 +482,34 @@ impl Graph {
             if let Ok(entry) = self.memo.find_entry(self.hashes[inst], |&old| old == inst) {
                 entry.remove();
             }
-            let mut key = self.key(ir.body(), inst);
+            let mut key = self.key(ir, inst);
             if self.try_fold(ir, inst, &key) {
                 continue;
             }
             if self.kinds[inst] != InstKind::Floating {
                 continue;
             }
-            // No reduction occurred, so these operand classes are still current.
-            key.args = self.normalize_args(key.opcode, &key.args);
+            Self::order_args(key.opcode, &mut key.args);
             let hash = self.hasher.hash_one(&key);
             self.hashes[inst] = hash;
-            if let Some(other) = self.lookup(ir.body(), &key) {
-                let results: SmallVec<[Value; 2]> = ir.body().dfg().inst_results(inst).into();
-                let outputs: SmallVec<[Value; 2]> = ir.body().dfg().inst_results(other).into();
+            if let Some(other) = self.lookup(ir, &key) {
+                let results: SmallVec<[Value; 2]> = ir.inst_results(inst).iter().copied().collect();
+                let outputs: SmallVec<[Value; 2]> =
+                    ir.inst_results(other).iter().copied().collect();
                 for (&a, &b) in results.iter().zip(&outputs) {
-                    self.union(ir.body(), a, b);
+                    self.union(ir, a, b);
                 }
             } else {
                 self.memo.insert_unique(hash, inst, |&i| self.hashes[i]);
             }
         }
-        self.compact_indexes(ir.body());
+        self.compact_indexes(ir);
         scope.success();
     }
 
     /// Derive cleanup work from mutations at the stable rebuild boundary. Only
     /// matching events survive, including when the caller stops at a budget limit.
-    fn compact_indexes(&mut self, f: &FuncBody) {
+    fn compact_indexes(&mut self, f: &Expressions) {
         let mut affected = Vec::new();
         self.changes.retain_mut(|change| match change {
             Change::Added(inst) => self.kinds[*inst] != InstKind::Folded,
@@ -558,10 +522,9 @@ impl Graph {
                 // Operand classes own users/parents; result classes own the
                 // expressions. Either may have merged since the fold occurred.
                 affected.extend(
-                    f.dfg()
-                        .operands(*inst)
+                    f.operands(*inst)
                         .iter()
-                        .chain(f.dfg().inst_results(*inst))
+                        .chain(f.inst_results(*inst).iter())
                         .map(|&value| self.classes.find(value)),
                 );
                 false
@@ -579,7 +542,7 @@ impl Graph {
     /// Resolve delta entries through the operand indexes requested by the
     /// matcher plan. Each root/opcode batch keeps all affected input positions;
     /// seeds at the same position are searched together, not as separate tasks.
-    pub(super) fn schedule(&mut self, f: &FuncBody, queries: &mut Vec<matching::Query>) {
+    pub(super) fn schedule(&mut self, f: &Expressions, queries: &mut Vec<matching::Query>) {
         let scope = self.profile.scope("egraph.schedule", 0);
         let mut changes = core::mem::take(&mut self.changes);
         let mut batches = HashMap::new();
@@ -591,8 +554,8 @@ impl Graph {
         for change in changes.drain(..) {
             let (seed, entries) = match change {
                 Change::Added(inst) => (
-                    matching::Seed::Added(f.dfg().first_result(inst).expect("expression result")),
-                    matching::added(f.dfg().opcode(inst)),
+                    matching::Seed::Added(f.first_result(inst).expect("expression result")),
+                    matching::added(f.opcode(inst)),
                 ),
                 Change::ClassChanged(root) => {
                     (matching::Seed::Class(root), matching::CLASS_TRIGGERS)
@@ -680,42 +643,39 @@ impl Graph {
         }
     }
 
-    pub(super) fn literal(&mut self, ir: &mut Expressions<'_>, value: ScalarConst) -> Value {
+    pub(super) fn literal(&mut self, ir: &mut Expressions, value: ScalarConst) -> Value {
         let result = ir.constant(value.into());
-        self.register_value(ir.body(), result);
+        self.register_value(ir, result);
         result
     }
 
     pub(super) fn build(
         &mut self,
-        ir: &mut Expressions<'_>,
+        ir: &mut Expressions,
         opcode: Op,
         args: &[Value],
         ty: Type,
+        properties: Properties,
     ) -> Result<Value, Limit> {
         let mut key = Key {
             opcode,
             args: args.iter().map(|&v| self.find(v)).collect(),
             results: smallvec::smallvec![ty],
-            properties: Properties::Evaluated(SmallVec::new()),
+            properties,
         };
-        if let Some(reduced) = self.reduce(ir.body(), &key) {
+        if let Some(reduced) = self.reduce(ir, &key) {
             assert_eq!(reduced.len(), 1, "rule operation result arity");
             return Ok(match reduced.into_iter().next().unwrap() {
-                Fold::Operand(index) => self.replacement(ir.body(), args[index]),
+                Fold::Operand(index) => self.replacement(ir, args[index]),
                 Fold::Constant(c) => {
                     // A literal is a terminal answer, not a speculative node.
                     self.literal(ir, c)
                 }
             });
         }
-        key.args = self.normalize_args(opcode, &key.args);
-        if let Some(inst) = self.lookup(ir.body(), &key) {
-            return Ok(ir
-                .body()
-                .dfg()
-                .first_result(inst)
-                .expect("expression result"));
+        Self::order_args(opcode, &mut key.args);
+        if let Some(inst) = self.lookup(ir, &key) {
+            return Ok(ir.first_result(inst).expect("expression result"));
         }
         if self.remaining_nodes == 0 {
             return Err(Limit::Nodes);
@@ -723,40 +683,18 @@ impl Graph {
         // Detached candidates may use representatives; executable operands are
         // selected separately under dominance checks during extraction.
         let args: SmallVec<[Value; 3]> = key.args.iter().map(|root| root.value()).collect();
-        let inst = ir.create(
-            |w| {
-                w.from_values(opcode, &args)
-                    .expect("value-only rule operation")
-            },
-            &[ty],
-        );
+        let inst = ir.create(opcode, &args, ty, properties);
         self.remaining_nodes -= 1;
-        assert!(
-            can_analyze(ir.body(), inst),
-            "rule operation lacks a semantic recipe"
-        );
-        self.register_inst(ir.body(), inst);
+        self.register_inst(ir, inst);
         // Make new nodes reusable within this update batch. Existing keys made
         // stale by unions are repaired together at the next query boundary.
         let hash = self.hasher.hash_one(&key);
         self.hashes[inst] = hash;
         self.memo.insert_unique(hash, inst, |&i| self.hashes[i]);
-        Ok(ir
-            .body()
-            .dfg()
-            .first_result(inst)
-            .expect("expression result"))
+        Ok(ir.first_result(inst).expect("expression result"))
     }
 
     pub(super) fn is_idle(&self) -> bool {
         self.changes.is_empty() && self.rebuild_work.pending.is_empty()
     }
-}
-
-fn can_analyze(f: &FuncBody, inst: Inst) -> bool {
-    crate::evaluate::can_reduce(f.dfg(), inst)
-        || matches!(
-            f.dfg().inst(inst),
-            veloc_mir::InstView::PtrOffset { .. } | veloc_mir::InstView::PtrIndex { .. }
-        )
 }

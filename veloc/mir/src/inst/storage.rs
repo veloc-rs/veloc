@@ -53,6 +53,32 @@ pub(crate) struct Edges {
 }
 
 impl Edges {
+    pub fn visit_edges(
+        &self,
+        offset: &mut u32,
+        visit: &mut impl FnMut(Edge, core::ops::Range<u32>),
+    ) {
+        for &edge in &self.entries {
+            let start = *offset;
+            *offset += edge.len;
+            visit(edge, start..*offset);
+        }
+    }
+
+    pub fn edit_edges(
+        &mut self,
+        offset: &mut u32,
+        edit: &mut impl FnMut(&mut Edge, core::ops::Range<u32>),
+    ) {
+        self.len = 0;
+        for edge in &mut self.entries {
+            let start = *offset;
+            *offset += edge.len;
+            edit(edge, start..*offset);
+            self.len += edge.len as usize;
+        }
+    }
+
     pub fn store<'a>(
         calls: impl IntoIterator<Item = Successor<'a>>,
         values: &mut Arguments,

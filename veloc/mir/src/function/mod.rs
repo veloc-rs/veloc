@@ -5,11 +5,9 @@ use crate::{Block, Linkage, SigId, Value};
 use alloc::string::String;
 
 mod edit;
-mod expressions;
 mod layout;
 pub type ControlFlowGraph = veloc_collections::graph::ControlFlowGraph<Block>;
 pub use edit::{EdgeRef, FuncEditor, InstCursor};
-pub use expressions::{Expressions, FrozenExpressions};
 pub use layout::{InstOrder, Layout};
 
 #[derive(Debug, Clone)]
@@ -42,6 +40,7 @@ pub struct FuncBody {
     layout: Layout,
     cfg: ControlFlowGraph,
     entry_block: Block,
+    params: alloc::vec::Vec<Value>,
 }
 
 impl Default for FuncBody {
@@ -51,7 +50,7 @@ impl Default for FuncBody {
 }
 
 impl FuncBody {
-    /// Create a body with a placed entry block and its signature parameters.
+    /// Create function inputs and a placed entry block without block parameters.
     pub fn new(params: &[crate::Type]) -> Self {
         Self::with_entry(params, Block(0))
     }
@@ -62,17 +61,19 @@ impl FuncBody {
         while dfg.blocks.len() <= entry_block.0 as usize {
             dfg.create_block();
         }
-        for &ty in params {
-            dfg.append_block_param(entry_block, ty);
-        }
         let mut layout = Layout::new();
         layout.append_block(entry_block);
-        Self {
+        let mut body = Self {
             dfg,
             layout,
             cfg: ControlFlowGraph::new([entry_block]),
             entry_block,
+            params: alloc::vec::Vec::new(),
+        };
+        for &ty in params {
+            body.edit().append_function_param(ty);
         }
+        body
     }
     pub fn edit(&mut self) -> FuncEditor<'_> {
         FuncEditor::new(self)
@@ -87,11 +88,11 @@ impl FuncBody {
         &self.cfg
     }
     /// Function entry. Valid MIR has no control-flow edges into this block;
-    /// its parameters are supplied exclusively by the function call.
+    /// it has no block parameters. Function inputs are stored separately.
     pub fn entry_block(&self) -> Block {
         self.entry_block
     }
     pub fn params(&self) -> &[Value] {
-        self.dfg.block_params(self.entry_block)
+        &self.params
     }
 }

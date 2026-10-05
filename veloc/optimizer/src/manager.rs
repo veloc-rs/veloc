@@ -1,10 +1,15 @@
-use crate::pass::{FunctionPass, ModulePass, OptConfig, Pass};
+use crate::pass::{FunctionPass, ModulePass, OptConfig};
 use crate::passes::dce;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{Module, function::FuncBody};
+use veloc_mir::Module;
 use veloc_profile::Profile;
+
+enum Pass {
+    Function(Box<dyn FunctionPass>),
+    Module(Box<dyn ModulePass>),
+}
 
 /// 优化流程管理器。
 pub struct PassManager {
@@ -57,13 +62,13 @@ impl PassManager {
     /// spend the equality-search budget once on the resulting expressions.
     pub fn o1(config: OptConfig, budget: crate::passes::expression::Budget) -> Self {
         let mut pm = Self::new(config);
-        pm.add_function_pass(crate::SimplifyPass);
+        pm.add_function_pass(crate::passes::sccp::SccpPass);
         pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
+        pm.add_function_pass(crate::SimplifyPass);
         pm.add_function_pass(crate::passes::cfg::CfgPass);
-        pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
-        pm.add_function_pass(crate::SimplifyPass);
         pm.add_function_pass(crate::passes::MemoryPass);
         pm.add_function_pass(crate::passes::promote::PromotePass);
+        pm.add_function_pass(crate::passes::sccp::SccpPass);
         pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
         pm.add_function_pass(crate::ExpressionPass { budget });
         pm.add_function_pass(crate::passes::licm::LicmPass);
@@ -76,11 +81,13 @@ impl PassManager {
         // Expression extraction canonicalizes addresses before validity queries.
         pm.add_function_pass(crate::passes::memory_validity::MemoryValidityPass);
         pm.add_function_pass(crate::passes::bits::BitsPass);
+        pm.add_function_pass(crate::passes::predicates::PredicatePass);
+        pm.add_function_pass(crate::passes::threading::ThreadingPass);
+        pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
         pm.add_function_pass(crate::SimplifyPass);
         pm.add_function_pass(dce::DcePass);
         pm.add_function_pass(crate::passes::cfg::CfgPass);
         pm.add_function_pass(crate::SimplifyPass);
-        pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
         pm.add_function_pass(dce::DcePass);
         pm
     }
@@ -92,6 +99,11 @@ impl PassManager {
 
     pub fn with_profile(mut self, profile: Profile) -> Self {
         self.profile = profile;
+        self
+    }
+
+    pub fn with_policy(mut self, policy: Option<std::sync::Arc<veloc_policy::Policy>>) -> Self {
+        self.config.policy = policy;
         self
     }
 
@@ -107,72 +119,56 @@ impl PassManager {
         self.passes.push(Pass::Module(Box::new(pass)));
     }
 
-    /// 在整个模块上运行所有 Pass。
+    /// Module transformations separate runs of function-local passes. A function
+    /// retains its analysis session throughout each run; its editor owns cache
+    /// invalidation. FunctionPass cannot access or mutate sibling functions.
     pub fn run_on_module(&mut self, module: &mut Module) -> bool {
-        let mut changed = false;
         let scope = self.profile.scope("optimizer", 0);
-
-        for (position, pass) in self.passes.iter().enumerate() {
-            let pass_scope = self.profile.scope(pass.name(), position as u32);
-
-            match pass {
-                Pass::Module(mp) => {
-                    let pa = mp.run(module, &self.config, &self.profile);
-                    if pa.changed() {
-                        changed = true;
-                    }
-                }
-                Pass::Function(fp) => {
-                    let mut fp_changed = false;
-                    for (id, func) in module.bodies_mut() {
-                        let function_scope = self
-                            .profile
-                            .entity_scope("function", 0, || format!("{id:?}"));
-                        let mut analyses =
-                            AnalysisManager::new(func).with_profile(self.profile.clone());
-                        let pa = fp.run(&mut analyses, &self.config, &self.profile);
-                        function_scope.success();
-                        if pa.changed() {
-                            fp_changed = true;
-                        }
-                    }
-                    if fp_changed {
-                        changed = true;
-                    }
-                }
-            };
-
-            pass_scope.success();
-        }
-
-        scope.success();
-        changed
-    }
-
-    /// 单独在某个函数上运行已注册的操作。
-    pub fn run_on_function(&mut self, func: &mut FuncBody) -> bool {
         let mut changed = false;
-        let scope = self.profile.scope("optimizer", 0);
-
-        let mut analyses = AnalysisManager::new(func).with_profile(self.profile.clone());
-        for (position, pass) in self.passes.iter().enumerate() {
-            match pass {
-                Pass::Function(fp) => {
-                    let pass_scope = self.profile.scope(fp.name(), position as u32);
-
-                    let pa = fp.run(&mut analyses, &self.config, &self.profile);
-                    if pa.changed() {
-                        changed = true;
-                    }
-
-                    pass_scope.success();
-
-                    analyses.invalidate_with_preserved(|id| pa.is_preserved_id(id));
-                }
-                Pass::Module(_) => {}
+        let mut position = 0;
+        while position < self.passes.len() {
+            if let Pass::Module(pass) = &self.passes[position] {
+                let pass_scope = self.profile.scope(pass.name(), position as u32);
+                changed |= pass.run(module, &self.config, &self.profile).changed();
+                pass_scope.success();
+                position += 1;
+                continue;
             }
+            let end = position
+                + self.passes[position..]
+                    .iter()
+                    .take_while(|pass| matches!(pass, Pass::Function(_)))
+                    .count();
+            for (id, function) in module.bodies_mut() {
+                let function_scope = self
+                    .profile
+                    .entity_scope("function", 0, || format!("{id:?}"));
+                let mut analyses =
+                    AnalysisManager::new(function).with_profile(self.profile.clone());
+                let mut unchanged = hashbrown::HashSet::new();
+                for (offset, pass) in self.passes[position..end].iter().enumerate() {
+                    let Pass::Function(pass) = pass else {
+                        unreachable!()
+                    };
+                    let pass_scope = self.profile.scope(pass.name(), (position + offset) as u32);
+                    let key = pass.reuse_key();
+                    if key.is_some_and(|key| unchanged.contains(&key)) {
+                        self.profile.count("passes.skipped_unchanged", 1);
+                    } else if pass
+                        .run(&mut analyses, &self.config, &self.profile)
+                        .changed()
+                    {
+                        changed = true;
+                        unchanged.clear();
+                    } else if let Some(key) = key {
+                        unchanged.insert(key);
+                    }
+                    pass_scope.success();
+                }
+                function_scope.success();
+            }
+            position = end;
         }
-
         scope.success();
         changed
     }

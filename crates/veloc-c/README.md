@@ -27,8 +27,28 @@ insufficient.
 - `--emit ast|mir|obj`: inspect parsing, optimized MIR, or emit an object.
 - `-I DIR`, `-D NAME=VALUE`: preprocessing options.
 - `--preprocessed`: consume preprocessed C directly; `.i` files imply this.
+- `--verify-ir`: validate frontend/optimized MIR and every machine pass. Debug
+  builds enable it by default; release builds leave validation out of timed work.
+- `--print-stats`, `--trace-file FILE`: compilation timings/counters and a
+  Chrome/Perfetto trace. Leave both off for compilation latency measurements.
+- `--policy FILE`: load an optional neural optimization policy for the selected
+  target/CPU. It advises full inlining and scheduling objectives; passes continue
+  to enforce legality and code growth limits. Without a policy, existing
+  heuristics apply.
+- `--policy-trace FILE`: record structural decision features and selected
+  actions as JSONL for offline training. Disable this during latency measurements.
+
+Policy training, counterfactual measurements and K230 evaluation are described
+in [learned policies](../../tools/learned-policy/README.md). Training requires
+PyTorch on the development machine; compiler inference has no Python dependency.
 
 ## Language support
+
+Library callers supply a `CTargetModel` to `CodeGenContext::new` or
+`compile_to_ir`. Construct it with `CTargetModel::riscv64_linux` and the selected
+backend's `DataLayout`. The model owns C language choices such as plain `char`
+signedness and `long` width; storage sizes and alignments come from that layout.
+There is no implicit host model. The currently available model is RV64 Linux.
 
 The target is Linux RV64 LP64D: 32-bit `int`, 64-bit `long` and pointers,
 unsigned plain `char`, IEEE f32/f64. Supported features include scalar
@@ -47,7 +67,8 @@ unsupported extensions can require a compatible declaration header.
 Typedef/tag scope handling and some constant-expression forms remain limited.
 
 The native pipeline includes full and early-return-path inlining, stack-cell
-promotion, loop transformations, bit-demand and function-result analysis, and exact GF(2) affine function
+promotion, sparse conditional constant propagation (SCCP), dominator-scoped
+predicate propagation, loop transformations, bit-demand and function-result analysis, and exact GF(2) affine function
 recognition. Affine recognition proves the transformation from MIR; it does
 not recognize benchmark names or substitute handwritten CRC routines. It can
 synthesize immutable lookup tables, so it is enabled by the native object
@@ -79,6 +100,13 @@ seconds. Defaults are 100,000 iterations and five samples per compiler. Logs,
 compiler/source identities, build commands, binary hashes, medians and the
 Veloc/LLVM ratio are saved under `target/native-coremark/`. Short development
 runs screen candidates but are not valid CoreMark results.
+
+Compilation timings cover the five translation units serially, including
+preprocessing and process startup, with a warmup and seven alternating samples.
+The shared adapter and linker are excluded. `--compile-only` omits board runs;
+`--preprocessed` measures both compilers on the same preprocessed input and
+excludes preprocessing from the timed region. `--compile-runs` changes the
+sample count; `--screen` explicitly permits short exploratory board samples.
 
 `--source`, `--veloc`, `--out`, `--remote-dir`, `--iterations`, and `--runs`
 override the checkout, compiler binary, artifact directory, board directory,

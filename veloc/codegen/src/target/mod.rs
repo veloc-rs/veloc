@@ -7,7 +7,9 @@ pub mod x86_64;
 
 mod abi;
 mod features;
+mod policy;
 mod types;
+pub use policy::policy_context;
 
 use crate::Emitter;
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
@@ -244,6 +246,30 @@ pub trait TargetEmitter: Send + Sync {
 pub struct TargetMemoryAccess {
     pub effect: veloc_types::MemoryEffects,
     pub bytes: u32,
+    pub address: Option<TargetMemoryAddress>,
+}
+
+/// Checked positions from the instruction's declared memory address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TargetMemoryAddress {
+    pub base: usize,
+    pub offset: usize,
+}
+impl TargetMemoryAccess {
+    pub fn location(
+        self,
+        inst: veloc_lir::InstRef<'_>,
+    ) -> Option<veloc_types::MemoryLocation<veloc_lir::Reg>> {
+        let address = self.address?;
+        let veloc_lir::FieldValue::Imm(offset) = inst.fields().at(address.offset) else {
+            return None;
+        };
+        Some(veloc_types::MemoryLocation {
+            base: *inst.inputs().get(address.base)?,
+            offset,
+            bytes: self.bytes,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

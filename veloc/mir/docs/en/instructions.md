@@ -32,6 +32,30 @@ Veloc IR (Intermediate Representation) is a low-level intermediate representatio
 
 ---
 
+## Function inputs and block parameters
+
+Function inputs are SSA values defined by `ValueDef::FunctionParam(ParamIndex)`.
+They belong to `FuncBody::params()` and are available throughout the function.
+Their positions and types must match the function signature; removing an unused
+input requires a module transformation that also updates the callers.
+
+Block parameters use `ValueDef::BlockParam(Block)` and receive values exclusively
+from incoming CFG edges. Parameter simplification and DCE may remove them together
+with the corresponding edge arguments. The entry block has neither incoming
+edges nor block parameters.
+
+Definitions name function inputs in the function header. Imports and call-site
+signatures contain only types. For example:
+
+```text
+local function add(a: i32, b: i32) -> i32
+block0():
+  jump block1(a)
+block1(x: i32):
+  result: i32 = iadd x, b
+  return result
+```
+
 ## Instruction List
 
 ### 1. Unary Operations

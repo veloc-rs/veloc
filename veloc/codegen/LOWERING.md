@@ -47,8 +47,9 @@ Virtual values have one definition through legalization, selection and schedulin
 Non-entry block parameters remain SSA definitions; branches carry their edge
 arguments even when a generic conditional or jump table expands to several
 target branches. Register entry arguments remain function parameters until
-allocation; stack arguments are defined by loads. Translation provides a fresh
-ABI predecessor when the original entry has backedges.
+allocation; stack arguments are defined by loads. MIR function inputs are stored
+separately from block parameters and translated to LIR entry parameters. The MIR
+entry has no incoming edges or block parameters.
 
 Multi-instruction selection rules declare intermediates explicitly:
 

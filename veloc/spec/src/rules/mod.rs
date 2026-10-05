@@ -3,6 +3,7 @@
 mod check;
 mod decision;
 pub(crate) mod equivalence;
+mod expression;
 mod functions;
 pub(crate) mod graph;
 mod rust;

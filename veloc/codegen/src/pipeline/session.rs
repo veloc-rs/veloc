@@ -61,14 +61,13 @@ impl<'a> FunctionSession<'a> {
             self.analyses.liveness(self.function, self.target),
         )
     }
-    /// Invalidate before granting write access. The editor exclusively borrows
-    /// the session and cannot expose mutable function storage. This also covers
-    /// early returns and unwinding; edits are not rolled back.
+    /// Borrowing an editor for inspection does not invalidate analyses. Write
+    /// access invalidates before mutation, including early returns and unwinding.
     pub fn edit(&mut self) -> FunctionEdit<'_> {
-        self.analyses.apply(ChangeSet::WHOLE_FUNCTION);
         FunctionEdit {
             editor: self.function.editor(),
             symbols: self.symbols,
+            analyses: self.analyses,
         }
     }
     /// A constrained edit can precisely record the only kind of change it permits.
@@ -111,8 +110,24 @@ impl<'a> FunctionSession<'a> {
 pub struct FunctionEdit<'a> {
     editor: FuncEditor<'a>,
     symbols: &'a mut SymbolTable,
+    analyses: &'a mut FunctionAnalysisCtx,
 }
 impl FunctionEdit<'_> {
+    pub fn set_inst_input(&mut self, id: InstId, index: usize, reg: veloc_lir::Reg) {
+        self.analyses
+            .apply(ChangeSet::INST_OPERANDS | ChangeSet::PHYSICAL_REGS);
+        self.editor.set_inst_input(id, index, reg);
+    }
+    pub fn set_inst_inputs(&mut self, id: InstId, inputs: &[veloc_lir::Reg]) {
+        self.analyses
+            .apply(ChangeSet::INST_OPERANDS | ChangeSet::PHYSICAL_REGS);
+        self.editor.set_inst_inputs(id, inputs);
+    }
+    pub fn set_inst_result(&mut self, id: InstId, index: usize, reg: veloc_lir::Reg) {
+        self.analyses
+            .apply(ChangeSet::INST_OPERANDS | ChangeSet::PHYSICAL_REGS);
+        self.editor.set_inst_result(id, index, reg);
+    }
     /// Function passes may intern identities, but cannot rename or mutate other
     /// symbols in the shared table.
     pub fn intern_function(
@@ -125,6 +140,7 @@ impl FunctionEdit<'_> {
     /// Adapter for the existing legalization implementation. Keep unrestricted
     /// table access internal; extension passes use intern_function instead.
     pub(crate) fn with_symbols(&mut self) -> (FuncEditor<'_>, &mut SymbolTable) {
+        self.analyses.apply(ChangeSet::WHOLE_FUNCTION);
         (self.editor.editor(), self.symbols)
     }
 }
@@ -136,6 +152,7 @@ impl<'a> Deref for FunctionEdit<'a> {
 }
 impl DerefMut for FunctionEdit<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        self.analyses.apply(ChangeSet::WHOLE_FUNCTION);
         &mut self.editor
     }
 }

@@ -2,8 +2,8 @@
 // check: : i32 = idiv-s v0, i32(0)
 // not: imul
 // check: return i32(0)
-local function trap(i32) -> i32
-block0(v0: i32):
+local function trap(v0: i32) -> i32
+block0():
   v2: i32 = idiv-s v0, i32(0)
   v3: i32 = imul v2, i32(0)
   return v3

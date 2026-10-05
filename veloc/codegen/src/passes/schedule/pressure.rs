@@ -108,6 +108,14 @@ impl<'a> PressureTracker<'a> {
             })
     }
 
+    /// Pressure relative to each allocation class's capacity, without CPU IDs.
+    pub fn max_relative_pressure(&self) -> f32 {
+        self.sets
+            .keys()
+            .map(|id| self.pressure[id].max(0) as f32 / self.capacity[id].max(1) as f32)
+            .fold(0.0, f32::max)
+    }
+
     pub fn advance(&mut self, node: NodeId) {
         let access = self.region.inst(node).register_access();
         for (set_id, set) in self.sets.iter() {

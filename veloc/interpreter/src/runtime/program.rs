@@ -114,18 +114,6 @@ impl Program {
         self.hosts_by_name.get(name).copied()
     }
 
-    /// Iterate over compiled functions without allocating or cloning their `Arc`s.
-    pub fn compiled_funcs(&self) -> impl Iterator<Item = (ModuleId, FuncId, &CompiledFunction)> {
-        self.modules.iter().flat_map(|(module, runtime_module)| {
-            runtime_module
-                .compiled
-                .iter()
-                .filter_map(move |(func, compiled)| {
-                    compiled.as_deref().map(|compiled| (module, func, compiled))
-                })
-        })
-    }
-
     /// Create a new empty program
     pub fn new() -> Self {
         Self {
@@ -392,19 +380,24 @@ impl<'a> ProgramBuilder<'a> {
         debug_assert_eq!(id, program.modules.next_key());
 
         let mut compiled = PrimaryMap::new();
+        // Compile everything before publishing reference identities. A capability
+        // error leaves the program's modules and reference table unchanged.
+        for (func, function) in module.functions() {
+            compiled.push(
+                function
+                    .body
+                    .map(|body| compile_function(id, func, body).map(Arc::new))
+                    .transpose()?,
+            );
+        }
         let mut call_targets = PrimaryMap::new();
         let mut func_refs = PrimaryMap::new();
         for (func, function) in module.functions() {
             let target = targets[func].expect("imports were validated above");
-            let compiled_func = function
-                .body
-                .map(|body| Arc::new(compile_function(id, func, body)));
             let reference = function.is_defined().then(|| program.push_func_ref(target));
 
-            let compiled_id = compiled.push(compiled_func);
             let target_id = call_targets.push(target);
             let ref_id = func_refs.push(reference);
-            debug_assert_eq!(func, compiled_id);
             debug_assert_eq!(func, target_id);
             debug_assert_eq!(func, ref_id);
         }

@@ -1,6 +1,6 @@
 //! Hoist speculatable, loop-invariant computations into existing preheaders.
 //! Mutable loads and trapping operations require additional proofs and stay put.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use std::collections::{BTreeMap, BTreeSet};
 use veloc_analyzer::{
     AnalysisManager,
@@ -14,12 +14,7 @@ impl FunctionPass for LicmPass {
     fn name(&self) -> &'static str {
         "LicmPass"
     }
-    fn run(
-        &self,
-        am: &mut AnalysisManager<'_>,
-        _: &OptConfig,
-        metrics: &Profile,
-    ) -> PreservedAnalyses {
+    fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         let f = am.function_mut();
         let dom = DominatorTree::compute(f.cfg(), f.entry_block());
         let info = LoopInfo::compute(f.cfg(), &dom);
@@ -108,8 +103,8 @@ impl FunctionPass for LicmPass {
                             .operands(inst)
                             .iter()
                             .all(|&v| match f.dfg().value_def(v) {
-                                ValueDef::Const(_) => true,
-                                ValueDef::Param(b) => {
+                                ValueDef::FunctionParam(_) | ValueDef::Const(_) => true,
+                                ValueDef::BlockParam(b) => {
                                     !members.contains(&b) && dom.dominates(b, preheader)
                                 }
                                 ValueDef::Inst(i) => {
@@ -130,9 +125,9 @@ impl FunctionPass for LicmPass {
         }
         metrics.count("licm.hoisted", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }

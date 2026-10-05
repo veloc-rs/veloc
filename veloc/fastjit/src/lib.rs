@@ -3,8 +3,10 @@
 //! This crate owns code selection, stencil patching, and object production. It
 //! does not own Wasm semantics or the runtime ABI: its input is validated MIR.
 
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod image;
 mod stencil;
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod x86_64;
 
 pub use stencil::{Assembler, Hole, Label, Patch, PatchKind, Stencil};

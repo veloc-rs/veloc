@@ -46,96 +46,205 @@ there is no SMT invocation or new proof claim here.
 
 ## Expression equivalences
 
-`Emit::Equivalences` compiles opcode groups into the e-graph's query and apply
-bytecode. The root instruction is explicit; each case describes its operands:
-
-```text
-rule<T: ScalarInteger>(root: mir::ISub<T>) {
-    case (x, x) => 0;
-    case (x, 0) => x;
-    case (mir::IAdd(x, y), x) => y;
-    case (x, mir::ISub(x, y)) => y;
-}
-```
-
-An optional `if` guard can test `is_const(value)`, `value == integer` or
-`value != integer`. All three require a known scalar integer/boolean constant;
-inequality does not match an unknown value. Guards reference variables bound
-by the pattern and support scalar widths up to 64 bits.
+Anonymous `rule` groups describe semantic equalities. One checker produces a
+`CheckedRule` containing typed pattern slots, guards and a replacement recipe.
+SSA matching, e-class queries and allocation-free folds are projections of this
+same model; rules are not divided into separate execution strategies.
 
 ```text
 rule<T: ScalarInteger>(root: mir::IAdd<T>) {
-    case (mir::IAdd(x, c), y) if is_const(c) => mir::IAdd(x, mir::IAdd(c, y));
+    case (mir::ISub(x, y), y) => x;
+    case (x, mir::IXor(x, -1)) => -1;
+    case (mir::IMul(x, y), mir::IMul(x, z)) => mir::IMul(x, mir::IAdd(y, z));
 }
 ```
 
-The query bytecode checks the guard before capturing a match. Incremental
-triggers carry the same constant requirements, including through repeated
-variable aliases, so impossible inputs are rejected before reverse-path search.
-When a class becomes constant, its change event can enable previously rejected
-matches. This predicate restricts search; it does not prove the rewrite equality.
+The SSA matcher follows concrete definitions, tries commutative operand orders,
+and compares repeated variables by SSA identity. The e-class matcher enumerates
+alternative expressions and compares repeated variables by class identity. Both
+use the same guards and checked construction plan. Matching is read-only.
 
-Pattern variables bind independently in each case. Repeated names require the
-same equivalence class; replacements and guards may only reference variables
-bound by that case. The root parameter names the instruction, not an operand
-variable. Operand arity and the common scalar type domain are checked against
-OpSpec. Guards use `case (x, y) if y == 0 => x;`; the current guard language
-supports equality or inequality between a bound value and an integer literal.
+Attributes use their logical positions in the operation declaration:
 
-The compiler separates two execution contracts from the checked pattern shape:
+```text
+rule<T: ScalarInteger>(root: mir::Icmp<Type::BOOL>) {
+    case (kind, mir::ISub<T>(x, y), 0)
+        if kind == IntCC::Eq || kind == IntCC::Ne
+        => mir::Icmp<Type::BOOL>(kind, x, y);
+}
+```
 
-- A root-only pattern containing variables and constants, whose replacement is
-  an operand or literal, becomes a local fold. Repeated variables and constant
-  guards use current equality/constant facts without enumerating child nodes.
-- Nested patterns and replacements that construct operations become query/apply
-  bytecode. Every matching case contributes an equality, subject to the search
-  budget; these cases are not ordered alternatives.
+The checker distinguishes value and attribute bindings using the operation
+signature. Attribute literals are checked against the declared type. Reading,
+hashing and constructing properties use adapters generated from the same
+storage mapping. E-class captures retain concrete node witnesses for properties;
+an equivalence-class representative cannot substitute for that witness.
+Construction checks type and property constraints before allocating anything.
+Properties containing hidden SSA operands and context-dependent contracts are
+not expression attributes.
 
-Local folds run during graph import, before allocating a constructed expression,
-and when rebuilding an expression whose operands changed classes. Primitive
-identity, absorbing and idempotence laws use the same checked rule model.
-The generated semantic evaluator supplies concrete constant results, including
-multi-result operations and trap checks. Neither path creates new operations.
-Local reductions therefore finish independently of exploratory rule fuel.
+Guards retain a typed predicate tree. Capture dependencies and conservative query
+filters are derived from it; Rust expressions are emitted only at the end.
+`unsigned(value)` and `signed(value)` query known integer constants;
+`shift_amount(value)` uses modulo-width shift semantics; `low_mask(bits)` creates
+a mask for 1–64 low bits. Missing facts and checked-arithmetic failures reject a
+plan. A replacement result type may use `type_of(binding)` and is validated when
+the plan is built. Matched subexpressions reused by a recipe retain their values.
 
-Local patterns are checked against each operand's declared type, not a single
-type shared by every input. For example, `Select<T: Any>` accepts the cases
-`(true, x, y) => x`, `(false, x, y) => y`, and `(condition, x, x) => x`:
-the condition is boolean while the branches and result share `T`. Only literal
-patterns and guards query constant contents, so unknown pointer, float and vector
-branches can be returned directly. No complete semantic recipe is required for
-an authored, non-trapping pure operation; its equality remains author-reviewed.
-Heterogeneous patterns currently belong to local folding; the query/action VM
-still requires same-type expressions and a domain of named exact types.
+Equivalence and local-fold outputs share one parsing and checking step per build.
 
-A folded expression leaves matching and memo indexes. No historical key is
-retained to prevent reconstruction: construction runs the same local folds.
-MIR definitions remain stable during searching. Once search ends, original
-operand witnesses commit established folds to executable uses before extraction,
-even when extraction has no budget. Ranking and pricing read the simplified MIR;
-candidate templates remain immutable until emission finishes. Matching indexes
-are no longer queried after this boundary.
-Equivalence-class representatives are not executable replacement values.
+### Shared expression evaluation
 
-A complete replacement marks its source operation `Folded`; this state is the
-single authority for removal, not a separate deletion queue. After extraction,
-placed `Folded` operations are collected into a temporary batch, candidate
-references are released, and the sources are erased in the same commit. A constant-valued equivalence class alone
-does not grant that permission: potentially trapping operations still require
-successful evaluation with their actual inputs. Ordinary DCE subsequently cleans
-up unused dependencies; it does not need equality-graph facts or exceptions.
+`evaluate_expression` accepts an opcode, operand identities, result types,
+properties and an operand-fact query. `evaluate_inst` adapts an existing MIR
+instruction to the same interface. Identities are distinct from constant facts:
+two different values both described as `Varying` are not equal operands.
 
-Rules must be written against these local normal forms: removing an identity
-can remove a syntactic match for another rule. This is an intentional search
-policy, not a proof that arbitrary rule reachability is preserved. Type checking
-does not prove an authored equality. General equalities still retain alternatives
-for cost-based extraction.
+The constant lattice is `Unknown`, `Constant` or `Varying`. `Unknown` means an
+iterative analysis has not supplied information yet, not an IR undef value.
+Evaluation returns either an operand position or a result fact. Spec identities
+and concrete evaluation run first; the shared evaluator then propagates facts,
+including joining Select arms for a varying condition. Unsupported or effectful
+operations produce `Varying` rather than waiting on unknown inputs.
 
-Multiple groups and ordinary template expansions may contribute rules for the
-same root opcode. The compiler merges them and shares matching prefixes before
-emitting bytecode; source grouping does not define separate runtime searches.
+SCCP supplies its current facts and publishes updates through its worklist.
+`reduce` and `reduce_inst` are folding adapters for Simplify, e-graph construction,
+rewrite plans and block specialization: their callers supply established
+constants, and other operands are treated as `Varying`. They expose only operand
+or constant replacements, never pending analysis facts. Evaluation does not edit
+IR, activate CFG edges or schedule analysis work.
+
+### Application and local profitability
+
+Simplify folds proposed constructions before estimating cost and removes dead
+planned steps. A replacement is accepted if it returns an existing operand or
+constant, or constructs fewer instructions than it can remove. Definitions with
+other users and values retained by the replacement do not count as savings.
+This is a conservative MIR instruction-count policy, not a target latency model.
+
+A per-case `canonical` marker also allows an equal-cost local replacement in a
+reviewed normalizing direction:
+
+```text
+rule<T: ScalarInteger>(root: mir::ISub<T>) {
+    case canonical (x, c) if is_const(c) => mir::IAdd<T>(x, mir::INeg<T>(c));
+}
+```
+
+The marker does not restrict e-graph participation. Every non-flat rule remains
+an e-class query; e-graph construction shares the node budget and extraction
+chooses placement and cost. Equal-cost canonical directions must not form cycles;
+the compiler does not prove termination or semantic equivalence.
+
+### Types and predicates
+
+Untyped nested calls inherit the result type implied by their operand position.
+Casts and other independent types can use explicit result types:
+
+```text
+rule<T: Integer, W: Integer>(root: mir::Wrap<T>) {
+    case (mir::ExtendU<W>(x)) if type_of(x) == T => x;
+    case canonical (mir::ExtendU<W>(x)) if bits(type_of(x)) < bits(T) => mir::ExtendU<T>(x);
+}
+```
+
+Type parameters bind at matched nodes. Each pattern slot carries its own domain
+and type source, including scalar/vector shapes. Query checks and incremental
+triggers use the slot's domain, rather than assuming it shares the root type.
+Construction validates each operation's full type contract before allocating IR,
+including cast width and shape constraints. Operations must be pure, non-trapping,
+value-only and single-result. Missing target layout rejects a layout-dependent
+case.
+
+Guards support `is_const(value)`, `type_of(value)`, `bits(type)`, `pointer_bits()`,
+typed comparisons, conjunction and disjunction. Value/literal equality and
+inequality both require a known scalar constant. Pattern literals are masked to
+the matched integer width. Variables and type parameters are local to each case;
+replacements cannot refer to unmatched values or unbound types.
+
+### Generated execution
+
+`Emit::LocalFolds` emits the concrete SSA matcher, shared plan constructors and
+an allocation-free fast path for flat operand/constant reductions. Primitive
+identity, absorbing and idempotence laws go through the same checker. Scalar
+constant results and trap checks still come from generated operation semantics.
+
+`Emit::Equivalences` emits incremental query bytecode. It retains shared scan
+prefixes, commutative bindings and reverse-path triggers. Constant conditions on
+conjunctive guard paths filter triggers, including through repeated-variable
+aliases; disjunctions remain conservative. A class becoming constant can enable
+previously rejected matches.
+
+The query compiler moves type, constant, equality and attribute checks ahead
+of dependent scans as soon as their inputs are available. When several changed
+positions request overlapping queries, the runtime compares their static scan
+counts with a full root query and chooses the smaller plan. This is a work
+estimate, not a cardinality model; the same search limits apply to both paths.
+Cached relations enumerate each distinct pair of canonical operands and
+attributes once. Concrete SSA definitions remain available to extraction.
+
+`Capture` encodes the slots needed by the replacement, guards and result types.
+Successful matches are deduplicated and applied after querying the stable graph.
+Queries check generated conditions without constructing a replacement plan.
+Application canonicalizes captures, checks conditions again and constructs the
+replacement once. It invokes the same plan constructors as SSA; there is no separate construction
+bytecode assuming all generated operations have the root type. The plan folds
+constants and validates types before either host materializes it. E-class
+representatives are used only for search candidates; executable placement and
+dominance remain the extractor's responsibility.
+
+Flat reductions also run during graph rebuilding and before candidate allocation,
+independently of search fuel. A complete reduction marks its source `Folded`;
+actual operand witnesses form a sparse replacement mapping for extraction. A constant-valued
+class alone cannot discharge a potentially trapping operation. Ordinary DCE
+subsequently removes unused dependencies.
+
+Equality search imports supported operations into compact search storage. Imported
+operations and new candidates share one representation: opcode, semantic properties
+and ranges in a shared input/result buffer. Search IDs are dense and independent of
+MIR IDs. Referenced parameters and unsupported results are opaque typed leaves;
+calls, branches and other unsupported operations stay in MIR. Types belong to search
+values, and a class with a known constant is rooted at its interned literal.
+
+The original function stays intact throughout search. Separate occurrence mappings
+retain its values and instructions for dominance checks and reuse; matching and
+congruence read only search storage. Extraction reads anchor operands through the
+import mapping and resolves proven folds on demand. No candidate changes MIR
+storage or use-lists. The shared rewrite
+`View` and generic plans let SSA and equality search use the same Spec-generated
+properties, validation and construction recipes.
+
+Extraction returns an owned plan containing search storage, proven folds,
+instruction placements, operand rewrites and folded instructions to erase. Applying
+the plan materializes selected operations and constants into MIR; dropping it leaves
+the function unchanged. Search storage moves into the plan without copying operations,
+and the function borrow ends before application. No temporary MIR suffix needs
+truncation or cleanup.
+
+An accepted extraction may update an existing pure operation's operands while
+preserving its result identities. Its original definition must dominate the planned
+use, and all selected inputs must be available at the original definition. Each
+definition is updated at most once; opcode, properties and result types stay intact
+so other planned occurrences can still use it as a template. Otherwise extraction
+inserts a new occurrence at its planned use.
+
+Memory rewrites and analysis-dependent range transforms remain in their owning
+passes until their required effects and facts have explicit rule contracts.
 
 ## Target descriptions
+
+Target memory metadata can name a base input and a signed byte-offset attribute:
+
+```text
+memory = { kind: Read, bytes: 8, address: { base: base, offset: offset } };
+```
+
+The generator checks these names against the operation declaration and emits
+operand accessors. The scheduler compares byte ranges only when both bases
+refer to the same register version. Unknown addresses retain conservative
+dependencies. Indexed forms may omit `address` until their addressing mode has
+an explicit model. This metadata does not authorize motion of trapping or
+volatile operations.
 
 `Source::generate` with `Emit::Target` consumes OpSpec instruction contracts and the target-selection
 rules. Register definitions, scheduling metadata, assembly and encoding

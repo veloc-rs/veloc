@@ -5,10 +5,11 @@ pub mod evaluate;
 pub mod manager;
 pub mod pass;
 pub mod passes;
+mod rewrite;
 
 pub use error::Error;
 pub use manager::PassManager;
-pub use pass::{FunctionPass, ModulePass, OptConfig, Pass, PreservedAnalyses};
+pub use pass::{FunctionPass, ModulePass, OptConfig, PassOutcome};
 pub use passes::{DcePass, ExpressionPass, SimplifyPass};
 pub use veloc_profile::Profile;
 

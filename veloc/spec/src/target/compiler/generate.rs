@@ -197,10 +197,15 @@ pub(super) fn generate_target_inst_metadata(
         writeln!(output, "    schedule_class: {schedule},").unwrap();
         writeln!(output, "    movable: {},", inst_def.movable).unwrap();
         let memory = match &inst_def.memory {
-            Some((kind, bytes)) => format!(
-                "Some(crate::target::TargetMemoryAccess {{ effect: veloc_types::MemoryEffects::{}, bytes: {bytes} }})",
-                kind.to_uppercase()
-            ),
+            Some(memory) => {
+                let address = memory.address.map_or("None".into(), |(base, offset)|
+                    format!("Some(crate::target::TargetMemoryAddress {{ base: {base}, offset: {offset} }})"));
+                format!(
+                    "Some(crate::target::TargetMemoryAccess {{ effect: veloc_types::MemoryEffects::{}, bytes: {}, address: {address} }})",
+                    memory.kind.to_uppercase(),
+                    memory.bytes
+                )
+            }
             None => "None".into(),
         };
         writeln!(output, "    memory: {memory},").unwrap();

@@ -5,7 +5,7 @@ use crate::target::TargetSchedule;
 use cranelift_entity::PrimaryMap;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
-use veloc_lir::{MachineOpcode, Reg};
+use veloc_lir::Reg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DependencyKind {
@@ -36,30 +36,11 @@ impl DependencyGraph {
         };
         let mut definitions = HashMap::<Reg, NodeId>::new();
         let mut resources = HashMap::<Reg, ResourceAccess>::new();
-        let mut last_memory = None;
-        let mut reads = Vec::new();
+        let mut memory = super::memory::MemoryDependencies::default();
         for node in region.nodes() {
             let inst = region.inst(node);
-            if let Some(flags) = inst.mem_flags() {
-                // Nontrapping ordinary reads commute even when they alias.
-                // Writes and potentially trapping accesses are barriers until
-                // an alias analysis proves a weaker ordering sufficient.
-                let read = flags.is_notrap()
-                    && !flags.is_volatile()
-                    && matches!(inst.opcode(), MachineOpcode::Target(op)
-                        if target.instruction_metadata(op).memory.is_some_and(|m|
-                            m.effect == veloc_types::MemoryEffects::READ));
-                if let Some(previous) = last_memory {
-                    graph.edge(previous, node, DependencyKind::Memory);
-                }
-                if read {
-                    reads.push(node);
-                } else {
-                    for previous in reads.drain(..) {
-                        graph.edge(previous, node, DependencyKind::Memory);
-                    }
-                    last_memory = Some(node);
-                }
+            for previous in memory.predecessors(node, inst, target) {
+                graph.edge(previous, node, DependencyKind::Memory);
             }
             let access = region.inst(node).register_access();
             for value in access.reads() {
@@ -74,6 +55,7 @@ impl DependencyGraph {
                 }
             }
             for value in access.writes() {
+                memory.write(value, node);
                 if value.is_vreg() {
                     definitions.insert(value, node);
                 }

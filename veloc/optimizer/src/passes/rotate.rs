@@ -1,7 +1,7 @@
 //! Rotate simple guarded loops without assuming a nonzero trip count.
 //! The first header remains the entry guard. Its values become body/exit
 //! parameters, so the latch can test the next iteration without an extra jump.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use std::collections::{HashMap, HashSet};
 use veloc_analyzer::{
     AnalysisManager,
@@ -14,12 +14,7 @@ impl FunctionPass for RotatePass {
     fn name(&self) -> &'static str {
         "RotatePass"
     }
-    fn run(
-        &self,
-        am: &mut AnalysisManager<'_>,
-        _: &OptConfig,
-        metrics: &Profile,
-    ) -> PreservedAnalyses {
+    fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         let f = am.function_mut();
         let dom = DominatorTree::compute(f.cfg(), f.entry_block());
         let info = LoopInfo::compute(f.cfg(), &dom);
@@ -196,9 +191,9 @@ impl FunctionPass for RotatePass {
         }
         metrics.count("rotate.loops", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }

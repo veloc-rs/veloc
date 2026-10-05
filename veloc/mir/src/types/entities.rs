@@ -25,11 +25,17 @@ pub struct ValueData {
 pub enum ValueDef {
     /// Value is defined by an instruction.
     Inst(crate::Inst),
-    /// Value is a block parameter.
-    Param(Block),
+    /// An input supplied by the caller, available throughout the function.
+    FunctionParam(ParamIndex),
+    /// A value supplied by incoming control-flow edges.
+    BlockParam(Block),
     /// An immutable literal, available independently of control flow.
     Const(ConstId),
 }
+
+/// Position of a function parameter in its signature.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ParamIndex(pub u32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConstId(pub(crate) u32);
@@ -40,8 +46,9 @@ entity_impl!(ConstId, "const");
 pub struct Block(pub u32);
 entity_impl!(Block, "block");
 
-/// Owned successor data for construction and editing. Installed arguments live
-/// in the instruction's operand array and are accessed through `Successor`.
+/// Owned successor data for construction and snapshots. Installed arguments live
+/// in the instruction's operand array: borrow them through `Successor` and edit
+/// them through `EdgeRef` rather than copying this container.
 #[derive(Debug, Clone)]
 pub struct SuccessorData {
     pub block: Block,

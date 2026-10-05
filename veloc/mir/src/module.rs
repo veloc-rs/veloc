@@ -89,15 +89,14 @@ impl Module {
         let declaration = &self.decls[id];
         assert!(self.bodies[id].is_none(), "function already defined");
         assert!(
-            body.dfg()
-                .block_params(body.entry_block())
+            body.params()
                 .iter()
                 .map(|&v| body.dfg().value_type(v))
                 .eq(self.signatures()[declaration.signature]
                     .params()
                     .iter()
                     .copied()),
-            "entry parameters must match the declaration"
+            "function parameters must match the declaration"
         );
         self.bodies[id] = Some(Box::new(body));
     }

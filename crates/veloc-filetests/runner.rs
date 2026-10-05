@@ -16,9 +16,8 @@ fn main() {
     assert!(!tests.is_empty(), "no file tests discovered");
     tests.push(Trial::test("analysis/function-scoped-invalidation", || {
         use veloc_analyzer::{AnalysisManager, analyze_liveness};
-        let module = ModuleParser::new().parse(
-            "local function main(i32, i32) -> i32\nblock0(v0: i32, v1: i32):\n  return v0\n",
-        )?;
+        let module = ModuleParser::new()
+            .parse("local function main(v0: i32, v1: i32) -> i32\nblock0():\n  return v0\n")?;
         let mut data = module;
         let func = data.bodies_mut().map(|(_, body)| body).next().unwrap();
         let ret = func.layout().last_inst(func.entry_block()).unwrap();

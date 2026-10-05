@@ -1,0 +1,11 @@
+{
+  "defaults": {
+    "architectures": [[32, 16], [128, 64, 32], [256, 128, 64], [512, 256, 128, 64]],
+    "seeds": [95123, 95124, 95125],
+    "epochs": 800,
+    "validation_interval": 20,
+    "patience": 40,
+    "dropout": 0.1,
+    "weight_decay": 0.02
+  }
+}

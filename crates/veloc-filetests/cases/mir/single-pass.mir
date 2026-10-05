@@ -53,8 +53,8 @@ block0():
 // check: block2():
 // check: v2: i32 = ineg v3
 // check: block3(v3: i32):
-local function main(i32) -> i32
-block0(v0: i32):
+local function main(v0: i32) -> i32
+block0():
   jump block3(v0)
 block1():
   v1: i32 = iadd v2, v2
@@ -68,8 +68,8 @@ block3(v3: i32):
 // ----- forward-multiple-result-types
 // run: roundtrip
 // check: (v1: i32, v2: bool) = iadd-with-overflow v3, v3
-local function main(i32) -> (i32, bool)
-block0(v0: i32):
+local function main(v0: i32) -> (i32, bool)
+block0():
   jump block2(v0)
 block1():
   (v1: i32, v2: bool) = iadd-with-overflow v3, v3
@@ -81,8 +81,8 @@ block2(v3: i32):
 // run: validate-error
 // check: type scheme violation
 // check: got: I64
-local function main(i32) -> i64
-block0(v0: i32):
+local function main(v0: i32) -> i64
+block0():
   jump block2(v0)
 block1():
   v1: i64 = ineg v2
@@ -104,8 +104,8 @@ block0():
 // run: validate-error
 // check: type scheme violation
 // check: Arity { results: true, expected: 2, got: 1
-local function main(i32) -> i32
-block0(v0: i32):
+local function main(v0: i32) -> i32
+block0():
   jump block2(v0)
 block1():
   v1: i32 = iadd-with-overflow v2, v2
@@ -162,12 +162,12 @@ import function later() -> i64
 // run: roundtrip
 // check: call second(v0) : (i32) -> i32
 // check: call first(v0) : (i32) -> i32
-local function first(i32) -> i32
-block0(v0: i32):
+local function first(v0: i32) -> i32
+block0():
   v1: i32 = call second(v0) : (i32) -> i32
   return v1
-local function second(i32) -> i32
-block0(v0: i32):
+local function second(v0: i32) -> i32
+block0():
   v1: i32 = call first(v0) : (i32) -> i32
   return v1
 
@@ -175,8 +175,8 @@ block0(v0: i32):
 // run: roundtrip
 // check: sum.$(id1=v\d+): i32 = iadd $(id2=v\d+), i32(1)
 // check: block2($id2: i32):
-local function main(i32) -> i32
-block0(arg: i32):
+local function main(arg: i32) -> i32
+block0():
   jump block2(arg)
 block1():
   sum: i32 = iadd v1, i32(1)
@@ -187,10 +187,10 @@ block2(v1: i32):
 // ----- funcid-can-still-be-a-function-name
 // run: roundtrip
 // check: call FuncId(v0) : (i32) -> i32
-local function main(i32) -> i32
-block0(v0: i32):
+local function main(v0: i32) -> i32
+block0():
   v1: i32 = call FuncId(v0) : (i32) -> i32
   return v1
-local function FuncId(i32) -> i32
-block0(v0: i32):
+local function FuncId(v0: i32) -> i32
+block0():
   return v0

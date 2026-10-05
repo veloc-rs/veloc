@@ -5,6 +5,7 @@ use alloc::boxed::Box;
 use cranelift_entity::{PrimaryMap, SecondaryMap};
 use hashbrown::HashMap;
 
+mod edges;
 mod operands;
 #[cfg(test)]
 mod tests;
@@ -98,7 +99,7 @@ impl DataFlowGraph {
     pub fn append_block_param(&mut self, block: Block, ty: Type) -> Value {
         let value = self.values.push(ValueData {
             ty,
-            def: ValueDef::Param(block),
+            def: ValueDef::BlockParam(block),
         });
         self.blocks[block].params.push(value);
         value
@@ -208,7 +209,7 @@ impl DataFlowGraph {
     pub fn value_inst(&self, val: Value) -> Option<Inst> {
         match self.value_def(val) {
             ValueDef::Inst(inst) => Some(inst),
-            ValueDef::Param(_) | ValueDef::Const(_) => None,
+            ValueDef::FunctionParam(_) | ValueDef::BlockParam(_) | ValueDef::Const(_) => None,
         }
     }
 

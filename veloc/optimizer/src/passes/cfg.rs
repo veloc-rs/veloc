@@ -1,20 +1,18 @@
 //! Simplify branches, forwarding blocks and cheap speculatable diamonds.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use std::collections::{HashMap, HashSet};
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{FuncBody, Inst, InstView, Successor, SuccessorData, Value, function::EdgeRef};
 
 pub struct CfgPass;
 impl FunctionPass for CfgPass {
+    fn reuse_key(&self) -> Option<core::any::TypeId> {
+        Some(core::any::TypeId::of::<Self>())
+    }
     fn name(&self) -> &'static str {
         "CfgPass"
     }
-    fn run(
-        &self,
-        am: &mut AnalysisManager<'_>,
-        _: &OptConfig,
-        metrics: &Profile,
-    ) -> PreservedAnalyses {
+    fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         let f = am.function_mut();
         let mut changed = 0;
         loop {
@@ -178,9 +176,9 @@ impl FunctionPass for CfgPass {
         }
         metrics.count("cfg.simplified", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }
@@ -193,7 +191,6 @@ fn thread_comparison(
     edge_index: usize,
     edge: &SuccessorData,
 ) -> Option<SuccessorData> {
-    use veloc_mir::IntCC;
     let InstView::Br { condition, .. } = f.dfg().inst(source) else {
         return None;
     };
@@ -239,38 +236,22 @@ fn thread_comparison(
             .map_or(v, |i| edge.args[i])
     };
     let args = [mapped(args[0]), mapped(args[1])];
-    let outcomes = |kind| match kind {
-        IntCC::Eq => 0b010,
-        IntCC::Ne => 0b101,
-        IntCC::LtS | IntCC::LtU => 0b001,
-        IntCC::LeS | IntCC::LeU => 0b011,
-        IntCC::GtS | IntCC::GtU => 0b100,
-        IntCC::GeS | IntCC::GeU => 0b110,
-    };
-    let domain = |kind| match kind {
-        IntCC::Eq | IntCC::Ne => 0,
-        IntCC::LtS | IntCC::LeS | IntCC::GtS | IntCC::GeS => 1,
-        _ => 2,
-    };
-    if domain(kind) != 0 && domain(source_kind) != 0 && domain(kind) != domain(source_kind) {
-        return None;
-    }
-    let mut test = outcomes(kind);
-    if args == [source_args[1], source_args[0]] {
-        test = (test & 2) | ((test & 1) << 2) | ((test & 4) >> 2);
-    } else if args != *source_args {
-        return None;
-    }
-    let mut known = outcomes(source_kind);
-    if edge_index == 1 {
-        known ^= 0b111
-    }
-    let dest = if known & test == known {
-        then_dest
-    } else if known & test == 0 {
-        else_dest
+    let kind = if args == [source_args[1], source_args[0]] {
+        kind.swap()
+    } else if args == *source_args {
+        kind
     } else {
         return None;
+    };
+    let known = if edge_index == 1 {
+        source_kind.complement()
+    } else {
+        source_kind
+    };
+    let dest = if known.implies(kind)? {
+        then_dest
+    } else {
+        else_dest
     };
     // The comparison's result cannot become an argument on the new edge.
     if dest.args.contains(&result) {

@@ -5,8 +5,9 @@
 //! calls. It does not depend on function names, CRC polynomials or source syntax.
 //! Unsupported operations, nonlinear results, or exhausted work limits leave the
 //! function unchanged. Polynomial arithmetic gives an exact proof, not sampling.
-use crate::{ModulePass, OptConfig, PreservedAnalyses, Profile};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::{ModulePass, OptConfig, PassOutcome, Profile};
+use smallvec::{SmallVec, smallvec};
+use std::{collections::BTreeMap, rc::Rc};
 use veloc_analyzer::graph::PostDominatorTree;
 use veloc_mir::{
     Block, FuncBody, FuncId, GlobalData, Inst, InstView, Int, IntCC, Linkage, MemFlags, Module,
@@ -17,29 +18,64 @@ pub struct AffinePass;
 
 // A monomial is a set of input bits; repeated factors satisfy x*x = x.
 // The empty monomial (0) denotes one, and an empty polynomial denotes zero.
+// Each polynomial stores sorted, unique monomials with coefficient one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Bit(BTreeSet<u64>);
-type Word = Vec<Bit>;
+struct Bit(SmallVec<[u64; 2]>);
+// Symbolic words are immutable. Branches and SSA reads share their storage;
+// splitting a path copies only its value map, not every polynomial in scope.
+type Word = Rc<[Bit]>;
 type State = Vec<Option<Word>>;
 
 impl Bit {
     fn one() -> Self {
-        Self(BTreeSet::from([0]))
+        Self(smallvec![0])
     }
     fn xor(&self, other: &Self) -> Self {
-        Self(self.0.symmetric_difference(&other.0).copied().collect())
+        // Canonical sorted monomials; matching terms cancel over GF(2).
+        let mut terms = SmallVec::new();
+        let (mut a, mut b) = (self.0.iter().peekable(), other.0.iter().peekable());
+        while let (Some(&x), Some(&y)) = (a.peek(), b.peek()) {
+            match x.cmp(y) {
+                core::cmp::Ordering::Less => {
+                    terms.push(*x);
+                    a.next();
+                }
+                core::cmp::Ordering::Greater => {
+                    terms.push(*y);
+                    b.next();
+                }
+                core::cmp::Ordering::Equal => {
+                    a.next();
+                    b.next();
+                }
+            }
+        }
+        terms.extend(a.chain(b).copied());
+        Self(terms)
     }
     fn and(&self, other: &Self) -> Option<Self> {
         if self.0.len() * other.0.len() > 4096 {
             return None;
         }
-        let mut out = BTreeSet::new();
+        if let Some(bit) = self.constant() {
+            return Some(if bit { other.clone() } else { Self::default() });
+        }
+        if let Some(bit) = other.constant() {
+            return Some(if bit { self.clone() } else { Self::default() });
+        }
+        let mut products = Vec::with_capacity(self.0.len() * other.0.len());
         for a in &self.0 {
             for b in &other.0 {
-                let term = a | b;
-                if !out.insert(term) {
-                    out.remove(&term);
-                }
+                products.push(a | b);
+            }
+        }
+        products.sort_unstable();
+        let mut out = SmallVec::new();
+        for term in products {
+            if out.last() == Some(&term) {
+                out.pop();
+            } else {
+                out.push(term);
             }
         }
         (out.len() <= 128).then_some(Self(out))
@@ -85,7 +121,7 @@ fn select(cond: &Bit, yes: &Word, no: &Word) -> Option<Word> {
         return None;
     }
     yes.iter()
-        .zip(no)
+        .zip(no.iter())
         .map(|(a, b)| Some(b.xor(&cond.and(&a.xor(b))?)))
         .collect()
 }
@@ -274,7 +310,7 @@ impl Symbolic<'_> {
         match view.opcode() {
             Opcode::IAnd | Opcode::IOr | Opcode::IXor => a
                 .iter()
-                .zip(args.get(1)?)
+                .zip(args.get(1)?.iter())
                 .map(|(a, b)| match view.opcode() {
                     Opcode::IAnd => a.and(b),
                     Opcode::IOr => a.or(b),
@@ -287,9 +323,9 @@ impl Symbolic<'_> {
                 } else {
                     Bit::default()
                 };
-                let mut result = a.clone();
+                let mut result = a.to_vec();
                 result.resize(bits, extension);
-                Some(result)
+                Some(result.into())
             }
             Opcode::IShl | Opcode::IShrU | Opcode::IShrS => {
                 let shift = number(args.get(1)?)? as usize % a.len();
@@ -323,14 +359,14 @@ impl Symbolic<'_> {
                     return None;
                 }
                 let mut unequal = Bit::default();
-                for (a, b) in a.iter().zip(args.get(1)?) {
+                for (a, b) in a.iter().zip(args.get(1)?.iter()) {
                     unequal = unequal.or(&a.xor(b))?;
                 }
-                Some(vec![if kind == IntCC::Eq {
+                Some(Rc::from([if kind == IntCC::Eq {
                     unequal.xor(&Bit::one())
                 } else {
                     unequal
-                }])
+                }]))
             }
             Opcode::Select => select(a.first()?, args.get(1)?, args.get(2)?),
             _ => None,
@@ -350,9 +386,9 @@ impl ModulePass for AffinePass {
     fn name(&self) -> &'static str {
         "AffinePass"
     }
-    fn run(&self, module: &mut Module, config: &OptConfig, metrics: &Profile) -> PreservedAnalyses {
+    fn run(&self, module: &mut Module, config: &OptConfig, metrics: &Profile) -> PassOutcome {
         let Some(layout) = config.data_layout else {
-            return PreservedAnalyses::all();
+            return PassOutcome::Unchanged;
         };
         let mut transforms = Vec::new();
         for (id, func) in module.functions() {
@@ -392,7 +428,7 @@ impl ModulePass for AffinePass {
                 .map(|&w| {
                     (0..w)
                         .map(|_| {
-                            let bit = Bit(BTreeSet::from([1 << next]));
+                            let bit = Bit(smallvec![1 << next]);
                             next += 1;
                             bit
                         })
@@ -440,9 +476,9 @@ impl ModulePass for AffinePass {
         }
         metrics.count("affine.functions", changed as u64);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }

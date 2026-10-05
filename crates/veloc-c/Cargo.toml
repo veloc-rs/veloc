@@ -8,6 +8,9 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 veloc-mir = { workspace = true }
+veloc-types = { workspace = true }
 veloc-codegen = { workspace = true }
 veloc-optimizer = { workspace = true }
+veloc-profile = { workspace = true }
+veloc-policy = { workspace = true }
 clap = { workspace = true }

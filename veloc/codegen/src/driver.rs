@@ -33,6 +33,8 @@ pub struct CodegenOptions {
     pub verify: bool,
     /// Select the pass sequence at pipeline construction time.
     pub opt_level: OptLevel,
+    /// Optional learned scheduling decisions, loaded once for this compilation.
+    pub policy: Option<std::sync::Arc<veloc_policy::Policy>>,
     /// Pass names whose output should be printed; `*` selects every pass.
     pub dump_after: Vec<std::string::String>,
     /// Restrict pass dumps to one function (None selects all functions).
@@ -44,6 +46,7 @@ impl Default for CodegenOptions {
         Self {
             verify: cfg!(debug_assertions),
             opt_level: OptLevel::Default,
+            policy: None,
             dump_after: Vec::new(),
             dump_function: None,
         }

@@ -528,8 +528,42 @@ pub(super) fn compile(
                 if !matches!(name(&kind)?, "Read" | "Write") || bytes == 0 {
                     return Err("expected Read/Write with a positive byte size".into());
                 }
+                let address = fields
+                    .remove("address")
+                    .map(|node| -> Result<_, String> {
+                        let mut address = object(node)?;
+                        let base = address.remove("base").ok_or("missing address base")?;
+                        let offset = address.remove("offset").ok_or("missing address offset")?;
+                        finish(&address)?;
+                        let base = name(&base)?;
+                        let offset = name(&offset)?;
+                        let base = operands
+                            .iter()
+                            .filter_map(|op| match op {
+                                OperandConstraint::Use(name) => Some(name.as_str()),
+                                _ => None,
+                            })
+                            .position(|name| name == base)
+                            .ok_or("address base must name a register input")?;
+                        let offset = operands
+                            .iter()
+                            .filter_map(|op| match op {
+                                OperandConstraint::Attribute(name, kind) => {
+                                    Some((name.as_str(), kind))
+                                }
+                                _ => None,
+                            })
+                            .position(|(name, kind)| name == offset && *kind == AttributeKind::Imm)
+                            .ok_or("address offset must name an i64 attribute")?;
+                        Ok((base, offset))
+                    })
+                    .transpose()?;
                 finish(&fields)?;
-                Some((name(&kind)?.to_owned(), bytes))
+                Some(super::MemoryAccess {
+                    kind: name(&kind)?.to_owned(),
+                    bytes,
+                    address,
+                })
             } else {
                 None
             };

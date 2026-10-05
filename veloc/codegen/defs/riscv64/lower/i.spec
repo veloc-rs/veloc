@@ -284,7 +284,7 @@ op RvLoad8(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value<
     schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },4)]);
     registers = { dst: GPR, base: GPR };
-    memory = { kind: Read, bytes: 1 };
+    memory = { kind: Read, bytes: 1, address: { base: base, offset: offset } };
     assembly = {
         lines: [{ mnemonic: "load8", operands: [] }]
     };
@@ -307,7 +307,7 @@ op RvStore8(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64, flags: Me
     schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },0)]);
     registers = { src: GPR, base: GPR };
-    memory = { kind: Write, bytes: 1 };
+    memory = { kind: Write, bytes: 1, address: { base: base, offset: offset } };
     assembly = {
         lines: [{ mnemonic: "store8", operands: [] }]
     };
@@ -330,7 +330,7 @@ op RvLoad16(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value
     schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },5)]);
     registers = { dst: GPR, base: GPR };
-    memory = { kind: Read, bytes: 2 };
+    memory = { kind: Read, bytes: 2, address: { base: base, offset: offset } };
     assembly = {
         lines: [{ mnemonic: "load16", operands: [] }]
     };
@@ -356,7 +356,7 @@ template SignedLoad(Name: ident, Funct3: expr, Bytes: expr, Bits: expr, Mnemonic
         encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },Funct3)]);
         registers = { dst: GPR, base: GPR };
         clobbers = [X31];
-        memory = { kind: Read, bytes: Bytes };
+        memory = { kind: Read, bytes: Bytes, address: { base: base, offset: offset } };
         assembly = { lines: [{ mnemonic: Mnemonic, operands: [reg(dst,64),mem(base,offset,Bits)] }] };
     }
 }
@@ -369,7 +369,7 @@ op RvStore16(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64, flags: M
     schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },1)]);
     registers = { src: GPR, base: GPR };
-    memory = { kind: Write, bytes: 2 };
+    memory = { kind: Write, bytes: 2, address: { base: base, offset: offset } };
     assembly = {
         lines: [{ mnemonic: "store16", operands: [] }]
     };
@@ -392,7 +392,7 @@ op RvLoad32(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value
     schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },2)]);
     registers = { dst: GPR, base: GPR };
-    memory = { kind: Read, bytes: 4 };
+    memory = { kind: Read, bytes: 4, address: { base: base, offset: offset } };
     assembly = {
         lines: [{ mnemonic: "load32", operands: [] }]
     };
@@ -415,7 +415,7 @@ op RvStore32(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64, flags: M
     schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },2)]);
     registers = { src: GPR, base: GPR };
-    memory = { kind: Write, bytes: 4 };
+    memory = { kind: Write, bytes: 4, address: { base: base, offset: offset } };
     assembly = {
         lines: [{ mnemonic: "store32", operands: [] }]
     };
@@ -438,7 +438,7 @@ op RvLoad64(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value
     schedule = Load;
     encoding = Emission::instructions([Instruction::Load(3,dst,Address { base: base, offset: offset },3)]);
     registers = { dst: GPR, base: GPR };
-    memory = { kind: Read, bytes: 8 };
+    memory = { kind: Read, bytes: 8, address: { base: base, offset: offset } };
     assembly = {
         lines: [{ mnemonic: "load64", operands: [] }]
     };
@@ -461,7 +461,7 @@ op RvStore64(src: Value<GprValue>, base: Value<Type::PTR>, offset: i64, flags: M
     schedule = Store;
     encoding = Emission::instructions([Instruction::Store(35,src,Address { base: base, offset: offset },3)]);
     registers = { src: GPR, base: GPR };
-    memory = { kind: Write, bytes: 8 };
+    memory = { kind: Write, bytes: 8, address: { base: base, offset: offset } };
     assembly = {
         lines: [{ mnemonic: "store64", operands: [] }]
     };

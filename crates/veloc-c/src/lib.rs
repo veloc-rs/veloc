@@ -2,8 +2,6 @@
 //!
 //! This crate provides a C language parser and AST for the Veloc compiler.
 
-#![allow(dead_code)]
-
 pub mod ast;
 pub mod codegen;
 mod constant;
@@ -21,6 +19,7 @@ pub use codegen::{CodeGenContext, compile_to_ir};
 pub use error::{Error, Result};
 pub use lexer::{Lexer, Token, TokenKind};
 pub use parser::Parser;
+pub use types::CTargetModel;
 pub use veloc_mir::Module;
 
 /// Parse C source code and return the AST

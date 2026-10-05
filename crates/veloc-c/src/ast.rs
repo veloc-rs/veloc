@@ -2,8 +2,6 @@
 //!
 //! This module defines the AST nodes for C99/C11 language.
 
-#![allow(dead_code)]
-
 use std::boxed::Box;
 use std::string::String;
 use std::vec::Vec;

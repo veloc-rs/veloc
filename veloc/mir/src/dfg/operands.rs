@@ -32,13 +32,19 @@ impl Operands {
     }
 
     pub fn alloc(&mut self, owner: Inst, values: &[Value]) -> OperandRange {
-        if values.is_empty() {
+        let range = self.reserve(owner, values.len());
+        for (offset, &value) in values.iter().enumerate() {
+            self.initialize(owner, range.start + offset as u32, value);
+        }
+        range
+    }
+
+    // Reserve detached slots; the caller initializes each logical operand.
+    fn reserve(&mut self, owner: Inst, len: usize) -> OperandRange {
+        if len == 0 {
             return OperandRange::default();
         }
-        let capacity = values
-            .len()
-            .checked_next_power_of_two()
-            .expect("too many operands");
+        let capacity = len.checked_next_power_of_two().expect("too many operands");
         let class = capacity.trailing_zeros() as usize;
         self.free
             .resize_with(self.free.len().max(class + 1), Vec::new);
@@ -54,17 +60,88 @@ impl Operands {
             self.links.resize(end, owner);
             start
         });
-        let range = OperandRange {
+        OperandRange {
             start,
-            len: values.len().try_into().expect("too many operands"),
-        };
-        self.values[range.range()].copy_from_slice(values);
-        for offset in 0..range.len {
-            let id = Operand::from_u32(start + offset);
-            self.links.set_owner(id, owner);
-            self.link(id);
+            len: len.try_into().expect("too many operands"),
         }
-        range
+    }
+
+    fn initialize(&mut self, owner: Inst, slot: u32, value: Value) {
+        let id = Operand::from_u32(slot);
+        self.values[id.index()] = value;
+        self.links.set_owner(id, owner);
+        self.link(id);
+    }
+
+    /// Replace a contiguous group without an intermediate operand buffer.
+    pub fn replace(
+        &mut self,
+        owner: Inst,
+        range: OperandRange,
+        group: core::ops::Range<u32>,
+        values: &[Value],
+    ) -> OperandRange {
+        assert!(group.start <= group.end && group.end <= range.len);
+        let removed = (group.end - group.start) as usize;
+        if values.len() <= removed {
+            for (index, &value) in values.iter().enumerate() {
+                self.set(
+                    Operand::from_u32(range.start + group.start + index as u32),
+                    value,
+                );
+            }
+            if values.len() == removed {
+                return range;
+            }
+            let mut compact = self.compact(range);
+            compact.retain(group.start + values.len() as u32..group.end, |_| false);
+            return compact.finish();
+        }
+        let len = (range.len as usize - removed)
+            .checked_add(values.len())
+            .expect("too many operands");
+        let result = self.reserve(owner, len);
+        for index in 0..len {
+            let value = if index < group.start as usize {
+                self.values[range.start as usize + index]
+            } else if index < group.start as usize + values.len() {
+                values[index - group.start as usize]
+            } else {
+                self.values[range.start as usize + index - values.len() + removed]
+            };
+            self.initialize(owner, result.start + index as u32, value);
+        }
+        self.release(range);
+        result
+    }
+
+    pub fn compact(&mut self, range: OperandRange) -> OperandCompactor<'_> {
+        OperandCompactor {
+            operands: self,
+            range,
+            read: 0,
+            write: 0,
+        }
+    }
+
+    fn truncate(&mut self, range: OperandRange, len: u32) -> OperandRange {
+        assert!(len <= range.len);
+        if len == 0 {
+            self.release(range);
+            return OperandRange::default();
+        }
+        for offset in len..range.len {
+            self.unlink(Operand::from_u32(range.start + offset));
+        }
+        // Keep the allocation's capacity derivable from its logical length.
+        // Split off unused upper halves into their respective recycle buckets.
+        let mut capacity = range.len.next_power_of_two();
+        let retained = len.next_power_of_two();
+        while capacity > retained {
+            capacity /= 2;
+            self.free[capacity.trailing_zeros() as usize].push(range.start + capacity);
+        }
+        OperandRange { len, ..range }
     }
 
     fn link(&mut self, id: Operand) {
@@ -94,6 +171,47 @@ impl Operands {
         self.unlink(id);
         self.values[id.index()] = value;
         self.link(id);
+    }
+}
+
+/// Compact ordered groups in one forward traversal, maintaining reverse uses.
+pub(super) struct OperandCompactor<'a> {
+    operands: &'a mut Operands,
+    range: OperandRange,
+    read: u32,
+    write: u32,
+}
+
+impl OperandCompactor<'_> {
+    fn advance(&mut self, keep: bool) {
+        if keep {
+            if self.read != self.write {
+                let value = self.operands.values[(self.range.start + self.read) as usize];
+                self.operands
+                    .set(Operand::from_u32(self.range.start + self.write), value);
+            }
+            self.write += 1;
+        }
+        self.read += 1;
+    }
+
+    pub fn retain(&mut self, group: core::ops::Range<u32>, mut keep: impl FnMut(usize) -> bool) {
+        assert!(
+            self.read <= group.start && group.start <= group.end && group.end <= self.range.len
+        );
+        while self.read < group.start {
+            self.advance(true);
+        }
+        while self.read < group.end {
+            self.advance(keep((self.read - group.start) as usize));
+        }
+    }
+
+    pub fn finish(mut self) -> OperandRange {
+        while self.read < self.range.len {
+            self.advance(true);
+        }
+        self.operands.truncate(self.range, self.write)
     }
 }
 

@@ -1,7 +1,7 @@
 //! Backward demanded bits and forward known bits for scalar integer operations.
 //! Unknown operations observe every input bit. Forward facts meet at block
 //! parameters; module summaries can additionally describe direct call results.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use cranelift_entity::SecondaryMap;
 use std::collections::VecDeque;
 use veloc_analyzer::AnalysisManager;
@@ -25,7 +25,7 @@ impl FunctionPass for BitsPass {
         am: &mut AnalysisManager<'_>,
         config: &OptConfig,
         metrics: &Profile,
-    ) -> PreservedAnalyses {
+    ) -> PassOutcome {
         let f = am.function_mut();
         let mut insts: Vec<_> = f
             .layout()
@@ -179,9 +179,9 @@ impl FunctionPass for BitsPass {
         }
         metrics.count("bits.simplified", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }

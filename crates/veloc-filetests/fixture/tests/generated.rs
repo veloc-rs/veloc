@@ -76,7 +76,7 @@ fn shared_expressions_execute_in_queries_and_explicit_validation() {
 #[test]
 fn new_ops_get_constraints_and_ownership_without_rust_opcode_cases() {
     let parse = |text: &str| veloc_mir::ModuleParser::new().parse(text).unwrap();
-    let valid = "local function test(owned<() -> void>) -> owned<() -> void>\nblock0(v0: owned<() -> void>):\n  v1: owned<() -> void> = rebind v0\n  return v1\n";
+    let valid = "local function test(v0: owned<() -> void>) -> owned<() -> void>\nblock0():\n  v1: owned<() -> void> = rebind v0\n  return v1\n";
     parse(valid).validate().unwrap();
     let twice = valid.replace("return v1", "closure-drop v0\n  return v1");
     assert!(
@@ -106,7 +106,7 @@ fn new_ops_get_constraints_and_ownership_without_rust_opcode_cases() {
             .contains("no ownership transfer contract")
     );
 
-    let branch = "local function test(owned<() -> void>, owned<() -> void>) -> void\nblock0(v0: owned<() -> void>, v1: owned<() -> void>):\n  move-branch v0, block1(v1)\nblock1(v2: owned<() -> void>):\n  closure-drop v2\n  return\n";
+    let branch = "local function test(v0: owned<() -> void>, v1: owned<() -> void>) -> void\nblock0():\n  move-branch v0, block1(v1)\nblock1(v2: owned<() -> void>):\n  closure-drop v2\n  return\n";
     parse(branch).validate().unwrap();
     let twice = branch.replace("block1(v1)", "block1(v0)");
     assert!(

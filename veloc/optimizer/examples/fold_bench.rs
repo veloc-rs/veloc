@@ -78,7 +78,7 @@ fn main() {
         // Construct MIR once: the timed path only queries facts and folds it.
         let mut body = veloc_mir::FuncBody::new(&[Type::I64, Type::I64]);
         let block = body.entry_block();
-        let inputs = body.dfg().block_params(block).to_vec();
+        let inputs = body.params().to_vec();
         let inst = body
             .edit()
             .append_inst(block, |w| w.from_values(op, &inputs).unwrap(), results);

@@ -1,6 +1,6 @@
 //! Bounded block-local forwarding and dead-store elimination for entry objects.
 //! Unknown aliases, lifetime effects and volatile accesses are barriers.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use hashbrown::HashSet;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{FuncBody, Inst, InstView, Opcode, Type, Value};
@@ -17,14 +17,14 @@ impl FunctionPass for MemoryPass {
         am: &mut AnalysisManager<'_>,
         config: &OptConfig,
         metrics: &Profile,
-    ) -> PreservedAnalyses {
+    ) -> PassOutcome {
         let Some(layout) = config.data_layout.as_ref() else {
-            return PreservedAnalyses::all();
+            return PassOutcome::Unchanged;
         };
         if run_memory(am.function_mut(), layout, metrics) {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         } else {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         }
     }
 }

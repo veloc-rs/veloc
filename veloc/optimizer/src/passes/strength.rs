@@ -1,7 +1,7 @@
 //! Replace affine induction products with modular recurrences.
 //! Width is unchanged: wrapping i32 induction never becomes an unbounded pointer
 //! increment. Extensions and pointer formation remain after the recurrence.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use veloc_analyzer::{AnalysisManager, graph::DominatorTree};
 use veloc_mir::{FuncBody, InstView, Opcode, Value, ValueDef, function::EdgeRef};
 
@@ -10,12 +10,7 @@ impl FunctionPass for StrengthPass {
     fn name(&self) -> &'static str {
         "StrengthPass"
     }
-    fn run(
-        &self,
-        am: &mut AnalysisManager<'_>,
-        _: &OptConfig,
-        metrics: &Profile,
-    ) -> PreservedAnalyses {
+    fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         let f = am.function_mut();
         let dom = DominatorTree::compute(f.cfg(), f.entry_block());
         let insts: Vec<_> = f
@@ -34,12 +29,9 @@ impl FunctionPass for StrengthPass {
             };
             let (a, b) = (*a, *b);
             for (induction, factor) in [(a, b), (b, a)] {
-                let ValueDef::Param(header) = f.dfg().value_def(induction) else {
+                let ValueDef::BlockParam(header) = f.dfg().value_def(induction) else {
                     continue;
                 };
-                if header == f.entry_block() {
-                    continue;
-                }
                 let position = f
                     .dfg()
                     .block_params(header)
@@ -161,9 +153,9 @@ impl FunctionPass for StrengthPass {
         }
         metrics.count("strength.recurrences", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }
@@ -174,8 +166,8 @@ fn available(
     dom: &DominatorTree<veloc_mir::Block>,
 ) -> bool {
     match f.dfg().value_def(v) {
-        ValueDef::Const(_) => true,
-        ValueDef::Param(b) => dom.dominates(b, at),
+        ValueDef::FunctionParam(_) | ValueDef::Const(_) => true,
+        ValueDef::BlockParam(b) => dom.dominates(b, at),
         ValueDef::Inst(i) => f
             .layout()
             .inst_block(i)

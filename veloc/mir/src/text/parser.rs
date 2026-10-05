@@ -49,6 +49,7 @@ struct FunctionHeader {
     name: String,
     linkage: Linkage,
     signature: Signature,
+    params: Vec<(String, Location)>,
 }
 
 /// Parser-local function slots retain identity until all declarations are read.
@@ -208,6 +209,7 @@ fn parse_module(source: &str) -> ParseResult<Module> {
                 func: None,
                 symbols: Symbols::default(),
                 block: None,
+                params: header.params,
             });
         } else if input.is("global") && input.peek_kind(1) == Kind::Word {
             if current.is_some() {
@@ -240,6 +242,7 @@ struct FunctionParser {
     func: Option<Box<FuncBody>>,
     symbols: Symbols,
     block: Option<Block>,
+    params: Vec<(String, Location)>,
 }
 
 impl FunctionParser {
@@ -257,8 +260,19 @@ impl FunctionParser {
                 .filter(|_| input.peek_kind(1) == Kind::LParen)
                 .ok_or_else(|| input.error("instruction outside a basic block"))?;
             let params = module.signatures()[module.decls[self.id].signature].params();
-            self.func = Some(Box::new(FuncBody::with_entry(params, Block(entry))));
+            if self.params.len() != params.len() {
+                return Err(
+                    input.error("function definition requires named parameters in its header")
+                );
+            }
+            let mut func = Box::new(FuncBody::with_entry(params, Block(entry)));
             self.symbols.next_value = params.len() as u32;
+            for (index, (name, location)) in self.params.iter().enumerate() {
+                let value = func.params()[index];
+                self.symbols
+                    .define_function_param(name, value, &mut func, *location)?;
+            }
+            self.func = Some(func);
         }
         let func = self.func.as_mut().unwrap();
         let name = input.text();
@@ -302,6 +316,33 @@ struct Definition {
 }
 
 impl Symbols {
+    fn define_function_param(
+        &mut self,
+        name: &str,
+        value: Value,
+        func: &mut FuncBody,
+        location: Location,
+    ) -> ParseResult<()> {
+        if self.values.contains_key(name)
+            || parse_value_idx(name).is_some_and(|n| self.numbered.contains_key(&n))
+        {
+            return Err(location.error("duplicate function parameter"));
+        }
+        self.values.insert(name.to_string(), value);
+        if let Some(n) = parse_value_idx(name) {
+            self.numbered.insert(n, value);
+        }
+        self.definitions.insert(
+            value,
+            Definition {
+                name: Some(name.to_string()),
+                location,
+            },
+        );
+        set_value_name(value, name, func);
+        Ok(())
+    }
+
     fn block(&mut self, name: &str, func: &mut FuncBody, location: Location) -> ParseResult<Block> {
         if let Some(&(block, _)) = self.blocks.get(name) {
             return Ok(block);
@@ -417,43 +458,11 @@ fn declare_block(
     if !entry {
         func.edit().append_block(block);
     }
-    let mut index = 0;
     if !input.eat(Kind::RParen) {
         loop {
             let param = parse_typed_name(input, module)?;
-            if entry {
-                let value = *func
-                    .params()
-                    .get(index)
-                    .ok_or_else(|| param.location.error("too many entry parameters"))?;
-                if func.dfg().value_type(value) != param.ty {
-                    return Err(param
-                        .location
-                        .error("entry parameter type differs from signature"));
-                }
-                if symbols.values.contains_key(param.name)
-                    || parse_value_idx(param.name)
-                        .is_some_and(|n| symbols.numbered.contains_key(&n))
-                {
-                    return Err(param.location.error("duplicate entry parameter"));
-                }
-                symbols.values.insert(param.name.to_string(), value);
-                if let Some(n) = parse_value_idx(param.name) {
-                    symbols.numbered.insert(n, value);
-                }
-                symbols.definitions.insert(
-                    value,
-                    Definition {
-                        name: Some(param.name.to_string()),
-                        location: param.location,
-                    },
-                );
-                set_value_name(value, param.name, func);
-            } else {
-                let value = symbols.define(param.name, func, param.location)?;
-                func.edit().bind_param(block, value, param.ty);
-            }
-            index += 1;
+            let value = symbols.define(param.name, func, param.location)?;
+            func.edit().bind_param(block, value, param.ty);
             if !input.eat(Kind::Comma) {
                 break;
             }
@@ -461,9 +470,6 @@ fn declare_block(
         input.expect(Kind::RParen)?;
     }
     input.expect(Kind::Colon)?;
-    if entry && index != func.params().len() {
-        return Err(location.error("entry parameter count differs from signature"));
-    }
     Ok(block)
 }
 
@@ -831,7 +837,34 @@ fn parse_function_header(
     let linkage = parse_linkage(input)?;
     input.keyword("function")?;
     let name = input.word()?.to_string();
-    let (params, variadic) = parse_parameters(input, module)?;
+    input.expect(Kind::LParen)?;
+    let mut params = Vec::new();
+    let mut names = Vec::new();
+    let mut variadic = false;
+    if !input.eat(Kind::RParen) {
+        loop {
+            if input.is("...") {
+                input.advance();
+                variadic = true;
+                input.expect(Kind::RParen)?;
+                break;
+            }
+            if input.peek_kind(1) == Kind::Colon {
+                let param = parse_typed_name(input, module)?;
+                names.push((param.name.to_string(), param.location));
+                params.push(param.ty);
+            } else {
+                params.push(parse_type(input, module)?);
+            }
+            if !input.eat(Kind::Comma) {
+                input.expect(Kind::RParen)?;
+                break;
+            }
+        }
+    }
+    if !names.is_empty() && names.len() != params.len() {
+        return Err(input.error("function parameters must be either all named or all unnamed"));
+    }
     let returns = if input.eat(Kind::Arrow) {
         parse_function_returns(input, module)?
     } else {
@@ -842,6 +875,7 @@ fn parse_function_header(
         name,
         linkage,
         signature: Signature::new(params, returns, convention).with_variadic(variadic),
+        params: names,
     })
 }
 

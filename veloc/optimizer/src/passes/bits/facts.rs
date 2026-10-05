@@ -37,10 +37,8 @@ pub(super) fn known_bits_with_returns(
     let mut incoming = SecondaryMap::<Value, Vec<Value>>::new();
     for &inst in insts {
         f.dfg().inst(inst).visit_successors(|edge| {
-            if edge.block != f.entry_block() {
-                for (&param, &arg) in f.dfg().block_params(edge.block).iter().zip(edge.args) {
-                    incoming[param].push(arg);
-                }
+            for (&param, &arg) in f.dfg().block_params(edge.block).iter().zip(edge.args) {
+                incoming[param].push(arg);
             }
         });
     }
@@ -52,9 +50,6 @@ pub(super) fn known_bits_with_returns(
     while let Some(inst) = pending.pop_front() {
         queued[inst] = false;
         f.dfg().inst(inst).visit_successors(|edge| {
-            if edge.block == f.entry_block() {
-                return;
-            }
             for &param in f.dfg().block_params(edge.block) {
                 let mask = width_mask(f, param);
                 if mask == 0 {

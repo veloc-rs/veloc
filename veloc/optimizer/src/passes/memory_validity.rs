@@ -1,7 +1,7 @@
 //! A successful read proves its byte range readable until a possible lifetime
 //! change. It does not prove the bytes unchanged, so this pass only removes
 //! unused reads; value forwarding remains a separate memory optimization.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::memory::Access;
 
@@ -16,9 +16,9 @@ impl FunctionPass for MemoryValidityPass {
         am: &mut AnalysisManager<'_>,
         config: &OptConfig,
         metrics: &Profile,
-    ) -> PreservedAnalyses {
+    ) -> PassOutcome {
         let Some(layout) = config.data_layout.as_ref() else {
-            return PreservedAnalyses::all();
+            return PassOutcome::Unchanged;
         };
         let f = am.function_mut();
         let mut dead = Vec::new();
@@ -33,7 +33,7 @@ impl FunctionPass for MemoryValidityPass {
                 if view.opcode() != veloc_mir::Opcode::Load {
                     continue;
                 }
-                let Some(access) = inst.memory_access(f.dfg()) else {
+                let Some(access) = inst.memory_access(f.dfg()).and_then(|a| a.canonical(f)) else {
                     continue;
                 };
                 if access.stored.is_some() {
@@ -72,10 +72,10 @@ impl FunctionPass for MemoryValidityPass {
             }
         }
         if dead.is_empty() {
-            return PreservedAnalyses::all();
+            return PassOutcome::Unchanged;
         }
         metrics.count("memory.redundant_reads", dead.len() as u64);
         f.edit().erase_insts(&dead);
-        PreservedAnalyses::none()
+        PassOutcome::Changed
     }
 }

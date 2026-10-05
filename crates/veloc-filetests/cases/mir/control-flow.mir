@@ -20,16 +20,16 @@ block0():
 // ----- self-use
 // run: validate-error
 // check: definition of v0 does not precede its use
-local function bad(i32) -> i32
-block0(v1: i32):
+local function bad(v1: i32) -> i32
+block0():
   v0: i32 = iadd v0, v1
   return v0
 
 // ----- sibling-definition
 // run: validate-error
 // check: definition of v1 in block1 does not dominate its use in block2
-local function bad(bool) -> i32
-block0(v0: bool):
+local function bad(v0: bool) -> i32
+block0():
   br v0, block1(), block2()
 block1():
   v1: i32 = ineg i32(-1)
@@ -50,8 +50,8 @@ block1():
 // ----- parallel-edges-have-distinct-arguments
 // run: roundtrip
 // check: br v0, block1(v1), block1(v2)
-local function choose(bool, i32, i32) -> i32
-block0(v0: bool, v1: i32, v2: i32):
+local function choose(v0: bool, v1: i32, v2: i32) -> i32
+block0():
   br v0, block1(v1), block1(v2)
 block1(v3: i32):
   return v3
@@ -73,8 +73,8 @@ block2():
 // run: roundtrip
 // check: block1(v2: i32):
 // check: br v0, block1(v3), block2(v3)
-local function loop(bool, i32) -> i32
-block0(v0: bool, v1: i32):
+local function loop(v0: bool, v1: i32) -> i32
+block0():
   jump block1(v1)
 block1(v2: i32):
   v3: i32 = iadd v2, v1
@@ -82,18 +82,18 @@ block1(v2: i32):
 block2(v4: i32):
   return v4
 
-// ----- entry-parameter-contract
+// ----- entry-has-no-block-parameters
 // run: validate-error
-// check: entry parameter v0 type mismatch
-local function bad(i32) -> i64
+// check: entry block must have no block parameters
+local function bad(arg: i32) -> i64
 block0(v0: i64):
   return v0
 
 // ----- irreducible-cycle-does-not-create-dominance
 // run: validate-error
 // check: definition of v1 in block1 does not dominate its use in block2
-local function bad(bool) -> i32
-block0(v0: bool):
+local function bad(v0: bool) -> i32
+block0():
   br v0, block1(), block2()
 block1():
   v1: i32 = ineg i32(-1)

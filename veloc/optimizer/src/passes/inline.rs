@@ -1,18 +1,56 @@
 //! Bounded bottom-up inlining of module-local definitions.
 //! Recursion and stack allocation retain calls. Cloning uses the MIR schema,
 //! keeping control edges, instruction properties and value mappings together.
-use crate::{ModulePass, OptConfig, PreservedAnalyses, Profile};
+use crate::{ModulePass, OptConfig, PassOutcome, Profile};
 use std::collections::{HashMap, HashSet};
+use veloc_analyzer::{Dominators, graph::LoopInfo};
 use veloc_mir::{Block, FuncBody, FuncId, Inst, InstView, Module, Opcode, Successor};
+use veloc_types::TypeInfo;
+
+veloc_policy::feature_set!(InlineFeatures {
+    callee_insts,
+    callee_blocks,
+    callee_params,
+    callee_calls,
+    callee_loads,
+    callee_stores,
+    callee_branches,
+    callee_loop_blocks,
+    caller_insts,
+    caller_blocks,
+    constant_args,
+    pointer_args,
+    call_block_insts,
+    call_loop_depth,
+    growth,
+    callee_multiplies,
+    callee_to_caller,
+    growth_to_caller,
+    constant_arg_fraction,
+    pointer_arg_fraction,
+    callee_loop_fraction,
+    callee_memory_density,
+    callee_call_density,
+});
 
 pub struct InlinePass;
 pub struct DevirtualizePass;
+
+impl InlinePass {
+    pub const POLICY_SCHEMA: veloc_policy::DecisionSchema = veloc_policy::DecisionSchema {
+        name: "inline",
+        version: 2,
+        features: InlineFeatures::NAMES,
+        actions: &["heuristic", "keep_call", "inline"],
+        scope: "caller",
+    };
+}
 
 impl ModulePass for DevirtualizePass {
     fn name(&self) -> &'static str {
         "DevirtualizePass"
     }
-    fn run(&self, module: &mut Module, _: &OptConfig, metrics: &Profile) -> PreservedAnalyses {
+    fn run(&self, module: &mut Module, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         let decls = module.decls().clone();
         let mut changed = 0;
         for (_, body) in module.bodies_mut() {
@@ -41,9 +79,9 @@ impl ModulePass for DevirtualizePass {
         }
         metrics.count("devirtualize.calls", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }
@@ -89,7 +127,11 @@ impl ModulePass for InlinePass {
     fn name(&self) -> &'static str {
         "InlinePass"
     }
-    fn run(&self, module: &mut Module, _: &OptConfig, metrics: &Profile) -> PreservedAnalyses {
+    fn run(&self, module: &mut Module, config: &OptConfig, metrics: &Profile) -> PassOutcome {
+        let policy = config
+            .policy
+            .as_deref()
+            .filter(|p| p.enabled(&Self::POLICY_SCHEMA));
         let mut ordered = Vec::new();
         let mut seen = HashSet::new();
         let mut recursive = HashSet::new();
@@ -104,13 +146,30 @@ impl ModulePass for InlinePass {
             );
         }
         let mut changed = 0;
+        let mut summaries = HashMap::new();
+        let advice = policy.map(|p| p.session(&Self::POLICY_SCHEMA));
         for id in ordered {
             let Some(body) = module.function(id).body else {
                 continue;
             };
             let sites = calls(body);
+            // Capture original callsite depth once. Inlining may move a later
+            // call into a continuation, while preserving its loop context.
+            let depths: HashMap<Inst, u32> = if policy.is_some() && !sites.is_empty() {
+                let dom = Dominators::compute(body.cfg(), body.entry_block());
+                let loops = LoopInfo::compute(body.cfg(), &dom);
+                sites
+                    .iter()
+                    .map(|&(inst, _)| (inst, loops.depth(body.layout().inst_block(inst).unwrap())))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
             let original = body.dfg().inst_count();
             let mut growth = 0;
+            if let Some(advice) = &advice {
+                advice.reset_scope();
+            }
             for (site, callee) in sites {
                 if recursive.contains(&callee)
                     || module.signatures()[module.decls()[callee].signature].variadic
@@ -125,20 +184,39 @@ impl ModulePass for InlinePass {
                     .block_order()
                     .map(|b| source.layout().block_insts(b).count())
                     .sum::<usize>();
-                // Large bodies that retain calls lengthen many caller values
-                // across ABI clobbers. Keep those boundaries; small wrappers
-                // and callback dispatchers can still expose specialization.
-                if size > 32 && !calls(source).is_empty() {
-                    continue;
-                }
-                if size > 300
-                    || growth + size > (original * 4).max(256).min(2000)
+                // Legality and the caller growth limit apply to every policy.
+                if growth + size > (original * 4).max(256).min(2000)
                     || source
                         .layout()
                         .block_order()
                         .flat_map(|b| source.layout().block_insts(b))
                         .any(|i| matches!(source.dfg().opcode(i), Opcode::Alloca))
                 {
+                    continue;
+                }
+                let heuristic = size <= 300 && (size <= 32 || calls(source).is_empty());
+                let action = advice
+                    .as_ref()
+                    .filter(|p| p.wants_features())
+                    .map_or(0, |policy| {
+                        let caller = module.function(id).body.unwrap();
+                        // Bottom-up order means nonrecursive callees are complete.
+                        // Their structural summary remains valid for every caller.
+                        let summary = summaries
+                            .entry(callee)
+                            .or_insert_with(|| callee_features(source, size));
+                        let features =
+                            inline_features(caller, site, *summary, growth, depths[&site]);
+                        metrics.count("inline.policy_decisions", 1);
+                        policy.choose(&features.values(), if heuristic { 2 } else { 1 })
+                    });
+                let selected = match action {
+                    0 => heuristic,
+                    1 => false,
+                    2 => true,
+                    _ => unreachable!(),
+                };
+                if !selected {
                     continue;
                 }
                 let source = source.clone();
@@ -149,11 +227,75 @@ impl ModulePass for InlinePass {
         }
         metrics.count("inline.calls", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
+}
+
+/// Structural features only: no symbol, source path, benchmark or instruction ID.
+fn callee_features(callee: &FuncBody, size: usize) -> InlineFeatures {
+    let mut features = InlineFeatures {
+        callee_insts: size as f32,
+        callee_blocks: callee.layout().block_order().count() as f32,
+        callee_params: callee.params().len() as f32,
+        ..Default::default()
+    };
+    let dom = Dominators::compute(callee.cfg(), callee.entry_block());
+    let loops = LoopInfo::compute(callee.cfg(), &dom);
+    for block in callee.layout().block_order() {
+        features.callee_loop_blocks += f32::from(loops.depth(block) != 0);
+        for inst in callee.layout().block_insts(block) {
+            let opcode = callee.dfg().opcode(inst);
+            features.callee_calls +=
+                f32::from(matches!(opcode, Opcode::Call | Opcode::CallIndirect));
+            features.callee_loads += f32::from(opcode.spec().memory_effect().may_read());
+            features.callee_stores += f32::from(opcode.spec().memory_effect().may_write());
+            features.callee_branches += f32::from(opcode.spec().is_terminator());
+            features.callee_multiplies += f32::from(matches!(opcode, Opcode::IMul | Opcode::FMul));
+        }
+    }
+    features
+}
+
+fn inline_features(
+    caller: &FuncBody,
+    site: Inst,
+    mut features: InlineFeatures,
+    growth: usize,
+    depth: u32,
+) -> InlineFeatures {
+    features.caller_insts = caller
+        .layout()
+        .block_order()
+        .map(|b| caller.layout().block_insts(b).count())
+        .sum::<usize>() as f32;
+    features.caller_blocks = caller.layout().block_order().count() as f32;
+    let InstView::Call { args, .. } = caller.dfg().inst(site) else {
+        unreachable!()
+    };
+    for &arg in args {
+        features.constant_args += f32::from(caller.dfg().as_const(arg).is_some());
+        features.pointer_args += f32::from(caller.dfg().value_type(arg).is_ptr());
+    }
+    features.call_block_insts = caller
+        .layout()
+        .block_insts(caller.layout().inst_block(site).unwrap())
+        .count() as f32;
+    features.call_loop_depth = depth as f32;
+    features.growth = growth as f32;
+    // Ratios expose specialization and code-growth relationships across program
+    // sizes. Absolute sizes remain useful for code-size and cache costs.
+    features.callee_to_caller = features.callee_insts / features.caller_insts.max(1.0);
+    features.growth_to_caller = features.growth / features.caller_insts.max(1.0);
+    features.constant_arg_fraction = features.constant_args / (args.len().max(1) as f32);
+    features.pointer_arg_fraction = features.pointer_args / (args.len().max(1) as f32);
+    features.callee_loop_fraction = features.callee_loop_blocks / features.callee_blocks.max(1.0);
+    features.callee_memory_density =
+        (features.callee_loads + features.callee_stores) / features.callee_insts.max(1.0);
+    features.callee_call_density = features.callee_calls / features.callee_insts.max(1.0);
+    features
 }
 
 pub(super) fn inline(target: &mut FuncBody, call: Inst, source: &FuncBody) {
@@ -193,7 +335,7 @@ pub(super) fn inline(target: &mut FuncBody, call: Inst, source: &FuncBody) {
     }
     target.edit().erase_inst(call);
     let mut blocks = HashMap::new();
-    let mut values = HashMap::new();
+    let mut values: HashMap<_, _> = source.params().iter().copied().zip(args).collect();
     for &block in ordered.iter().rev() {
         let new = target.edit().create_block();
         target.edit().append_block(new);
@@ -216,7 +358,7 @@ pub(super) fn inline(target: &mut FuncBody, call: Inst, source: &FuncBody) {
         |w| {
             w.jump(Successor {
                 block: blocks[&source.entry_block()],
-                args: &args,
+                args: &[],
             })
         },
         &[],

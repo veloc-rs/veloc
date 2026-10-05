@@ -2,16 +2,16 @@
 // run: fixture
 // check: (v5: f32, v6: i8) = many v0, v1, v2, v3, v4
 // check: return v5, v6
-local function many_types(i8, i16, i32, i64, f32) -> (f32, i8)
-block0(v0: i8, v1: i16, v2: i32, v3: i64, v4: f32):
+local function many_types(v0: i8, v1: i16, v2: i32, v3: i64, v4: f32) -> (f32, i8)
+block0():
   (v5: f32, v6: i8) = many v0, v1, v2, v3, v4
   return v5, v6
 
 // ----- many-wrong-arity
 // run: fixture-error
 // check: operand
-local function many_types(i8, i16, i32, i64) -> void
-block0(v0: i8, v1: i16, v2: i32, v3: i64):
+local function many_types(v0: i8, v1: i16, v2: i32, v3: i64) -> void
+block0():
   (v5: f32, v6: i8) = many v0, v1, v2, v3
   return
 
@@ -37,16 +37,16 @@ block0():
 // run: fixture
 // check: v1: i8 = sized v0
 // check: return v1
-local function sized_type(bool) -> i8
-block0(v0: bool):
+local function sized_type(v0: bool) -> i8
+block0():
   v1: i8 = sized v0
   return v1
 
 // ----- reject-known-result-relation
 // run: fixture-validate-error
 // check: result must have more bits per lane than arg
-local function sized_type(i32) -> i8
-block0(v0: i32):
+local function sized_type(v0: i32) -> i8
+block0():
   v1: i8 = sized v0
   return v1
 
@@ -55,8 +55,8 @@ block0(v0: i32):
 // check: v2: i32 = first v0, v1
 // check: v3: i32 = second v2, v1
 // check: return v3
-local function shared(i32, i32) -> i32
-block0(v0: i32, v1: i32):
+local function shared(v0: i32, v1: i32) -> i32
+block0():
   v2: i32 = first v0, v1
   v3: i32 = second v2, v1
   return v3
@@ -64,7 +64,7 @@ block0(v0: i32, v1: i32):
 // ----- distinct-contract
 // run: fixture-validate-error
 // check: Pattern { results: false, index: 0
-local function distinct(i32, i32) -> i32
-block0(v0: i32, v1: i32):
+local function distinct(v0: i32, v1: i32) -> i32
+block0():
   v2: i32 = float-only v0, v1
   return v2

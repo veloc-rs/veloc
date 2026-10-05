@@ -31,7 +31,7 @@ pub use intrinsic::{Intrinsic, ids as intrinsic_ids};
 pub use module::{DataRelocation, Global, GlobalData, Linkage, Module};
 pub use text::{ModuleParser, ParseError};
 pub use types::{
-    Block, CallConv, CallableKind, ConstId, FuncId, GlobalId, ModuleId, ScalarType, SigId,
-    Signature, SuccessorData, Type, TypeBits, TypeInfo, TypeSize, Value, ValueDef, ValueList,
-    Variable, VectorType,
+    Block, CallConv, CallableKind, ConstId, FuncId, GlobalId, ModuleId, ParamIndex, ScalarType,
+    SigId, Signature, SuccessorData, Type, TypeBits, TypeInfo, TypeSize, Value, ValueDef,
+    ValueList, Variable, VectorType,
 };

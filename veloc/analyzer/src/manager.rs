@@ -1,6 +1,5 @@
 use crate::Dominators;
 use crate::liveness::{Liveness, analyze_liveness};
-use core::any::TypeId;
 use veloc_mir::FuncBody;
 
 /// Analyses belong to one borrowed function. Exclusive mutation conservatively
@@ -74,15 +73,6 @@ impl<'f> AnalysisManager<'f> {
     pub fn take_dominators(&mut self) -> Dominators {
         self.dominators();
         self.dominators.take().unwrap()
-    }
-
-    pub fn invalidate_with_preserved(&mut self, checker: impl Fn(TypeId) -> bool) {
-        if !checker(TypeId::of::<Dominators>()) {
-            self.dominators = None;
-        }
-        if !checker(TypeId::of::<Liveness>()) {
-            self.liveness = None;
-        }
     }
 
     pub fn invalidate(&mut self) {

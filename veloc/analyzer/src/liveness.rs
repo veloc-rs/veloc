@@ -97,6 +97,11 @@ pub fn analyze_liveness(func: &FuncBody) -> Liveness {
 
     let mut inst_pc = 0u32;
 
+    // Caller inputs are available before the first instruction in the function.
+    for &param in func.params() {
+        def_block[param] = Some(entry);
+    }
+
     // 1. Pass: Assign PC and collect Defs/Uses
     for &block in &rpo {
         block_starts[block] = inst_pc;

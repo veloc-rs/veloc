@@ -18,7 +18,7 @@ pub fn format_module(module: &veloc_mir::Module) -> crate::Result<alloc::string:
     for (id, function) in module.functions() {
         if let Some(body) = function.body {
             stack_layout(body).map_err(crate::Error::Message)?;
-            let compiled = compile_function(veloc_mir::ModuleId::from_u32(0), id, body);
+            let compiled = compile_function(veloc_mir::ModuleId::from_u32(0), id, body)?;
             writeln!(output, "; function {id:?}\n{compiled}").expect("writing to String");
         }
     }

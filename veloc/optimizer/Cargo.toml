@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 
 [dependencies]
 veloc-profile.workspace = true
+veloc-policy.workspace = true
 veloc-bytecode = { workspace = true }
 veloc-types = { workspace = true }
 veloc-mir = { workspace = true, features = ["std"] }

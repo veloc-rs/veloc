@@ -2,7 +2,7 @@
 //! Entry loads needed by the continuation are passed to the outlined function.
 //! Pure computations are retained there, avoiding work on the early-return path
 //! without repeating memory accesses.
-use crate::{ModulePass, OptConfig, PreservedAnalyses, Profile};
+use crate::{ModulePass, OptConfig, PassOutcome, Profile};
 use std::collections::{HashMap, HashSet};
 use veloc_mir::{
     Block, FuncBody, FuncId, Inst, InstView, Linkage, Module, Opcode, Signature, SuccessorData,
@@ -22,7 +22,7 @@ impl ModulePass for PartialInlinePass {
     fn name(&self) -> &'static str {
         "PartialInlinePass"
     }
-    fn run(&self, module: &mut Module, _: &OptConfig, metrics: &Profile) -> PreservedAnalyses {
+    fn run(&self, module: &mut Module, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         // New outlined functions are deliberately outside this worklist.
         let callers: Vec<_> = module.functions().map(|(id, _)| id).collect();
         let mut wrappers = HashMap::<FuncId, Option<FuncBody>>::new();
@@ -64,9 +64,9 @@ impl ModulePass for PartialInlinePass {
         }
         metrics.count("partial_inline.calls", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }
@@ -151,7 +151,7 @@ fn shape(f: &FuncBody) -> Option<Shape> {
         }
     }
     captures.reverse();
-    if f.dfg().block_params(entry).len() + captures.len() > 8 {
+    if f.params().len() + captures.len() > 8 {
         return None;
     }
     Some(Shape {
@@ -174,11 +174,10 @@ fn make_wrapper(module: &mut Module, callee: FuncId) -> Option<FuncBody> {
     let mut params = signature.params().to_vec();
     params.extend(shape.captures.iter().map(|&v| source.dfg().value_type(v)));
     let signature = Signature::new(params, signature.returns().to_vec(), signature.call_conv);
-    let entry = outlined.entry_block();
     let mut replacements = HashMap::new();
     for &value in &shape.captures {
         let ty = outlined.dfg().value_type(value);
-        let param = outlined.edit().append_block_param(entry, ty);
+        let param = outlined.edit().append_function_param(ty);
         outlined.edit().replace_all_uses(value, param);
         replacements.insert(value, param);
     }
@@ -211,7 +210,7 @@ fn make_wrapper(module: &mut Module, callee: FuncId) -> Option<FuncBody> {
     // forwards the exact entry values to the outlined continuation.
     let insts: Vec<_> = wrapper.layout().block_insts(shape.cold.block).collect();
     let (&last, old_body) = insts.split_last().unwrap();
-    let mut args = wrapper.dfg().block_params(wrapper.entry_block()).to_vec();
+    let mut args = wrapper.params().to_vec();
     args.extend_from_slice(&shape.captures);
     let returns = module.signatures()[sig].returns().to_vec();
     let call = wrapper

@@ -34,8 +34,8 @@ block0():
 // run: roundtrip
 // check: iadd i64(7), v
 // check: return
-local function names(i64) -> i64
-block0(v0: i64):
+local function names(v0: i64) -> i64
+block0():
   jump block2()
 block1():
   v2: i64 = iadd i64(7), v1

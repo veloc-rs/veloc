@@ -47,7 +47,7 @@ impl Structure {
         // Definitions in later layout blocks may be referenced by earlier ones.
         // Resolve operand handles only after collecting every definition.
         checker.check_operands()?;
-        checker.check_entry_params()?;
+        checker.check_function_params()?;
         Ok(checker.structure)
     }
 
@@ -74,8 +74,8 @@ impl Structure {
                 for &value in body.dfg().operands(inst) {
                     let definition = body.dfg().value_def(value);
                     let (owner, source) = match definition {
-                        ValueDef::Const(_) => continue,
-                        ValueDef::Param(owner) => (owner, None),
+                        ValueDef::FunctionParam(_) | ValueDef::Const(_) => continue,
+                        ValueDef::BlockParam(owner) => (owner, None),
                         ValueDef::Inst(source) => {
                             (body.layout().inst_block(source).unwrap(), Some(source))
                         }
@@ -122,11 +122,14 @@ impl Checker<'_> {
             if !self.blocks.get(entry.0 as usize).copied().unwrap_or(false) {
                 return func.fail("entry block is not in layout".into());
             }
-            let params = &body.dfg().blocks[entry].params;
+            if !body.dfg().block_params(entry).is_empty() {
+                return func.fail("entry block must have no block parameters".into());
+            }
+            let params = body.params();
             // Types are checked later, once all parameter handles are valid.
             if params.len() != signature.params().len() {
                 return func.fail(format!(
-                    "entry parameter count mismatch: expected {}, got {}",
+                    "function parameter count mismatch: expected {}, got {}",
                     signature.params().len(),
                     params.len()
                 ));
@@ -142,6 +145,12 @@ impl Checker<'_> {
         let func = self.func;
         let body = func.body.expect("defined function");
         let dfg = &body.dfg();
+        for (index, &param) in body.params().iter().enumerate() {
+            self.define(
+                param,
+                ValueDef::FunctionParam(crate::ParamIndex(index as u32)),
+            )?;
+        }
         for (value, data) in dfg.values() {
             if let ValueDef::Const(_) = data.def {
                 self.define(value, data.def)?;
@@ -173,7 +182,7 @@ impl Checker<'_> {
         for block in body.layout().block_order() {
             let data = &body.dfg().blocks[block];
             for &param in &data.params {
-                self.define(param, ValueDef::Param(block))?;
+                self.define(param, ValueDef::BlockParam(block))?;
             }
             let Some(last) = body.layout().last_inst(block) else {
                 return Err(ValidationError::EmptyBlock(block).into());
@@ -273,21 +282,14 @@ impl Checker<'_> {
         Ok(())
     }
 
-    fn check_entry_params(&self) -> Result<()> {
+    fn check_function_params(&self) -> Result<()> {
         let func = self.func;
         let body = func.body.expect("defined function");
-        let Some(entry) = func.entry_block() else {
-            return Ok(());
-        };
         let signature = &self.module.signatures()[func.decl.signature];
-        for (&param, &expected) in body.dfg().blocks[entry]
-            .params
-            .iter()
-            .zip(signature.params())
-        {
+        for (&param, &expected) in body.params().iter().zip(signature.params()) {
             if body.dfg().value_type(param) != expected {
                 return func.fail(format!(
-                    "entry parameter {param} type mismatch: expected {expected}, got {}",
+                    "function parameter {param} type mismatch: expected {expected}, got {}",
                     body.dfg().value_type(param)
                 ));
             }

@@ -95,8 +95,8 @@ fn callable_signature_diagnostics_identify_cycles_and_unknown_references() {
 fn example() -> veloc_mir::Module {
     let module = ModuleParser::new()
         .parse(
-            "local function choose(bool, i32, i32) -> i32\n\
-         block0(v0: bool, v1: i32, v2: i32):\n\
+            "local function choose(v0: bool, v1: i32, v2: i32) -> i32\n\
+         block0():\n\
            br v0, block1(v1), block1(v2)\n\
          block1(v3: i32):\n\
            return v3\n\

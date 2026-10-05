@@ -37,6 +37,7 @@ impl<'a> FunctionPipeline<'a> {
                 pre_isel.push(Box::new(crate::passes::cse::CommonValues));
                 post_isel.push(Box::new(crate::passes::schedule::SchedulePass::new(
                     options.verify,
+                    options.policy.clone(),
                 )));
                 post_regalloc.push(Box::new(crate::passes::block_placement::BlockPlacementPass));
             }

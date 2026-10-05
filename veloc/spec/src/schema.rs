@@ -197,6 +197,9 @@ pub struct Operation {
     pub type_parameters: Vec<TypeSet>,
     pub name: String,
     pub signature: Result<Signature, String>,
+    /// Fixed value signature, with logical attributes kept in `declaration`.
+    /// Unlike `attributed`, this does not require an operand-storage codec.
+    pub expression: Option<Signature>,
     /// Pure value operation with one signed integer attribute and no value inputs.
     pub integer_literal: Option<Signature>,
     pub attributed: Option<Signature>,
@@ -264,6 +267,33 @@ impl Definitions {
                 })
             };
             let signature = value_signature(false);
+            let expression = op.params.iter().all(|p| match &p.kind {
+                ParamKind::Value => true,
+                ParamKind::Property(ty) => !self
+                    .storage
+                    .records
+                    .iter()
+                    .filter(|r| &r.name == ty)
+                    .any(|r| r.fields.iter().any(|f| !f.policy.references.is_data())),
+                _ => false,
+            }) && match &op.projection {
+                crate::model::Projection::Packed(_) => self
+                    .storage
+                    .formats
+                    .iter()
+                    .find(|f| f.name == op.format)
+                    .is_some_and(|f| {
+                        f.arity
+                            == Some(
+                                op.params
+                                    .iter()
+                                    .filter(|p| p.kind == ParamKind::Value)
+                                    .count(),
+                            )
+                    }),
+                crate::model::Projection::Operands(_) => true,
+            };
+            let expression = expression.then(|| value_signature(true).ok()).flatten();
             let integer_literal = match op.declaration.params.as_slice() {
                 [param] if matches!(&param.ty.kind, crate::syntax::Kind::Name(n) if n == "i64") => {
                     value_signature(true).ok()
@@ -341,6 +371,7 @@ impl Definitions {
                     .collect(),
                 name: op.name.clone(),
                 signature,
+                expression,
                 integer_literal,
                 attributed,
                 attributes,

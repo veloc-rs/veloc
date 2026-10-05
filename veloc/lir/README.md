@@ -63,9 +63,9 @@ Virtual registers remain in SSA through selection and scheduling. Block
 parameters and branch arguments survive until allocation; edge moves are
 planned over physical locations and materialized in dedicated edge blocks.
 Parallel copies handle register/stack moves and cycles, sharing cycle-save
-slots of the same layout. An original entry block with backedges gets a separate
-ABI entry predecessor, so function inputs and loop parameters have distinct
-definitions.
+slots of the same layout. MIR function inputs are separate from block parameters;
+translation binds them to LIR entry parameters for ABI lowering. MIR prohibits
+edges into its entry block, so loop parameters always have distinct definitions.
 
 ISLE rules declare fresh local values with `(temp $bit $dst)`, inheriting an
 exemplar's type and bank. ABI calls define physical result registers; only the

@@ -21,12 +21,20 @@ pub(crate) struct FinalInstDef {
     clobbers: Vec<String>,
     schedule_class: Option<String>,
     movable: bool,
-    memory: Option<(String, u32)>,
+    memory: Option<MemoryAccess>,
     flow: String,
     encoding: Option<String>,
     is_pseudo: bool,
     assembly: Option<assembly::Assembly>,
     requires: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct MemoryAccess {
+    kind: String,
+    bytes: u32,
+    /// Register input position and immediate attribute position.
+    address: Option<(usize, usize)>,
 }
 
 fn collect_extractors(

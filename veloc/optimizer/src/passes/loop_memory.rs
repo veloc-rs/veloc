@@ -1,11 +1,8 @@
 //! Carry a stored value around a simple loop instead of loading it again.
 //! Stores remain at their original positions: potentially aliasing reads still
 //! observe every write. No type-based alias assumption is required.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
-use veloc_analyzer::{
-    AnalysisManager,
-    graph::{DominatorTree, LoopInfo},
-};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
+use veloc_analyzer::{AnalysisManager, graph::LoopInfo};
 use veloc_mir::{InstView, ValueDef, function::EdgeRef};
 
 pub struct LoopMemoryPass;
@@ -13,14 +10,9 @@ impl FunctionPass for LoopMemoryPass {
     fn name(&self) -> &'static str {
         "LoopMemoryPass"
     }
-    fn run(
-        &self,
-        am: &mut AnalysisManager<'_>,
-        _: &OptConfig,
-        metrics: &Profile,
-    ) -> PreservedAnalyses {
+    fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
+        let dom = am.take_dominators();
         let f = am.function_mut();
-        let dom = DominatorTree::compute(f.cfg(), f.entry_block());
         let loops = LoopInfo::compute(f.cfg(), &dom);
         let mut changed = 0;
         for &(latch, header) in loops.backedges() {
@@ -63,11 +55,14 @@ impl FunctionPass for LoopMemoryPass {
             if flags.is_volatile() {
                 continue;
             }
+            let Some(address) = f.address(ptr, i64::from(offset)) else {
+                continue;
+            };
             let ty = f.dfg().value_type(value);
             let owner = match f.dfg().value_def(ptr) {
                 ValueDef::Inst(i) => f.layout().inst_block(i),
-                ValueDef::Param(b) => Some(b),
-                ValueDef::Const(_) => None,
+                ValueDef::BlockParam(b) => Some(b),
+                ValueDef::FunctionParam(_) | ValueDef::Const(_) => None,
             };
             if owner.is_some_and(|b| !dom.dominates(b, entry)) {
                 continue;
@@ -87,15 +82,16 @@ impl FunctionPass for LoopMemoryPass {
                         value: v,
                         ..
                     } => {
-                        if p != ptr || o != offset || f.dfg().value_type(v) != ty {
+                        if f.address(p, i64::from(o)) != Some(address)
+                            || f.dfg().value_type(v) != ty
+                        {
                             safe = false;
                             break;
                         }
                     }
                     InstView::Load {
                         ptr: p, offset: o, ..
-                    } if p == ptr
-                        && o == offset
+                    } if f.address(p, i64::from(o)) == Some(address)
                         && f.dfg().value_type(f.dfg().first_result(inst).unwrap()) == ty =>
                     {
                         loads += 1
@@ -120,8 +116,7 @@ impl FunctionPass for LoopMemoryPass {
                     value: v,
                     flags,
                 } = view
-                    && p == ptr
-                    && o == offset
+                    && f.address(p, i64::from(o)) == Some(address)
                     && f.dfg().value_type(v) == ty
                     && !flags.is_volatile()
                 {
@@ -145,8 +140,7 @@ impl FunctionPass for LoopMemoryPass {
                     InstView::Store { value, .. } => current = value,
                     InstView::Load {
                         ptr: p, offset: o, ..
-                    } if p == ptr
-                        && o == offset
+                    } if f.address(p, i64::from(o)) == Some(address)
                         && f.dfg().value_type(f.dfg().first_result(inst).unwrap()) == ty =>
                     {
                         f.edit().replace_results(inst, &[current]);
@@ -175,9 +169,9 @@ impl FunctionPass for LoopMemoryPass {
         }
         metrics.count("loop_memory.forwarded", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }

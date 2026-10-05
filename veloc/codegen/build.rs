@@ -91,16 +91,8 @@ fn main() {
     for arch in ["x86_64", "riscv64"] {
         generator.legalizer(arch, &lir);
     }
-    generator.machine(
-        "x86_64",
-        &lir,
-        "crate::target::x86_64::emitter::host",
-    );
-    generator.machine(
-        "riscv64",
-        &lir,
-        "crate::target::riscv64::emitter::host",
-    );
+    generator.machine("x86_64", &lir, "crate::target::x86_64::emitter::host");
+    generator.machine("riscv64", &lir, "crate::target::riscv64::emitter::host");
     veloc_spec::format_rust(&generator.files, Path::new("../../rustfmt.toml"))
         .expect("format codegen artifacts");
 }

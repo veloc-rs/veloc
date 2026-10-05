@@ -5,7 +5,28 @@ use veloc_types::DataLayout;
 
 pub use crate::inst::MemoryAccess as Access;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Address {
+    pub base: Value,
+    pub offset: i64,
+}
+pub type Location = veloc_types::MemoryLocation<Value>;
+
 impl Access {
+    pub fn canonical(mut self, function: &FuncBody) -> Option<Self> {
+        let address = function.address(self.ptr, self.offset)?;
+        self.ptr = address.base;
+        self.offset = address.offset;
+        Some(self)
+    }
+    pub fn location(self, function: &FuncBody, layout: &DataLayout) -> Option<Location> {
+        let address = function.address(self.ptr, self.offset)?;
+        Some(Location {
+            base: address.base,
+            offset: address.offset,
+            bytes: self.bytes(layout)?,
+        })
+    }
     /// Access width follows the supplied representation, never the host layout.
     /// Scalable or unlisted representations have no known fixed access width.
     pub fn bytes(self, layout: &DataLayout) -> Option<u32> {
@@ -14,29 +35,45 @@ impl Access {
 }
 
 impl FuncBody {
-    /// Resolve a bounded chain of constant byte offsets to a once-per-invocation
-    /// allocation. Unknown provenance and dynamic allocations stay unknown.
-    pub fn stack_address(&self, mut ptr: Value) -> Option<(Inst, i64)> {
-        let mut offset = 0i64;
+    /// Normalize constant byte offsets without claiming allocation provenance.
+    pub fn address(&self, mut ptr: Value, mut offset: i64) -> Option<Address> {
         for _ in 0..64 {
-            let inst = self.dfg().value_inst(ptr)?;
-            match self.dfg().inst(inst) {
-                crate::InstView::Alloca { .. }
-                    if self.layout().inst_block(inst) == Some(self.entry_block()) =>
-                {
-                    return Some((inst, offset));
-                }
-                crate::InstView::PtrOffset {
+            match self.dfg().value_inst(ptr).map(|i| self.dfg().inst(i)) {
+                Some(crate::InstView::PtrOffset {
                     ptr: base,
                     offset: delta,
-                } => {
+                }) => {
                     ptr = base;
                     offset = offset.checked_add(i64::from(delta))?;
                 }
-                _ => return None,
+                _ => return Some(Address { base: ptr, offset }),
             }
         }
         None
+    }
+
+    pub fn may_alias(&self, a: Location, b: Location, layout: &DataLayout) -> bool {
+        if a.base == b.base {
+            return a.may_overlap(&b, u32::from(layout.pointer_size) * 8);
+        }
+        let object = |location: Location| {
+            let (inst, base_offset) = self.stack_address(location.base)?;
+            let crate::InstView::Alloca { size, .. } = self.dfg().inst(inst) else {
+                unreachable!()
+            };
+            let start = u32::try_from(base_offset.checked_add(location.offset)?).ok()?;
+            (location.bytes != 0 && start.checked_add(location.bytes)? <= size).then_some(inst)
+        };
+        !matches!((object(a), object(b)), (Some(a), Some(b)) if a != b)
+    }
+    /// Resolve a bounded chain of constant byte offsets to a once-per-invocation
+    /// allocation. Unknown provenance and dynamic allocations stay unknown.
+    pub fn stack_address(&self, ptr: Value) -> Option<(Inst, i64)> {
+        let address = self.address(ptr, 0)?;
+        let inst = self.dfg().value_inst(address.base)?;
+        (matches!(self.dfg().inst(inst), crate::InstView::Alloca { .. })
+            && self.layout().inst_block(inst) == Some(self.entry_block()))
+        .then_some((inst, address.offset))
     }
 
     /// A complete, aligned access inside a known live entry object.

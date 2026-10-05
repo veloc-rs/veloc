@@ -19,8 +19,8 @@ block0():
   call mutate(p) : (ptr) -> void
   y: i32 = load p, offset=0
   return y
-local function mutate(ptr) -> void
-block0(p: ptr):
+local function mutate(p: ptr) -> void
+block0():
   store i32(42), p, offset=0
   return
 

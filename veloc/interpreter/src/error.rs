@@ -1,12 +1,26 @@
 use crate::host::HostFuncId;
 use alloc::string::String;
-use veloc_mir::{FuncId, ModuleId};
+use alloc::vec::Vec;
+use veloc_mir::{FuncId, Inst, ModuleId, Opcode, Type, Value};
 
 pub type Result<T> = core::result::Result<T, Error>;
 
 /// 解释器执行错误
 #[derive(Debug, Clone)]
 pub enum Error {
+    UnsupportedValueType {
+        module: ModuleId,
+        func: FuncId,
+        value: Value,
+        ty: Type,
+    },
+    UnsupportedInstruction {
+        module: ModuleId,
+        func: FuncId,
+        inst: Inst,
+        opcode: Opcode,
+        types: Vec<Type>,
+    },
     /// 内存访问越界
     OutOfBounds,
     /// 执行了 unreachable 指令
@@ -47,6 +61,25 @@ pub enum Error {
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::UnsupportedValueType {
+                module,
+                func,
+                value,
+                ty,
+            } => write!(
+                f,
+                "interpreter does not support {ty} for {value:?} in {module:?}/{func:?}"
+            ),
+            Self::UnsupportedInstruction {
+                module,
+                func,
+                inst,
+                opcode,
+                types,
+            } => write!(
+                f,
+                "interpreter does not support {opcode:?} with types {types:?} at {module:?}/{func:?}/{inst:?}"
+            ),
             Self::OutOfBounds => f.write_str("memory access out of bounds"),
             Self::Unreachable => f.write_str("unreachable instruction executed"),
             Self::StackOverflow => f.write_str("interpreter stack overflow"),

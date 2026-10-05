@@ -1,5 +1,5 @@
-local function extra(i64) -> i64
-block0(v0: i64):
+local function extra(v0: i64) -> i64
+block0():
   return v0
 
 import function make() -> owned<(i32) -> i32>

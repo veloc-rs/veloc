@@ -3,11 +3,11 @@
 //! Slot zero holds the root throughout a group. `OpenScan` identifies a scan
 //! independently of byte offsets and references a static table of bindings. `ScanNext`
 //! yields one binding satisfying its input constraint, or exits on exhaustion.
-//! Query and rewrite entries both end with `Return`. The host batches queries
-//! against a stable graph, then restores captures into slots starting at one
-//! before calling each rewrite entry.
-//! Capture records a rule ID, so zero-input
-//! matches remain distinguishable. Phase scheduling is not part of the VM.
+//! Queries end with `Return`. `Capture` carries a rule ID and the inline slots
+//! required by its checked construction plan: `values` are class bindings and
+//! `nodes` retain concrete instruction witnesses for attribute matching.
+//! The host saves those bindings and
+//! applies the shared plan after enumeration; this VM performs no IR mutation.
 //! Incremental inputs select query entries compiled for all relevant rules;
 //! only Capture names a rule. Checks branch on `otherwise`, while iterators
 //! leave their loop on `exhausted`.
@@ -23,12 +23,9 @@ crate::bytecode! {
         CheckIsConstant { value: u32, otherwise: u32 },
         CheckConstantEq { value: u32, constant: u32, otherwise: u32 },
         CheckConstantNe { value: u32, constant: u32, otherwise: u32 },
-        Capture { rule: u32 },
+        CheckProperties { lhs: u32, rhs: u32, predicate: u32, otherwise: u32 },
+        Capture { rule: u32, values: [u32], nodes: [u32] },
         Jump { target: u32 },
-        Constant { dst: u32, constant: u32 },
-        Build { dst: u32, opcode: u32, args: [u32] },
-        Union { value: u32 },
-        SetConstant { constant: u32 },
         Return {},
     }
 }

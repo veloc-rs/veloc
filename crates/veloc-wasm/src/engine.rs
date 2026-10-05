@@ -89,7 +89,8 @@ pub struct Engine {
 }
 
 struct EngineInner {
-    backend: Backend,
+    backend: Option<Backend>,
+    guarded_memory: bool,
     config: Config,
 }
 
@@ -98,7 +99,10 @@ impl Engine {
         Self::with_config(Config::default())
     }
 
-    pub fn with_config(config: Config) -> Result<Self> {
+    pub fn with_config(mut config: Config) -> Result<Self> {
+        if config.strategy == Strategy::Auto {
+            config.strategy = Strategy::Jit;
+        }
         if config.strategy == Strategy::FastJit
             && (config.target != veloc::codegen::TargetArch::X86_64
                 || config.cpu != "generic"
@@ -121,15 +125,30 @@ impl Engine {
                 "optimizer debug tags require optimization level 1".into(),
             ));
         }
-        Ok(Self {
-            inner: Arc::new(EngineInner {
-                backend: Backend::with_target_config(veloc::codegen::TargetConfig {
+        let guarded_memory = match config.memory_checks {
+            MemoryChecks::Auto => {
+                config.strategy != Strategy::Interpreter && crate::trap::native::SUPPORTED
+            }
+            MemoryChecks::Software => false,
+            MemoryChecks::Guarded => true,
+        };
+        let backend = if config.strategy == Strategy::Interpreter {
+            None
+        } else {
+            Some(
+                Backend::with_target_config(veloc::codegen::TargetConfig {
                     cpu: config.cpu.clone(),
                     features: config.cpu_features.clone(),
                     arch: config.target,
                     ..Default::default()
                 })
                 .map_err(|error| Error::Compile(error.to_string()))?,
+            )
+        };
+        Ok(Self {
+            inner: Arc::new(EngineInner {
+                backend,
+                guarded_memory,
                 config,
             }),
         })
@@ -144,16 +163,64 @@ impl Engine {
     }
 
     pub(crate) fn uses_guarded_memory(&self) -> bool {
-        match self.config().memory_checks {
-            MemoryChecks::Auto => {
-                self.strategy() != Strategy::Interpreter && crate::trap::native::SUPPORTED
+        self.inner.guarded_memory
+    }
+
+    /// Execution requirements are checked before translation. Emitting an
+    /// object is allowed to use a different target from the current host.
+    pub(crate) fn validate_execution(&self) -> Result<()> {
+        let interpreter = self.strategy() == Strategy::Interpreter;
+        if !interpreter {
+            let host = if cfg!(target_arch = "x86_64") {
+                Some(veloc::codegen::TargetArch::X86_64)
+            } else if cfg!(target_arch = "riscv64") {
+                Some(veloc::codegen::TargetArch::Riscv64)
+            } else {
+                None
+            };
+            if host != Some(self.config().target) {
+                return Err(Error::Unsupported("native execution requires the host target; use Module::emit for cross compilation".into()));
             }
-            MemoryChecks::Software => false,
-            MemoryChecks::Guarded => true,
+            if self.strategy() == Strategy::FastJit
+                && !cfg!(all(target_arch = "x86_64", target_os = "linux"))
+            {
+                return Err(Error::Unsupported(
+                    "fast-jit requires an x86_64 Linux host".into(),
+                ));
+            }
         }
+        if self.uses_guarded_memory() {
+            let supported = if interpreter {
+                cfg!(all(
+                    target_arch = "x86_64",
+                    target_os = "linux",
+                    target_env = "gnu"
+                ))
+            } else {
+                crate::trap::native::SUPPORTED
+            };
+            if !supported {
+                return Err(Error::Unsupported(
+                    "guarded memory is unavailable for this execution backend and host".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn data_layout(&self) -> veloc_types::DataLayout {
+        self.inner
+            .backend
+            .as_ref()
+            .map_or(veloc::interpreter::DATA_LAYOUT, |b| {
+                b.target().desc().data_layout
+            })
     }
 
     pub(crate) fn backend(&self) -> &Backend {
-        &self.inner.backend
+        self.inner
+            .backend
+            .as_ref()
+            .expect("native compilation backend")
     }
 }

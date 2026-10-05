@@ -267,7 +267,29 @@ impl<'a> FuncPrinter<'a> {
         let printer = TypePrinter {
             module: Some(self.module),
         };
-        printer.fmt_signature(f, sig)
+        let Some(body) = self.func.body else {
+            return printer.fmt_signature(f, sig);
+        };
+        f.write_char('(')?;
+        let inst_printer = InstPrinter::new(body.dfg(), Some(self.module));
+        for (index, &param) in body.params().iter().enumerate() {
+            if index != 0 {
+                f.write_str(", ")?;
+            }
+            inst_printer.fmt_definition(f, param)?;
+        }
+        if sig.variadic {
+            if !body.params().is_empty() {
+                f.write_str(", ")?;
+            }
+            f.write_str("...")?;
+        }
+        f.write_str(") -> ")?;
+        printer.fmt_ret_types(f, sig.returns())?;
+        if sig.call_conv != crate::CallConv::Platform {
+            write!(f, " cc={}", sig.call_conv)?;
+        }
+        Ok(())
     }
 
     fn fmt_block(&self, f: &mut dyn Write, body: &crate::FuncBody, block: crate::Block) -> Result {

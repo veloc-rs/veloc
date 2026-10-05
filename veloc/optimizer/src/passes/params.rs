@@ -1,14 +1,13 @@
-//! Propagate identical incoming SSA values through cycles of block parameters.
-//! Each strongly connected component is resolved against its external inputs.
-//! A varying parameter remains an opaque SSA value for downstream components.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+//! Eliminate redundant block parameters through their incoming dependencies.
+//! A component with one external input aliases that value. Components with
+//! multiple external inputs are searched for redundant inner components.
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use cranelift_entity::SecondaryMap;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{FuncBody, Value};
 
 struct Parameters {
     values: Vec<Value>,
-    is_param: SecondaryMap<Value, bool>,
     incoming: SecondaryMap<Value, Vec<Value>>,
 }
 
@@ -16,16 +15,10 @@ impl Parameters {
     fn new(f: &FuncBody) -> Self {
         let mut graph = Self {
             values: Vec::new(),
-            is_param: SecondaryMap::new(),
             incoming: SecondaryMap::new(),
         };
-        for block in f.layout().block_order().filter(|&b| b != f.entry_block()) {
-            for &param in f.dfg().block_params(block) {
-                graph.values.push(param);
-                graph.is_param[param] = true;
-            }
-        }
         for block in f.layout().block_order() {
+            graph.values.extend_from_slice(f.dfg().block_params(block));
             let Some(terminator) = f.layout().last_inst(block) else {
                 continue;
             };
@@ -41,208 +34,245 @@ impl Parameters {
 
 pub struct SimplifyParamsPass;
 impl FunctionPass for SimplifyParamsPass {
+    fn reuse_key(&self) -> Option<core::any::TypeId> {
+        Some(core::any::TypeId::of::<Self>())
+    }
     fn name(&self) -> &'static str {
         "SimplifyParamsPass"
     }
-    fn run(
-        &self,
-        am: &mut AnalysisManager<'_>,
-        _: &OptConfig,
-        metrics: &Profile,
-    ) -> PreservedAnalyses {
+    fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         let f = am.function_mut();
-        let mut changed = forward_trivial(f);
         let graph = Parameters::new(f);
-        let mut components = Components::new(&graph);
-        for &param in &graph.values {
-            if components.index[param].is_none() {
-                components.visit(param);
-            }
-        }
-        let mut aliases = SecondaryMap::<Value, Option<Value>>::new();
-        for members in components.result {
-            let mut outside = None;
-            let mut different = false;
-            let mut inside = SecondaryMap::<Value, bool>::new();
-            for &member in &members {
-                inside[member] = true;
-            }
-            for &member in &members {
-                for &arg in &graph.incoming[member] {
-                    if inside[arg] {
-                        continue;
-                    }
-                    let arg = aliases[arg].unwrap_or(arg);
-                    if outside.is_some_and(|value| value != arg) {
-                        different = true;
-                    }
-                    outside = Some(arg);
-                }
-            }
-            if !different && let Some(value) = outside {
-                for member in members {
-                    aliases[member] = Some(value);
-                }
-            }
-        }
-        for &param in &graph.values {
-            if let Some(value) = aliases[param] {
-                f.edit().replace_all_uses(param, value);
-                changed += 1;
-            }
-        }
-        // Every forwarded parameter now has no uses. Remove its position and
-        // incoming arguments; general dead-parameter elimination belongs to DCE.
-        if changed != 0 {
-            let blocks: Vec<_> = f
-                .layout()
-                .block_order()
-                .filter(|&block| block != f.entry_block())
-                .collect();
-            for block in blocks {
-                let keep: Vec<_> = f
-                    .dfg()
-                    .block_params(block)
-                    .iter()
-                    .map(|&param| aliases[param].is_none())
-                    .collect();
-                if keep.contains(&false) {
-                    f.edit().retain_block_params(block, &keep);
-                }
-            }
-        }
+        let mut replacements = Solver::new(&graph).solve();
+        let changed = replacements.apply(f, &graph.values);
         metrics.count("params.forwarded", changed);
         metrics.count("params.removed", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }
 
-// A varying loop SCC can contain forwarding parameters alongside induction
-// parameters. Peel those identities first; rejecting the whole SCC would keep
-// copies around every branch and obscure the actual data dependencies.
-fn forward_trivial(f: &mut FuncBody) -> u64 {
-    use std::collections::VecDeque;
-    let graph = Parameters::new(f);
-    let mut users = SecondaryMap::<Value, Vec<Value>>::new();
-    let mut aliases = SecondaryMap::<Value, Option<Value>>::new();
-    let mut last_root = SecondaryMap::<Value, Option<Value>>::new();
-    for &param in &graph.values {
-        last_root[param] = Some(param);
-        for &arg in &graph.incoming[param] {
-            users[arg].push(param);
-        }
-    }
-    fn root(mut value: Value, aliases: &SecondaryMap<Value, Option<Value>>) -> Value {
-        while let Some(next) = aliases[value] {
+/// Directed replacements into proven external SSA values.
+#[derive(Default)]
+struct Replacements {
+    aliases: SecondaryMap<Value, Option<Value>>,
+}
+
+impl Replacements {
+    fn resolve(&mut self, mut value: Value) -> Value {
+        while let Some(next) = self.aliases[value] {
+            // Shorten chains without changing which SSA value represents them.
+            self.aliases[value] = Some(self.aliases[next].unwrap_or(next));
             value = next;
         }
         value
     }
-    let mut work: VecDeque<_> = graph.values.iter().copied().collect();
-    while let Some(param) = work.pop_front() {
-        if aliases[param].is_none() {
-            let mut inputs = graph.incoming[param]
-                .iter()
-                .map(|&v| root(v, &aliases))
-                .filter(|&v| v != param);
-            if let Some(value) = inputs.next()
-                && inputs.all(|v| v == value)
-            {
-                aliases[param] = Some(value);
+
+    fn apply(&mut self, f: &mut FuncBody, params: &[Value]) -> u64 {
+        let mut changed = 0;
+        for &param in params {
+            let value = self.resolve(param);
+            if value != param {
+                f.edit().replace_all_uses(param, value);
+                changed += 1;
             }
         }
-        let value = root(param, &aliases);
-        if last_root[param] != Some(value) {
-            last_root[param] = Some(value);
-            work.extend(users[param].iter().copied());
+        if changed == 0 {
+            return 0;
         }
-    }
-    let mut changed = 0;
-    for &param in &graph.values {
-        let value = root(param, &aliases);
-        if value != param {
-            f.edit().replace_all_uses(param, value);
-            changed += 1;
-        }
-    }
-    if changed != 0 {
-        let blocks: Vec<_> = f
-            .layout()
-            .block_order()
-            .filter(|&b| b != f.entry_block())
-            .collect();
+        // All uses are replaced before any parameter positions are removed.
+        // General dead-parameter elimination remains the responsibility of DCE.
+        let blocks: Vec<_> = f.layout().block_order().collect();
         for block in blocks {
             let keep: Vec<_> = f
                 .dfg()
                 .block_params(block)
                 .iter()
-                .map(|&p| aliases[p].is_none())
+                .map(|&p| self.aliases[p].is_none())
                 .collect();
             if keep.contains(&false) {
                 f.edit().retain_block_params(block, &keep);
             }
         }
+        changed
     }
-    changed
 }
 
-/// Tarjan visits incoming dependencies, so components are emitted before their
-/// users. Only parameters participate; instruction results and entry arguments
-/// are already stable identities, regardless of whether their runtime value varies.
-struct Components<'a> {
+struct Solver<'a> {
     graph: &'a Parameters,
-    index: SecondaryMap<Value, Option<usize>>,
-    low: SecondaryMap<Value, usize>,
-    active: SecondaryMap<Value, bool>,
-    stack: Vec<Value>,
-    next: usize,
-    result: Vec<Vec<Value>>,
+    replacements: Replacements,
+    components: Components,
+    inside: SecondaryMap<Value, bool>,
 }
-impl<'a> Components<'a> {
+
+impl<'a> Solver<'a> {
     fn new(graph: &'a Parameters) -> Self {
         Self {
             graph,
-            index: SecondaryMap::new(),
-            low: SecondaryMap::new(),
-            active: SecondaryMap::new(),
-            stack: vec![],
-            next: 0,
-            result: vec![],
+            replacements: Replacements::default(),
+            components: Components::default(),
+            inside: SecondaryMap::new(),
         }
     }
-    fn visit(&mut self, value: Value) {
-        let index = self.next;
-        self.next += 1;
-        self.index[value] = Some(index);
-        self.low[value] = index;
-        self.stack.push(value);
-        self.active[value] = true;
-        for &arg in &self.graph.incoming[value] {
-            if !self.graph.is_param[arg] {
-                continue;
-            }
-            if self.index[arg].is_none() {
-                self.visit(arg);
-                self.low[value] = self.low[value].min(self.low[arg]);
-            } else if self.active[arg] {
-                self.low[value] = self.low[value].min(self.index[arg].unwrap());
+
+    fn solve(mut self) -> Replacements {
+        let mut pending =
+            self.components
+                .compute(self.graph, &self.graph.values, &mut self.replacements);
+        pending.reverse();
+        while let Some(members) = pending.pop() {
+            let inner = self.simplify(&members);
+            if !inner.is_empty() {
+                // Finish dependencies inside this component before its users.
+                let components =
+                    self.components
+                        .compute(self.graph, &inner, &mut self.replacements);
+                pending.extend(components.into_iter().rev());
             }
         }
-        if self.low[value] == index {
-            let mut members = Vec::new();
-            loop {
-                let member = self.stack.pop().unwrap();
-                self.active[member] = false;
-                members.push(member);
-                if member == value {
-                    break;
+        self.replacements
+    }
+
+    /// Braun et al., CC 2013, section 3.2. Singletons use the same rule as
+    /// cycles; when a component varies, search parameters with only internal inputs.
+    fn simplify(&mut self, members: &[Value]) -> Vec<Value> {
+        for &member in members {
+            self.inside[member] = true;
+        }
+        let mut outside = None;
+        let mut different = false;
+        let mut inner = Vec::new();
+        for &member in members {
+            let mut is_inner = true;
+            for &arg in &self.graph.incoming[member] {
+                let arg = self.replacements.resolve(arg);
+                if !self.inside[arg] {
+                    is_inner = false;
+                    different |= outside.is_some_and(|value| value != arg);
+                    outside = Some(arg);
                 }
             }
-            self.result.push(members);
+            if is_inner {
+                inner.push(member);
+            }
         }
+        for &member in members {
+            self.inside[member] = false;
+        }
+        if different {
+            // At least one member has external inputs, so this subset shrinks.
+            return inner;
+        }
+        if let Some(value) = outside {
+            for &member in members {
+                self.replacements.aliases[member] = Some(value);
+            }
+        }
+        // Without an external input there is no justified replacement value.
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+enum Visit {
+    #[default]
+    Outside,
+    Pending,
+    Active {
+        index: usize,
+        low: usize,
+    },
+    Complete,
+}
+
+struct Frame {
+    value: Value,
+    next_input: usize,
+}
+
+/// Iterative Tarjan traversal of a parameter subset. Components are emitted
+/// before their users. Scratch storage is reused for nested induced subgraphs.
+#[derive(Default)]
+struct Components {
+    visits: SecondaryMap<Value, Visit>,
+    active: Vec<Value>,
+    frames: Vec<Frame>,
+    next_index: usize,
+}
+
+impl Components {
+    fn compute(
+        &mut self,
+        graph: &Parameters,
+        members: &[Value],
+        replacements: &mut Replacements,
+    ) -> Vec<Vec<Value>> {
+        self.next_index = 0;
+        for &member in members {
+            self.visits[member] = Visit::Pending;
+        }
+        let mut result = Vec::new();
+        for &member in members {
+            if !matches!(self.visits[member], Visit::Pending) {
+                continue;
+            }
+            self.enter(member);
+            while let Some(frame) = self.frames.last_mut() {
+                let value = frame.value;
+                if let Some(&arg) = graph.incoming[value].get(frame.next_input) {
+                    frame.next_input += 1;
+                    let arg = replacements.resolve(arg);
+                    match self.visits[arg] {
+                        Visit::Pending => self.enter(arg),
+                        Visit::Active { index, .. } => self.update_low_link(value, index),
+                        Visit::Outside | Visit::Complete => {}
+                    }
+                    continue;
+                }
+                self.frames.pop();
+                let Visit::Active { index, low } = self.visits[value] else {
+                    unreachable!("DFS frame is active");
+                };
+                if low == index {
+                    let mut component = Vec::new();
+                    loop {
+                        let member = self.active.pop().expect("component root is active");
+                        self.visits[member] = Visit::Complete;
+                        component.push(member);
+                        if member == value {
+                            break;
+                        }
+                    }
+                    result.push(component);
+                } else if let Some(parent) = self.frames.last() {
+                    self.update_low_link(parent.value, low);
+                }
+            }
+        }
+        for &member in members {
+            self.visits[member] = Visit::Outside;
+        }
+        result
+    }
+
+    fn enter(&mut self, value: Value) {
+        let index = self.next_index;
+        self.next_index += 1;
+        self.visits[value] = Visit::Active { index, low: index };
+        self.active.push(value);
+        self.frames.push(Frame {
+            value,
+            next_input: 0,
+        });
+    }
+
+    fn update_low_link(&mut self, value: Value, reachable: usize) {
+        let Visit::Active { low, .. } = &mut self.visits[value] else {
+            unreachable!("only active nodes have a low-link");
+        };
+        *low = (*low).min(reachable);
     }
 }

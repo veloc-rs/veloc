@@ -1,4 +1,6 @@
 import "../../defs/type_sets.spec";
+import "conversions.spec";
+import "comparisons.spec";
 
 // Conditions are boolean; branches and the result share T. These folds do not
 // need constant branches and also apply to pointers, floats and vectors.
@@ -8,8 +10,9 @@ rule<T: Any>(root: mir::Select<T>) {
     case (condition, x, x) => x;
 }
 
-// Rules are grouped by root opcode. Root-local identities fold without
-// constructing an operation; other cases add alternatives to the e-graph.
+// Every rule feeds both SSA simplification and e-graph matching. Flat identities
+// additionally have an allocation-free folding path. SSA only accepts profitable
+// replacements, or equal-cost canonical cases; e-graph retains alternatives.
 // These equalities are reviewed, not proven by the pattern/type checker.
 // Arithmetic is modular; -1 denotes all bits set at the integer width.
 // Factor instead of distributing to avoid multiplying intermediate candidates.
@@ -25,6 +28,7 @@ rule<T: ScalarInteger>(root: mir::IAdd<T>) {
 }
 
 rule<T: ScalarInteger>(root: mir::ISub<T>) {
+    case canonical (x, c) if is_const(c) => mir::IAdd<T>(x, mir::INeg<T>(c));
     case (x, x) => 0;
     case (x, 0) => x;
     case (mir::IAdd(x, y), x) => y;

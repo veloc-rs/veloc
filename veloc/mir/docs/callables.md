@@ -19,8 +19,8 @@ block0():
   v5: i32 = iadd v3, v4
   return v5
 
-local function add(i32, i32) -> i32
-block0(v0: i32, v1: i32):
+local function add(v0: i32, v1: i32) -> i32
+block0():
   v2: i32 = iadd v0, v1
   return v2
 ```

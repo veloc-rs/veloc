@@ -32,6 +32,27 @@ Veloc IR（Intermediate Representation）是一种面向栈式虚拟机和寄存
 
 ---
 
+## 函数参数与块参数
+
+函数参数是由 `ValueDef::FunctionParam(ParamIndex)` 定义的 SSA 值，保存在
+`FuncBody::params()` 中，在整个函数内可用。其位置和类型必须匹配函数签名；
+删除未使用的函数参数，需要由模块级变换同步修改签名和调用点。
+
+块参数使用 `ValueDef::BlockParam(Block)`，只接收 CFG 入边传入的值。
+参数简化和 DCE 可以同时删除块参数与对应的入边实参。入口块没有入边，
+也没有块参数。
+
+文本 IR 在函数定义头中声明参数值；导入声明和调用点签名只写类型。例如：
+
+```text
+local function add(a: i32, b: i32) -> i32
+block0():
+  jump block1(a)
+block1(x: i32):
+  result: i32 = iadd x, b
+  return result
+```
+
 ## 指令列表
 
 ### 1. 一元运算指令

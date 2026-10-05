@@ -2,8 +2,8 @@
 // run: roundtrip
 // check: v1: i32 = call callee(v0) : (i32) -> i32
 // check: return v1
-local function main(i32) -> i32
-block0(v0: i32):
+local function main(v0: i32) -> i32
+block0():
   v1: i32 = call callee(v0) : (i32) -> i32
   return v1
 import function callee(i32) -> i32
@@ -11,8 +11,8 @@ import function callee(i32) -> i32
 // ----- recursive-call
 // run: roundtrip
 // check: v1: i32 = call recurse(v0) : (i32) -> i32
-local function recurse(i32) -> i32
-block0(v0: i32):
+local function recurse(v0: i32) -> i32
+block0():
   v1: i32 = call recurse(v0) : (i32) -> i32
   return v1
 
@@ -28,8 +28,8 @@ import function callee() -> void
 // ----- wrong-parameter-signature
 // run: parse-error
 // check: call signature does not match declaration of `callee`
-local function main(f32) -> i32
-block0(v0: f32):
+local function main(v0: f32) -> i32
+block0():
   v1: i32 = call callee(v0) : (f32) -> i32
   return v1
 import function callee(i32) -> i32
@@ -56,8 +56,8 @@ import function callee() -> (i32, i32)
 // run: validate-error
 // check: call
 // check: type mismatch
-local function main(f32) -> i32
-block0(v0: f32):
+local function main(v0: f32) -> i32
+block0():
   v1: i32 = call callee(v0) : (i32) -> i32
   return v1
 import function callee(i32) -> i32

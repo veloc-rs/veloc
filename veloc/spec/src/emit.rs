@@ -193,6 +193,7 @@ impl Source {
         let mut output = BTreeMap::new();
         let mut ir = None;
         let mut target = None;
+        let mut expressions: Option<crate::rules::equivalence::Output> = None;
         for &kind in selected {
             if output.contains_key(&kind) {
                 continue;
@@ -202,15 +203,24 @@ impl Source {
                     let config = options.equivalences.as_ref().ok_or_else(|| {
                         fail("equivalences require definitions and Rust bindings")
                     })?;
-                    crate::rules::equivalence::generate(
-                        self,
-                        &config.definitions.parse()?,
-                        config.dialect,
-                        config.opcode,
-                        config.types,
-                        kind,
-                    )
-                    .map_err(|e| self.locate(e))?
+                    if expressions.is_none() {
+                        expressions = Some(
+                            crate::rules::equivalence::generate(
+                                self,
+                                &config.definitions.parse()?,
+                                config.dialect,
+                                config.opcode,
+                                config.types,
+                            )
+                            .map_err(|e| self.locate(e))?,
+                        );
+                    }
+                    let compiled = expressions.as_mut().unwrap();
+                    std::mem::take(match kind {
+                        Emit::LocalFolds => &mut compiled.local_folds,
+                        Emit::Equivalences => &mut compiled.equivalences,
+                        _ => unreachable!(),
+                    })
                 }
                 Emit::Rules => {
                     let config = options.rules.as_ref().ok_or_else(|| {
@@ -250,9 +260,10 @@ impl Source {
                 Emit::DataTypes => self.data_types()?,
                 kind if kind.target() => {
                     if target.is_none() {
-                        let config = options.target.as_ref().ok_or_else(|| {
-                            fail("target output requires architecture")
-                        })?;
+                        let config = options
+                            .target
+                            .as_ref()
+                            .ok_or_else(|| fail("target output requires architecture"))?;
                         target = Some(crate::target::Plan::prepare(
                             self,
                             config.arch,

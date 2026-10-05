@@ -212,7 +212,7 @@ impl Types {
             | BitwiseAnd(a, b)
             | BitwiseOr(a, b)
             | BitwiseXor(a, b) => CType::common(&self.constant_type(a)?, &self.constant_type(b)?),
-            SizeofType(..) | SizeofExpression(_) => CType::SIZE,
+            SizeofType(..) | SizeofExpression(_) => self.target.size_type(),
             _ => return fail("expected integer constant expression type"),
         })
     }

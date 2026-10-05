@@ -74,6 +74,7 @@ impl<'a> Assembler<'a> {
         Self::default()
     }
 
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     pub(crate) fn emit_raw(&mut self, bytes: &[u8]) {
         self.bytes.extend_from_slice(bytes);
     }

@@ -17,7 +17,7 @@ op X86Load8U32(base: Value<AddressValue>, off: i64, flags: MemFlags) -> (dst: Va
         dst: GPR64,
         base: GPR64,
     };
-    memory = { kind: Read, bytes: 1 };
+    memory = { kind: Read, bytes: 1, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "movzx", operands: [reg(dst, 32), mem(base, off, 8)] }]
     };
@@ -34,7 +34,7 @@ op X86Load16U32(base: Value<AddressValue>, off: i64, flags: MemFlags) -> (dst: V
         dst: GPR64,
         base: GPR64,
     };
-    memory = { kind: Read, bytes: 2 };
+    memory = { kind: Read, bytes: 2, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "movzx", operands: [reg(dst, 32), mem(base, off, 16)] }]
     };
@@ -51,7 +51,7 @@ op X86Load32(base: Value<AddressValue>, off: i64, flags: MemFlags) -> (dst: Valu
         dst: GPR64,
         base: GPR64,
     };
-    memory = { kind: Read, bytes: 4 };
+    memory = { kind: Read, bytes: 4, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "mov", operands: [reg(dst, 32), mem(base, off, 32)] }]
     };
@@ -68,7 +68,7 @@ op X86Load64(base: Value<AddressValue>, off: i64, flags: MemFlags) -> (dst: Valu
         dst: GPR64,
         base: GPR64,
     };
-    memory = { kind: Read, bytes: 8 };
+    memory = { kind: Read, bytes: 8, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "mov", operands: [reg(dst, 64), mem(base, off, 64)] }]
     };
@@ -85,7 +85,7 @@ op X86LoadF32(base: Value<AddressValue>, off: i64, flags: MemFlags) -> (dst: Val
         dst: FPR128,
         base: GPR64,
     };
-    memory = { kind: Read, bytes: 4 };
+    memory = { kind: Read, bytes: 4, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "movss", operands: [reg(dst, 128), mem(base, off, 32)] }]
     };
@@ -102,7 +102,7 @@ op X86LoadF64(base: Value<AddressValue>, off: i64, flags: MemFlags) -> (dst: Val
         dst: FPR128,
         base: GPR64,
     };
-    memory = { kind: Read, bytes: 8 };
+    memory = { kind: Read, bytes: 8, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "movsd", operands: [reg(dst, 128), mem(base, off, 64)] }]
     };
@@ -119,7 +119,7 @@ op X86Store8(src: Value<GprValue>, base: Value<AddressValue>, off: i64, flags: M
         src: GPR64,
         base: GPR64,
     };
-    memory = { kind: Write, bytes: 1 };
+    memory = { kind: Write, bytes: 1, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "mov", operands: [mem(base, off, 8), reg(src, 8)] }]
     };
@@ -136,7 +136,7 @@ op X86Store16(src: Value<GprValue>, base: Value<AddressValue>, off: i64, flags: 
         src: GPR64,
         base: GPR64,
     };
-    memory = { kind: Write, bytes: 2 };
+    memory = { kind: Write, bytes: 2, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "mov", operands: [mem(base, off, 16), reg(src, 16)] }]
     };
@@ -153,7 +153,7 @@ op X86Store32(src: Value<GprValue>, base: Value<AddressValue>, off: i64, flags: 
         src: GPR64,
         base: GPR64,
     };
-    memory = { kind: Write, bytes: 4 };
+    memory = { kind: Write, bytes: 4, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "mov", operands: [mem(base, off, 32), reg(src, 32)] }]
     };
@@ -170,7 +170,7 @@ op X86Store64(src: Value<GprValue>, base: Value<AddressValue>, off: i64, flags: 
         src: GPR64,
         base: GPR64,
     };
-    memory = { kind: Write, bytes: 8 };
+    memory = { kind: Write, bytes: 8, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "mov", operands: [mem(base, off, 64), reg(src, 64)] }]
     };
@@ -187,7 +187,7 @@ op X86StoreF32(src: Value<Type::F32>, base: Value<AddressValue>, off: i64, flags
         src: FPR128,
         base: GPR64,
     };
-    memory = { kind: Write, bytes: 4 };
+    memory = { kind: Write, bytes: 4, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "movss", operands: [mem(base, off, 32), reg(src, 128)] }]
     };
@@ -204,7 +204,7 @@ op X86StoreF64(src: Value<Type::F64>, base: Value<AddressValue>, off: i64, flags
         src: FPR128,
         base: GPR64,
     };
-    memory = { kind: Write, bytes: 8 };
+    memory = { kind: Write, bytes: 8, address: { base: base, offset: off } };
     assembly = {
         lines: [{ mnemonic: "movsd", operands: [mem(base, off, 64), reg(src, 128)] }]
     };

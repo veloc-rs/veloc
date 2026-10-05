@@ -2,7 +2,7 @@
 //! Aggregate fields are independent cells when their byte ranges do not overlap.
 //! Unknown/dynamic addressing, escaping pointers and volatile accesses retain
 //! memory. Block parameters are pruned by the ordinary parameter/DCE passes.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use std::collections::{BTreeMap, HashSet};
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{Inst, InstView, Type, function::EdgeRef};
@@ -25,9 +25,9 @@ impl FunctionPass for PromotePass {
         am: &mut AnalysisManager<'_>,
         config: &OptConfig,
         metrics: &Profile,
-    ) -> PreservedAnalyses {
+    ) -> PassOutcome {
         let Some(layout) = config.data_layout else {
-            return PreservedAnalyses::all();
+            return PassOutcome::Unchanged;
         };
         let f = am.function_mut();
         let entry = f.entry_block();
@@ -184,9 +184,9 @@ impl FunctionPass for PromotePass {
         }
         metrics.count("promote.cells", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }

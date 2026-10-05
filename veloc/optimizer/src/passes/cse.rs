@@ -1,11 +1,11 @@
 //! Dominance-scoped commoning after code motion and recurrence construction.
 //! The generated instruction view includes every property in equality/hash.
-use crate::{FunctionPass, OptConfig, PreservedAnalyses, Profile};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
 };
-use veloc_analyzer::{AnalysisManager, graph::DominatorTree};
+use veloc_analyzer::AnalysisManager;
 use veloc_mir::Inst;
 
 pub struct CsePass;
@@ -13,14 +13,9 @@ impl FunctionPass for CsePass {
     fn name(&self) -> &'static str {
         "CsePass"
     }
-    fn run(
-        &self,
-        am: &mut AnalysisManager<'_>,
-        _: &OptConfig,
-        metrics: &Profile,
-    ) -> PreservedAnalyses {
+    fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
+        let dom = am.take_dominators();
         let f = am.function_mut();
-        let dom = DominatorTree::compute(f.cfg(), f.entry_block());
         let blocks = f.cfg().compute_post_order(f.entry_block());
         let mut table = HashMap::<u64, Vec<Inst>>::new();
         let mut changed = 0;
@@ -61,9 +56,9 @@ impl FunctionPass for CsePass {
         }
         metrics.count("cse.removed", changed);
         if changed == 0 {
-            PreservedAnalyses::all()
+            PassOutcome::Unchanged
         } else {
-            PreservedAnalyses::none()
+            PassOutcome::Changed
         }
     }
 }

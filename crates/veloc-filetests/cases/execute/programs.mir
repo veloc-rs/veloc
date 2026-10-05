@@ -14,8 +14,8 @@ block0():
   v1: i32 = call sum(i32(10)) : (i32) -> i32
   return v1
 
-local function sum(i32) -> i32
-block0(v0: i32):
+local function sum(v0: i32) -> i32
+block0():
   jump block1(v0, i32(0))
 block1(v3: i32, v4: i32):
   v5: bool = icmp eq v3, i32(0)

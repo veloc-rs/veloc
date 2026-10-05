@@ -40,7 +40,6 @@ impl CType {
         }
     }
     pub const INT: Self = Self::Int(32, true);
-    pub const SIZE: Self = Self::Int(64, false);
     pub fn plain(&self) -> &Self {
         if let Self::Volatile(t) = self {
             t.plain()
@@ -161,8 +160,38 @@ pub struct Record {
     pub is_union: bool,
 }
 
-#[derive(Default)]
+/// C language choices are separate from the target's storage layout and ABI
+/// register classification. Add another named model when adding a C target.
+#[derive(Clone, Copy, Debug)]
+pub struct CTargetModel {
+    layout: veloc_types::DataLayout,
+    long_bits: u16,
+    char_signed: bool,
+}
+impl CTargetModel {
+    pub fn riscv64_linux(layout: veloc_types::DataLayout) -> Result<Self> {
+        if layout.pointer_size != 8 || !layout.little_endian {
+            return fail("riscv64 Linux C requires a little-endian LP64 layout");
+        }
+        Ok(Self {
+            layout,
+            long_bits: 64,
+            char_signed: false,
+        })
+    }
+    pub(crate) fn size_type(self) -> CType {
+        CType::Int(self.pointer_bits(), false)
+    }
+    pub(crate) fn ptrdiff_type(self) -> CType {
+        CType::Int(self.pointer_bits(), true)
+    }
+    pub(crate) fn pointer_bits(self) -> u16 {
+        u16::from(self.layout.pointer_size) * 8
+    }
+}
+
 pub struct Types {
+    pub target: CTargetModel,
     pub typedefs: HashMap<String, CType>,
     pub constants: HashMap<String, i64>,
     tags: HashMap<String, usize>,
@@ -177,13 +206,27 @@ fn align_up(size: usize, align: usize) -> usize {
 }
 
 impl Types {
+    pub fn new(target: CTargetModel) -> Self {
+        Self {
+            target,
+            typedefs: HashMap::new(),
+            constants: HashMap::new(),
+            tags: HashMap::new(),
+            records: Vec::new(),
+        }
+    }
     pub fn layout(&self, ty: &CType) -> Result<(usize, usize)> {
         Ok(match ty.plain() {
-            CType::Bool => (1, 1),
-            CType::Int(bits, _) | CType::Float(bits) => {
-                ((*bits / 8) as usize, (*bits / 8) as usize)
+            CType::Bool | CType::Int(..) | CType::Float(_) | CType::Pointer(_) => {
+                let layout =
+                    self.target.layout.layout_of(ty.mir()?).ok_or_else(|| {
+                        Error::semantic("type has no target storage layout", 0, 0)
+                    })?;
+                let size = layout
+                    .alloc_size()
+                    .ok_or_else(|| Error::semantic("C requires a fixed object size", 0, 0))?;
+                (size as usize, layout.align as usize)
             }
-            CType::Pointer(_) => (8, 8),
             CType::Array(t, n) => {
                 let (size, align) = self.layout(t)?;
                 (
@@ -226,7 +269,7 @@ impl Types {
                 DeclarationSpecifier::TypeSpecifier(t) => match t {
                     TypeSpecifier::Void => ty = CType::Void,
                     TypeSpecifier::Bool => ty = CType::Bool,
-                    TypeSpecifier::Char => ty = CType::Int(8, false),
+                    TypeSpecifier::Char => ty = CType::Int(8, self.target.char_signed),
                     TypeSpecifier::Short => short = true,
                     TypeSpecifier::Long => longs += 1,
                     TypeSpecifier::Unsigned => unsigned = true,
@@ -264,7 +307,11 @@ impl Types {
             if short {
                 *bits = 16;
             } else if longs > 0 {
-                *bits = 64;
+                *bits = if longs == 1 {
+                    self.target.long_bits
+                } else {
+                    64
+                };
             }
             if unsigned {
                 *signed = false;

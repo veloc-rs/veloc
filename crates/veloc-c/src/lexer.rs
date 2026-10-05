@@ -6,7 +6,6 @@ use crate::ast::{FloatLiteral, IntegerLiteral};
 use crate::error::{Error, Result};
 use std::format;
 use std::string::String;
-use std::vec::Vec;
 
 /// Token kind enumeration
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -115,37 +114,6 @@ pub enum TokenKind {
     Comment,
 }
 
-impl TokenKind {
-    /// Check if this token kind is a type specifier keyword
-    pub fn is_type_specifier(&self) -> bool {
-        matches!(
-            self,
-            TokenKind::Void
-                | TokenKind::CharKw
-                | TokenKind::BoolKw
-                | TokenKind::Short
-                | TokenKind::Int
-                | TokenKind::Long
-                | TokenKind::FloatKw
-                | TokenKind::Double
-                | TokenKind::Signed
-                | TokenKind::Unsigned
-        )
-    }
-
-    /// Check if this is a storage class specifier
-    pub fn is_storage_class(&self) -> bool {
-        matches!(
-            self,
-            TokenKind::Typedef
-                | TokenKind::Extern
-                | TokenKind::Static
-                | TokenKind::Auto
-                | TokenKind::Register
-        )
-    }
-}
-
 /// Token structure
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
@@ -169,12 +137,10 @@ impl Token {
 /// C Language Lexer
 #[derive(Clone)]
 pub struct Lexer<'a> {
-    source: &'a str,
     chars: std::str::Chars<'a>,
     current: Option<char>,
     line: u32,
     column: u32,
-    peeked: Vec<Token>,
 }
 
 impl<'a> Lexer<'a> {
@@ -183,45 +149,17 @@ impl<'a> Lexer<'a> {
         let mut chars = source.chars();
         let current = chars.next();
         Lexer {
-            source,
             chars,
             current,
             line: 1,
             column: 1,
-            peeked: Vec::new(),
         }
     }
 
     /// Get the next token
     pub fn next_token(&mut self) -> Result<Token> {
-        if let Some(token) = self.peeked.pop() {
-            return Ok(token);
-        }
         self.skip_whitespace();
         self.read_token()
-    }
-
-    /// Peek at the next token without consuming it
-    pub fn peek_token(&mut self) -> Result<Token> {
-        if self.peeked.is_empty() {
-            let token = self.next_token()?;
-            self.peeked.push(token);
-        }
-        Ok(self.peeked.last().unwrap().clone())
-    }
-
-    /// Peek at the nth token ahead
-    pub fn peek_nth(&mut self, n: usize) -> Result<Token> {
-        while self.peeked.len() <= n {
-            let token = self.next_token()?;
-            self.peeked.push(token);
-        }
-        Ok(self.peeked[n].clone())
-    }
-
-    /// Check if we've reached the end of file
-    pub fn is_eof(&self) -> bool {
-        self.current.is_none()
     }
 
     /// Get current line number
@@ -252,11 +190,6 @@ impl<'a> Lexer<'a> {
     /// Peek at the next character without consuming
     fn peek_char(&self) -> Option<char> {
         self.current
-    }
-
-    /// Peek at the second next character
-    fn peek_char2(&self) -> Option<char> {
-        self.chars.clone().next()
     }
 
     /// Skip whitespace characters

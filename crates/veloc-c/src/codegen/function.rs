@@ -210,16 +210,16 @@ impl<'a, 'b> Function<'a, 'b> {
         let value = match (from, &to) {
             (a, b) if a == b => v.value,
             (CType::Pointer(_), CType::Pointer(_)) => v.value,
-            (CType::Pointer(_), CType::Int(bits, _)) => {
-                let n = self.builder.ins().ptrtoint(v.value, Type::I64);
-                if *bits == 64 {
-                    n
-                } else {
-                    self.builder.ins().wrap(n, to.mir()?)
-                }
+            (CType::Pointer(_), CType::Int(_, _)) => {
+                let ty = self.types.target.size_type();
+                let value = self.builder.ins().ptrtoint(v.value, ty.mir()?);
+                return self.cast(TypedValue { value, ty }, &to);
             }
             (CType::Int(_, _), CType::Pointer(_)) => {
-                let n = self.cast(v.clone(), &CType::Int(64, v.ty.signed()))?;
+                let n = self.cast(
+                    v.clone(),
+                    &CType::Int(self.types.target.pointer_bits(), v.ty.signed()),
+                )?;
                 self.builder.ins().inttoptr(n.value)
             }
             (CType::Int(a, signed), CType::Int(b, _)) => {
@@ -261,7 +261,7 @@ impl<'a, 'b> Function<'a, 'b> {
             Ok(self.builder.ins().fcmp(FloatCC::Ne, v.value, zero))
         } else {
             let v = if matches!(v.ty.plain(), CType::Pointer(_)) {
-                self.cast(v, &CType::SIZE)?
+                self.cast(v, &self.types.target.size_type())?
             } else {
                 v
             };
@@ -282,7 +282,7 @@ impl<'a, 'b> Function<'a, 'b> {
         subtract: bool,
     ) -> Result<TypedValue> {
         let stride = self.types.layout(&pointer.ty.pointee()?)?.0;
-        let mut index = self.cast(index, &CType::Int(64, true))?;
+        let mut index = self.cast(index, &self.types.target.ptrdiff_type())?;
         if subtract {
             index.value = self.builder.ins().ineg(index.value);
         }
@@ -430,12 +430,12 @@ impl<'a, 'b> Function<'a, 'b> {
                     base
                 };
                 let size = self.types.layout(&ty)?.0;
-                self.integer(size as u64, CType::SIZE)
+                self.integer(size as u64, self.types.target.size_type())
             }
             SizeofExpression(e) => {
                 let ty = self.expr_type(e)?;
                 let size = self.types.layout(&ty)?.0;
-                self.integer(size as u64, CType::SIZE)
+                self.integer(size as u64, self.types.target.size_type())
             }
             Assign(a, b) => {
                 let p = self.place(a)?;
@@ -543,13 +543,14 @@ impl<'a, 'b> Function<'a, 'b> {
             if matches!(a.ty.plain(), CType::Pointer(_)) {
                 if matches!(b.ty.plain(), CType::Pointer(_)) && sub {
                     let size = self.types.layout(&a.ty.pointee()?)?.0;
-                    let a = self.cast(a, &CType::Int(64, true))?;
-                    let b = self.cast(b, &CType::Int(64, true))?;
+                    let ty = self.types.target.ptrdiff_type();
+                    let a = self.cast(a, &ty)?;
+                    let b = self.cast(b, &ty)?;
                     let diff = self.builder.ins().isub(a.value, b.value);
-                    let stride = self.integer(size as u64, CType::Int(64, true))?;
+                    let stride = self.integer(size as u64, ty.clone())?;
                     return Ok(TypedValue {
                         value: self.builder.ins().idiv_s(diff, stride.value),
-                        ty: CType::Int(64, true),
+                        ty,
                     });
                 }
                 return self.offset(a, b, sub);
@@ -570,9 +571,10 @@ impl<'a, 'b> Function<'a, 'b> {
         let a = self.cast(a, &ty)?;
         let b = self.cast(b, &ty)?;
         let (a, b) = if matches!(ty, CType::Pointer(_)) {
+            let integer = self.types.target.size_type().mir()?;
             (
-                self.builder.ins().ptrtoint(a.value, Type::I64),
-                self.builder.ins().ptrtoint(b.value, Type::I64),
+                self.builder.ins().ptrtoint(a.value, integer),
+                self.builder.ins().ptrtoint(b.value, integer),
             )
         } else {
             (a.value, b.value)
@@ -779,7 +781,7 @@ impl<'a, 'b> Function<'a, 'b> {
                 let ty = self.expr_type(e)?.pointee()?;
                 self.types.member(&ty, n)?.ty
             }
-            SizeofExpression(_) | SizeofType(..) | AlignofType(..) => CType::SIZE,
+            SizeofExpression(_) | SizeofType(..) | AlignofType(..) => self.types.target.size_type(),
             Equal(..)
             | NotEqual(..)
             | LessThan(..)
@@ -793,7 +795,7 @@ impl<'a, 'b> Function<'a, 'b> {
                 let a = self.expr_type(a)?.decay();
                 let b = self.expr_type(b)?.decay();
                 if matches!((&a, &b), (CType::Pointer(_), CType::Pointer(_))) {
-                    CType::Int(64, true)
+                    self.types.target.ptrdiff_type()
                 } else {
                     CType::common(&a, &b)
                 }

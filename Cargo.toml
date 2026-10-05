@@ -20,6 +20,7 @@ members = [
 	"veloc/analyzer",
 	"veloc/optimizer",
 	"veloc/profile",
+	"veloc/policy",
 	"veloc/spec",
 	"veloc/semantics",
 ]
@@ -38,6 +39,7 @@ veloc-mir = { path = "veloc/mir" }
 veloc-lir = { path = "veloc/lir" }
 veloc-optimizer = { path = "veloc/optimizer" }
 veloc-profile = { path = "veloc/profile" }
+veloc-policy = { path = "veloc/policy" }
 veloc-interpreter = { path = "veloc/interpreter" }
 veloc-codegen = { path = "veloc/codegen" }
 veloc-fastjit = { path = "veloc/fastjit" }
