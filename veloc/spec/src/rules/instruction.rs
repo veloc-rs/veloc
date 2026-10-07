@@ -26,7 +26,6 @@ pub(crate) fn generate(
         .filter(|op| op.expression.is_some())
         .map(|op| op.name)
         .collect();
-    let mut targets = BTreeMap::<String, &Op>::new();
     let mut groups = BTreeMap::<String, String>::new();
     for decl in source.declarations() {
         let DeclKind::Rule(sig) = &decl.kind else {
@@ -109,14 +108,14 @@ pub(crate) fn generate(
             }
             let mut inputs = BTreeMap::new();
             let mut values = Vec::new();
-            for (i, (param, arg)) in target.params.iter().zip(args).enumerate() {
+            for (param, arg) in target.params.iter().zip(args) {
                 let ty = match &param.kind {
                     ParamKind::Value => "Value",
                     ParamKind::Property(ty) => ty,
                     _ => unreachable!("checked fixed operation"),
                 };
                 let value = compiler.expression(arg, ty)?;
-                let name = format!("_replacement{i}");
+                let name = format!("new_{}", param.name);
                 writeln!(compiler.code, "let {name} = {value};").unwrap();
                 if param.kind == ParamKind::Value {
                     values.push(format!("dfg.value_type({name})"));
@@ -129,7 +128,7 @@ pub(crate) fn generate(
                     .iter()
                     .map(|p| {
                         let original = root_op.inputs[&p.name]
-                            .emit(&|f| format!("_m0_{f}"), &|v| format!("{v}?"));
+                            .emit(&|f| format!("root_{f}"), &|v| format!("{v}?"));
                         format!("{} == {original}", inputs[&p.name])
                     })
                     .collect::<Vec<_>>()
@@ -145,18 +144,19 @@ pub(crate) fn generate(
                 )
                 .unwrap();
             }
-            writeln!(compiler.code, "let _operands = [{}];", values.join(", ")).unwrap();
+            writeln!(compiler.code, "// Check the replacement before editing the instruction.\nlet operand_types = [{}];", values.join(", ")).unwrap();
             let results = (0..result_count)
                 .map(|i| format!("dfg.value_type(dfg.inst_results(inst)[{i}])"))
                 .collect::<Vec<_>>();
             writeln!(
                 compiler.code,
-                "let _results = [{}];\nOpcode::{}.validate_types(&_operands, &_results).ok()?;",
+                "let result_types = [{}];\nOpcode::{}.validate_types(&operand_types, &result_types).ok()?;",
                 results.join(", "),
                 target.name
             )
             .unwrap();
-            let mut emitter = Emitter::types(target, inputs.clone(), "_operands", "_results");
+            let mut emitter =
+                Emitter::types(target, inputs.clone(), "operand_types", "result_types");
             emitter.dfg = "dfg";
             for constraint in &target.constraints {
                 if !constraint.type_only || constraint.binding.is_some() {
@@ -165,74 +165,44 @@ pub(crate) fn generate(
                         .push_str(&constraint.emit(&emitter, "return None"));
                 }
             }
-            let fields = target
+            let args = target
                 .params
                 .iter()
-                .map(|p| format!("{}: {}", p.name, inputs[&p.name]))
+                .map(|p| inputs[&p.name].as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            writeln!(
-                compiler.code,
-                "Some(Replacement::{} {{ {fields} }})",
-                target.name
-            )
-            .unwrap();
+            // Keep single-field replacements as tuples; empty replacements use ().
+            let tuple = if args.is_empty() {
+                "()".to_owned()
+            } else {
+                format!("({args},)")
+            };
+            writeln!(compiler.code, "Some({tuple})").unwrap();
+            let constructor = crate::model::access::constructor(
+                target,
+                &defs.storage,
+                &inputs,
+                &format!("Opcode::{}", target.name),
+                "writer",
+            );
             writeln!(
                 groups.entry(root_op.name.clone()).or_default(),
-                "if let Some(replacement) = (|| {{ {} }})() {{ return Some(replacement); }}",
+                "let replacement = (|| {{ let dfg = func.dfg(); {} }})();\nif let Some({tuple}) = replacement {{\nfunc.edit().replace_inst(inst, |writer| {constructor});\nreturn true;\n}}",
                 compiler.code
             )
             .unwrap();
-            targets.insert(target.name.clone(), target);
         }
     }
     let mut code = format!(
-        "// @generated directed instruction rewrites.\n#[allow(unused_imports)] use {rust}::*;\n#[allow(unused_imports)] use {rust}::inst::*;\nenum Replacement {{\n"
+        "// @generated directed instruction rewrites.\n#[allow(unused_imports)] use {rust}::*;\n#[allow(unused_imports)] use {rust}::inst::*;\n#[allow(unused_variables)]\npub(super) fn rewrite(func: &mut FuncBody, inst: Inst) -> bool {{\nmatch func.dfg().inst(inst).opcode() {{\n"
     );
-    for op in targets.values() {
-        writeln!(code, "{} {{", op.name).unwrap();
-        for p in &op.params {
-            let ty = match &p.kind {
-                ParamKind::Value => "Value",
-                ParamKind::Property(ty) => ty,
-                _ => unreachable!(),
-            };
-            writeln!(code, "{}: {ty},", p.name).unwrap();
-        }
-        code.push_str("},\n");
-    }
-    code.push_str(
-        "}\nimpl Replacement { fn write(self, writer: InstWriter<'_>) -> Inst { match self {\n",
-    );
-    for op in targets.values() {
-        let inputs = op
-            .params
-            .iter()
-            .map(|p| (p.name.clone(), p.name.clone()))
-            .collect();
-        let fields = op
-            .params
-            .iter()
-            .map(|p| p.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let constructor = crate::model::access::constructor(
-            op,
-            &defs.storage,
-            &inputs,
-            &format!("Opcode::{}", op.name),
-            "writer",
-        );
-        writeln!(code, "Self::{} {{ {fields} }} => {constructor},", op.name).unwrap();
-    }
-    code.push_str("} } }\n#[allow(unused_variables)]\nfn find(dfg: &dfg::DataFlowGraph, inst: Inst) -> Option<Replacement> { match dfg.inst(inst).opcode() {\n");
     for (op, body) in groups {
         // Definition-owned Rust bindings are relative to the IR crate. Rebase
         // before inserting the configured namespace itself into generated code.
         let body = body.replace("crate::", &format!("{rust}::"));
-        writeln!(code, "Opcode::{op} => {{ {body} None }},").unwrap();
+        writeln!(code, "Opcode::{op} => {{ {body} false }},").unwrap();
     }
-    code.push_str("_ => None,\n} }\npub(super) fn rewrite(func: &mut FuncBody, inst: Inst) -> bool {\nlet Some(replacement) = find(func.dfg(), inst) else { return false; };\nfunc.edit().replace_inst(inst, |writer| replacement.write(writer));\ntrue\n}\n");
+    code.push_str("_ => false,\n}\n}\n");
     Ok(code)
 }
 
@@ -280,6 +250,11 @@ impl<'a> Compiler<'a, '_> {
     fn pattern(&mut self, op: &Op, args: &[Node], inst: &str) -> Result<(), SourceError> {
         let id = self.next;
         self.next += 1;
+        let prefix = if id == 0 {
+            "root".to_owned()
+        } else {
+            format!("node{id}")
+        };
         if id != 0 {
             writeln!(
                 self.code,
@@ -298,7 +273,7 @@ impl<'a> Compiler<'a, '_> {
         let fields = format
             .fields
             .iter()
-            .map(|f| format!("{}: _m{id}_{}", f.name, f.name))
+            .map(|f| format!("{}: {prefix}_{}", f.name, f.name))
             .collect::<Vec<_>>()
             .join(", ");
         writeln!(
@@ -314,7 +289,7 @@ impl<'a> Compiler<'a, '_> {
                 _ => unreachable!(),
             };
             let value =
-                op.inputs[&param.name].emit(&|f| format!("_m{id}_{f}"), &|v| format!("{v}?"));
+                op.inputs[&param.name].emit(&|f| format!("{prefix}_{f}"), &|v| format!("{v}?"));
             if let Kind::Name(name) = &arg.kind {
                 if name == "_" {
                     continue;
@@ -345,7 +320,7 @@ impl<'a> Compiler<'a, '_> {
                     return Err(self.fail(arg.offset, "nested operation must have one result"));
                 }
                 writeln!(self.code, "const {{ assert!(Opcode::{}.spec().is_pure() && !Opcode::{}.transfers_ownership(), \"nested patterns require pure operations\"); }}", child.name, child.name).unwrap();
-                let name = format!("_inst{}", self.next);
+                let name = format!("def{}", self.next);
                 writeln!(self.code, "let {name} = dfg.value_inst({value})?;").unwrap();
                 self.pattern(child, nested, &name)?;
             } else {

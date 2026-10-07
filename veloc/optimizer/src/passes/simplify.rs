@@ -8,8 +8,8 @@ use std::collections::VecDeque;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{Block, FuncBody, Inst, Value, function::EdgeRef};
 
-mod rewrites {
-    include!(concat!(env!("OUT_DIR"), "/rewrites.rs"));
+mod rewrite {
+    include!(concat!(env!("OUT_DIR"), "/rewrite.rs"));
 }
 
 pub struct SimplifyPass;
@@ -105,7 +105,7 @@ impl FunctionPass for SimplifyPass {
 }
 
 fn fold_instruction(func: &mut FuncBody, inst: Inst, work: &mut Worklist) -> bool {
-    if rewrites::rewrite(func, inst) {
+    if rewrite::rewrite(func, inst) {
         work.changed(func, inst);
         return true;
     }

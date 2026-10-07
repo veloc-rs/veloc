@@ -132,7 +132,7 @@ select<T: IntOrPtr>(inst: lir::Constant<T>) {
     legal(inst);
 }
 
-select<T: Word>(inst: lir::Ieqz<T>) {
+select<T: Narrow | Word>(inst: lir::Ieqz<T>) {
     legal(inst);
 }
 

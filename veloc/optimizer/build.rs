@@ -16,7 +16,7 @@ fn main() {
         .expect("compile optimizer definitions");
     let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
     let mut files = output.write(&dir).expect("write optimizer artifacts");
-    let rules = Source::load("defs/equivalences.spec").expect("load equivalence rules");
+    let rules = Source::load("defs/equal.spec").expect("load equivalence rules");
     for path in rules.dependencies() {
         println!("cargo:rerun-if-changed={}", path.display());
     }
@@ -35,7 +35,7 @@ fn main() {
         )
         .expect("compile equivalence rules");
     files.extend(generated.write(&dir).expect("write equivalence rules"));
-    let rewrites = Source::load("defs/rewrites.spec").expect("load instruction rewrites");
+    let rewrites = Source::load("defs/rewrite.spec").expect("load instruction rewrites");
     for path in rewrites.dependencies() {
         println!("cargo:rerun-if-changed={}", path.display());
     }

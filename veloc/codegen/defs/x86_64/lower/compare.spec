@@ -37,6 +37,32 @@ op X86Cmp32ri(src: Value<GprValue>, imm: i64) -> (cf: Value<CARRY>, pf: Value<PA
 
 expand GprCompare(X86Test32, 0x85, false, "test", 32);
 
+op X86Test8(lhs: Value<Type::I8>, rhs: Value<Type::I8>) -> (cf: Value<CARRY>, pf: Value<PARITY>, zf: Value<ZERO>, sf: Value<SIGN>, of: Value<OVERFLOW>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x84, wide: false },
+        Form::ModRm(RegField::ByteRegister(rhs), Rm::ByteRegister(lhs)),
+        Immediate::None,
+    );
+    registers = { lhs: GPR64, rhs: GPR64 };
+    clobbers = [AF];
+    schedule = IntAlu;
+    movable = true;
+    assembly = { lines: [{ mnemonic: "test", operands: [reg(lhs, 8), reg(rhs, 8)] }] };
+}
+
+op X86Test16(lhs: Value<Type::I16>, rhs: Value<Type::I16>) -> (cf: Value<CARRY>, pf: Value<PARITY>, zf: Value<ZERO>, sf: Value<SIGN>, of: Value<OVERFLOW>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::P66, map: OpcodeMap::Primary, opcode: 0x85, wide: false },
+        Form::ModRm(RegField::Register(rhs), Rm::Register(lhs)),
+        Immediate::None,
+    );
+    registers = { lhs: GPR64, rhs: GPR64 };
+    clobbers = [AF];
+    schedule = IntAlu;
+    movable = true;
+    assembly = { lines: [{ mnemonic: "test", operands: [reg(lhs, 16), reg(rhs, 16)] }] };
+}
+
 template FloatCompare(Opcode: ident, Prefix: expr, Ty: expr, Mnemonic: expr) {
     op Opcode(lhs: Value<Ty>, rhs: Value<Ty>) -> (cf: Value<CARRY>, pf: Value<PARITY>, zf: Value<ZERO>, sf: Value<SIGN>, of: Value<OVERFLOW>) {
         schedule = FloatCompare;
@@ -529,29 +555,21 @@ select(n: lir::Fcmp) {
     }
 }
 
-select(n: lir::Ieqz) {
-    choose {
-        case {
-            require(type_is<Type::BOOL>(n.dst));
-            require(type_is<SmallInt>(n.src));
-            let bit = temp(Type::I8);
-            let cf = temp(Type::BOOL);
-            let pf = temp(Type::BOOL);
-            let zf = temp(Type::BOOL);
-            let sf = temp(Type::BOOL);
-            let of = temp(Type::BOOL);
-            replace(n, [build(X86Test32(cf, pf, zf, sf, of, n.src, n.src)), build(X86Sete(bit, zf)), build(X86Movzx8to32(n.dst, bit))]);
-        }
-        case {
-            require(type_is<Type::BOOL>(n.dst));
-            require(type_is<WordOrPtr>(n.src));
-            let bit = temp(Type::I8);
-            let cf = temp(Type::BOOL);
-            let pf = temp(Type::BOOL);
-            let zf = temp(Type::BOOL);
-            let sf = temp(Type::BOOL);
-            let of = temp(Type::BOOL);
-            replace(n, [build(X86Test64(cf, pf, zf, sf, of, n.src, n.src)), build(X86Sete(bit, zf)), build(X86Movzx8to32(n.dst, bit))]);
-        }
+template IsZero(Ty: type, Test: ident) {
+    select(n: lir::Ieqz) {
+        require(type_is<Type::BOOL>(n.dst));
+        require(type_is<Ty>(n.src));
+        let bit = temp(Type::I8);
+        let cf = temp(Type::BOOL);
+        let pf = temp(Type::BOOL);
+        let zf = temp(Type::BOOL);
+        let sf = temp(Type::BOOL);
+        let of = temp(Type::BOOL);
+        replace(n, [build(Test(cf, pf, zf, sf, of, n.src, n.src)), build(X86Sete(bit, zf)), build(X86Movzx8to32(n.dst, bit))]);
     }
 }
+
+expand IsZero(Type::I8, X86Test8);
+expand IsZero(Type::I16, X86Test16);
+expand IsZero(Type::I32, X86Test32);
+expand IsZero(Type::I64, X86Test64);

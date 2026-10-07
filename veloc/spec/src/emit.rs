@@ -84,10 +84,11 @@ impl Emit {
         }
     }
     pub fn filename(self) -> String {
-        if self == Self::Validator {
-            "validation.rs".into()
-        } else {
-            format!("{}.rs", self.name().replace('-', "_"))
+        match self {
+            Self::Validator => "validation.rs".into(),
+            Self::Equivalences => "equal.rs".into(),
+            Self::Rewrites => "rewrite.rs".into(),
+            _ => format!("{}.rs", self.name().replace('-', "_")),
         }
     }
     fn target(self) -> bool {

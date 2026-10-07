@@ -128,6 +128,10 @@ select<T: Word>(inst: lir::Ieqz<T>) {
     legal(inst);
 }
 
+select<T: Narrow>(inst: lir::Ieqz<T>) {
+    replace(inst, build(inst { src: lir::Zext<Type::I32>(inst.src) }));
+}
+
 select(inst: lir::Fneg<Type::F32>) {
     fneg_bits32(inst);
 }

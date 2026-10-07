@@ -121,7 +121,7 @@ struct Rule {
     plan: usize,
     name: &'static str,
 }
-include!(concat!(env!("OUT_DIR"), "/equivalences.rs"));
+include!(concat!(env!("OUT_DIR"), "/equal.rs"));
 
 /// The rule compiler resolves binding and backtracking. The executor reuses
 /// registers and retains replacement, guard and type inputs of complete matches.

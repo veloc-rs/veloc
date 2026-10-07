@@ -122,7 +122,7 @@ multi-user producers. Block parameters and results of unsupported or effectful
 instructions are opaque leaves. Supported trapping operations are fixed
 occurrences: their inputs participate in constant propagation, but they remain
 leaves for code placement and cannot participate in algebraic rewriting. Rules come from
-`veloc/optimizer/defs/equivalences.spec` and share constant evaluation with direct
+`veloc/optimizer/defs/equal.spec` and share constant evaluation with direct
 evaluation. Saturation is bounded by additional nodes beyond the original graph,
 function-wide matching fuel and rounds; fast mode does not cut shared expressions
 into independent cones. Trapping instances can fold only when successful constant
