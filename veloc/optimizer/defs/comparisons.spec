@@ -10,11 +10,11 @@ rule<T: ScalarInteger>(root: mir::Icmp<Type::BOOL>) {
 
 rule<W: ScalarInteger>(root: mir::Icmp<Type::BOOL>) {
     case (IntCC::Ne, mir::ExtendU<W>(x), 0) if type_of(x) == Type::BOOL => x;
-    case canonical (IntCC::Eq, mir::ExtendU<W>(x), 0) if type_of(x) == Type::BOOL
+    case (IntCC::Eq, mir::ExtendU<W>(x), 0) if type_of(x) == Type::BOOL
         => mir::Select<Type::BOOL>(x, false, true);
-    case canonical (kind, mir::ExtendU<W>(x), 0) if kind == IntCC::Eq || kind == IntCC::Ne
+    case (kind, mir::ExtendU<W>(x), 0) if kind == IntCC::Eq || kind == IntCC::Ne
         => mir::Icmp<Type::BOOL>(kind, x, 0);
-    case canonical (kind, mir::ExtendS<W>(x), 0) if kind == IntCC::Eq || kind == IntCC::Ne
+    case (kind, mir::ExtendS<W>(x), 0) if kind == IntCC::Eq || kind == IntCC::Ne
         => mir::Icmp<Type::BOOL>(kind, x, 0);
     // Both signed inputs are narrower than W, so their difference cannot overflow W.
     case (kind, mir::ISub<W>(mir::ExtendS<W>(x), mir::ExtendS<W>(y)), 0)

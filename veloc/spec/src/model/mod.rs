@@ -105,7 +105,6 @@ pub(crate) struct Op {
     pub signature_source: Option<SignatureSource>,
     pub text: Option<Node>,
     pub traits: BTreeSet<String>,
-    pub queries: BTreeMap<String, expr::Expr>,
     pub constraints: Vec<crate::model::constraints::Constraint>,
     pub identity: Option<BvConst>,
     pub absorbing: Option<BvConst>,

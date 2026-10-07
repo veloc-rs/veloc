@@ -374,7 +374,6 @@ fn invalid(a: sequence(u32), b: sequence(u32)) -> bool {
 // check: while
 // not: value_type
 // not: collect
-struct Summary { equal: bool }
 struct Data { left: u32, right: u32 }
 fn same(a: optional(u32), b: optional(u32)) -> bool {
     value = all(a, b, |x, y| x == y);
@@ -382,5 +381,5 @@ fn same(a: optional(u32), b: optional(u32)) -> bool {
 op Example(left: u32, right: u32) -> () {
     meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Data { left, right };
-    query summary -> Summary { equal: same(some(left), some(right)) }
+    verify { require(same(some(left), some(right)), "expected equal values"); }
 }

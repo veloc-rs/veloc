@@ -237,7 +237,7 @@ type Token = rust("crate::tokens::Token");
 ```
 
 A Rust binding declares a nominal, opaque data type. It emits no struct, enum
-or alias. Property fields, enum payloads, host signatures and query results
+or alias. Property fields, enum payloads and helper signatures
 resolve the declared Rust path; generated builder and text-codec signatures
 use the same mapping. Different defs names remain distinct even when their
 Rust paths happen to be identical.
@@ -375,27 +375,19 @@ automatically borrows a value for a declared `&self` receiver; helpers take
 references explicitly. Borrowed results from a method follow Rust's receiver
 lifetime elision, so the result cannot outlive that receiver.
 
-`verify(ctx: VerifyContext)` and `query name(ctx: SomeContext) -> Result { ... }` bind a
+`verify(ctx: VerifyContext)` binds a
 read-only reference supplied by the caller. Generated validators take concrete
 context parameters; they never construct a context or invoke a conversion.
 The MIR validation entry creates one `VerifyContext` for the current function and
 module and passes it through its instruction checks. It provides access to both
 constant storage and signatures.
 
-Each named query generates an `Inst` method whose parameters include its
-concrete context reference when needed. For example:
-`inst.stamp_info(dfg, &tokens)`. Context-free queries omit that
-parameter. No generic query-dispatch trait is needed. One query's opcode
-implementations must agree on the context type; context-free arms may share that
-entry. No context provider trait, conversion registry, or generic adapter is needed.
-
 MIR-specific context declarations live in `veloc/mir/defs/types.spec`, not the
 shared prelude. All types and helpers still require ordinary file-local imports.
 
 `optional(T)` lowers to `Option<T>`; `sequence(T)` lowers to a borrowed slice.
-Query-result records must remain owned; consume borrowed views and sequences
-inside the query or a helper. `?` propagates absence using the current validation
-diagnostic, or `None` in an instruction query. Helpers expand as expressions;
+`?` propagates absence using the current validation diagnostic.
+Helpers expand as expressions;
 their Rust implementation calls are emitted, never executed by the generator.
 
 Read-only determinism is a trusted implementation contract: `&self` alone cannot
@@ -728,14 +720,10 @@ op ExtendU<T: Integer | BOOL | vectors(BOOL), U: Integer>(arg: Value<T>) -> Valu
     }
 
 op Load(ptr: Value<PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
-    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
-    query memory_access -> MemoryAccess {
-        ptr, offset: i64(offset), ty: result, stored: none, flags,
-        effects: MemoryEffect::known(MemoryEffects::READ),
-    }
     }
 ```
 
@@ -743,7 +731,7 @@ Type requirements use the same `verify { require(predicate, diagnostic); }`
 expressions as structural checks; the old `where` relation list is not supported.
 Named results and generic variables directly denote types: `result.wider_than(T)`.
 Operand names denote SSA values, so their types use the declared `arg.ty()` method.
-Give a result a name when referencing it in a verifier or instruction query.
+Give a result a name when referencing it in a verifier.
 Result/type bindings resolve to signature slots at build
 time; no runtime name lookup or generic environment is stored. `type.element_bits()?` is a logical per-lane width, while
 `type.bit_size()?` preserves the whole-value fixed/scalable distinction. Undefined
@@ -760,73 +748,20 @@ vector-only valid recipe into a scalar constant evaluator. Constraints requiring
 properties or DFG/host queries remain in the structural validator; alternate
 layout constraints remain local to that layout.
 
-### Named instruction queries
+### Memory analysis
 
-Query results are ordinary structs. Declaring a struct alone does not generate
-an instruction method or make that struct an instruction-storage layout.
+MIR loads and stores expose their operands through `InstView` and access
+properties through `MemFlags`; they do not generate a memory-access descriptor.
+`FuncBody::memory_location(inst, layout)` computes a normalized byte range for
+shared memory analyses. `stack_access(location, flags)` checks entry-object
+bounds and alignment. These helpers do not establish initialization or remove
+volatile effects. Other instructions still report effects through
+`InstView::memory_effect()` even when no concrete byte range is available.
 
-```text
-struct MemoryAccess {
-    ptr: Value(Type::PTR),
-    offset: i64,
-    ty: Type,
-    stored: optional(Value),
-    flags: MemFlags,
-    effects: MemoryEffect,
-}
+Bounds and provenance analyses operate on instruction views and computed
+locations. Memory behavior remains a trusted metadata declaration.
 
-op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
-    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) },
-    mnemonic: "load",
-    storage: Load { ptr, offset, flags },
-    query memory_access -> MemoryAccess {
-        ptr,
-        offset: i64(offset),
-        ty: result,
-        stored: none,
-        flags,
-        effects: MemoryEffect::known(MemoryEffects::READ),
-    }
-}
-```
-
-The query name determines the generated method: `inst.memory_access(dfg)`.
-The return type is independent of that name; different queries can return the
-same struct. Every implementation of a particular query must agree on its
-result type and any explicit context type. A query may occur only once per
-operation. Context-free implementations can participate in a contextual query.
-
-The body uses ordinary checked struct construction with same-name field
-shorthand. All fields are required and helper calls are allowed in expressions.
-There is no separate interface field model, data emitter or recursive-type
-checker. The old `interface` declaration and `implements` field are rejected.
-`Value(Type::PTR)` refines an SSA reference at definition time but is represented
-as `Value` in Rust. Ordinary struct fields may also contain other structs,
-enums, optional values and fixed arrays; inline cycles are rejected.
-
-For an external dependency, declare a concrete Rust context explicitly:
-
-```text
-query stamp_info(ctx: Tokens) -> StampInfo {
-    stamp: ctx.stamp(number),
-    doubled: ctx.stamp(number).twice(),
-}
-```
-
-This generates `inst.stamp_info(dfg, &tokens)`, without context construction or
-conversion. Queries dispatch by opcode and read fields and result types only
-when their expressions need them. Callers cannot supply an unrelated result
-list. Unsupported instructions or unavailable results return `None`; queries
-do not revalidate MIR, add persistent fields, or allocate a new instruction.
-
-Metadata can reference a query by its explicit name, for example
-`field(memory_access, effects)`. The selected field must be compile-time
-constant. Memory behavior remains a trusted declaration, not a generator
-special case or a proof about executable semantics.
-
-The query emitter currently targets packed MIR. Operand-array output rejects
-query declarations during planning. Bounds and provenance analyses remain
-ordinary Rust code consuming the generated query result.
+### Ownership transfer
 
 Ownership transfer is attached to the logical parameter:
 
@@ -978,7 +913,7 @@ Builders, direct views and the optional structural validator share the checked
 projection. Neither construction nor views automatically run validation.
 Both storage backends normalize logical input reads into `model/access.rs`.
 Arrays, optional fields, pools and branch-table projections are resolved once.
-Constraint, query, ownership, text-printing and result-type consumers use these
+Constraint, ownership, text-printing and result-type consumers use these
 logical paths rather than reinterpreting storage bindings. Query generation
 shares one loop with host-specific dispatch/read setup.
 
@@ -1119,9 +1054,21 @@ Verification arithmetic uses checked signed 128-bit integers, not wrapping
 instruction values; property integers are widened without truncation.
 Typed helper bodies and arguments use their declared integer types instead.
 Constant arithmetic overflow is a definition error; dynamic overflow fails
-validation (or returns `None` from an instruction query). Neither path wraps.
+validation. Neither path wraps.
 
-Queries use named results, `value.ty()`, `len(sequence)`,
+Explicit integer casts distinguish two policies:
+
+- `checked_cast(value, i32)` returns `optional(i32)` and yields `none` outside
+  the destination range. Append `?` when failure should reject the current check
+  or rewrite.
+- `wrapping_cast(value, i64)` keeps the low destination bits, interpreting the
+  sign bit for a signed destination. Widening preserves the source integer's
+  value when representable.
+
+Both use the same semantics in static evaluation and generated Rust. Ordinary
+casts such as `i64(value)` continue to require lossless type conversions.
+
+Expressions use named results, `value.ty()`, `len(sequence)`,
 `type.lanes()?`, `type.min_size_bytes()?`, `type.is_ptr()`, `type.is_scalar()`,
 `type.is_vector()` and `type.is_fixed()` (a fixed-width vector).
 Lane counts and byte sizes are minima for scalable types. A target-dependent
@@ -1165,7 +1112,6 @@ Helpers are checked once and expanded at build time, with fresh names for
 lexical binders. They cannot recurse. Runtime value/type queries still need a
 DFG; module queries are only available to instruction verification. Pure helpers
 may call them; generated Rust trait calls enforce their transitive host requirements.
-An ordinary instruction query cannot gain module access by hiding it in a helper.
 Static metadata must reduce to a constant; it cannot read runtime operands.
 The old `constraints: [...]` syntax is rejected; there is no compatibility path.
 These declarations do not add construction-time checks to builders.

@@ -41,6 +41,8 @@ impl Expr {
             ExprKind::Unary(_, v)
             | ExprKind::Query(_, v)
             | ExprKind::Convert(v)
+            | ExprKind::CheckedCast(v)
+            | ExprKind::WrappingCast(v)
             | ExprKind::Some(v)
             | ExprKind::Try(v)
             | ExprKind::Field(v, _) => v.type_only(params),
@@ -152,6 +154,18 @@ struct Evaluator<'a> {
     locals: BTreeMap<usize, Value>,
 }
 
+fn integer_range(ty: &Ty) -> Option<(i128, i128)> {
+    Some(match ty.name() {
+        "u8" => (0, u8::MAX as i128),
+        "u32" => (0, u32::MAX as i128),
+        "u64" => (0, u64::MAX as i128),
+        "i32" => (i32::MIN as i128, i32::MAX as i128),
+        "i64" => (i64::MIN as i128, i64::MAX as i128),
+        "i128" => (i128::MIN, i128::MAX),
+        _ => return None,
+    })
+}
+
 impl Evaluator<'_> {
     fn eval(&mut self, expr: &Expr) -> Result<Value, EvalError> {
         use ExprKind as E;
@@ -215,6 +229,34 @@ impl Evaluator<'_> {
                         _ => unreachable!("checked integer expression"),
                     },
                     _ => unreachable!("checked binary expression"),
+                }
+            }
+            E::CheckedCast(value) | E::WrappingCast(value) => {
+                let V::Int(value) = self.eval(value)? else {
+                    unreachable!("integer cast")
+                };
+                let checked = matches!(expr.kind, E::CheckedCast(_));
+                let ty = if let Ty::Optional(ty) = &expr.ty {
+                    ty.as_ref()
+                } else {
+                    &expr.ty
+                };
+                let (min, max) = integer_range(ty).ok_or(Invalid)?;
+                if checked {
+                    V::Optional((min <= value && value <= max).then(|| Box::new(V::Int(value))))
+                } else {
+                    let value = if max == i128::MAX {
+                        value
+                    } else {
+                        let mask = if min == 0 { max } else { max * 2 + 1 };
+                        let truncated = value & mask;
+                        if min < 0 && truncated > max {
+                            truncated - mask - 1
+                        } else {
+                            truncated
+                        }
+                    };
+                    V::Int(value)
                 }
             }
             E::Convert(value) => self.eval(value)?,

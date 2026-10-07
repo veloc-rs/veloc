@@ -308,7 +308,6 @@ impl<'a> Parser<'a> {
             while !self.at(TokenKind::RBrace) {
                 let at = self.token.offset;
                 self.expect(TokenKind::Name("case"))?;
-                let canonical = self.eat(TokenKind::Name("canonical"))?;
                 self.expect(TokenKind::LParen)?;
                 let args =
                     self.sequence(TokenKind::RParen, |p| p.expression(0, Context::Rewrite))?;
@@ -319,15 +318,6 @@ impl<'a> Parser<'a> {
                         kind: Kind::List(args),
                     },
                 )]);
-                if canonical {
-                    fields.insert(
-                        "canonical".into(),
-                        Node {
-                            offset: at,
-                            kind: Kind::Name("true".into()),
-                        },
-                    );
-                }
                 if self.eat(TokenKind::Name("if"))? {
                     fields.insert("when".into(), self.expression(0, Context::Condition)?);
                 }
@@ -572,56 +562,6 @@ impl<'a> Parser<'a> {
         while !self.at(TokenKind::RBrace) {
             let offset = self.token.offset;
             let name = self.name()?;
-            if mode == Fields::Properties && name == "query" && !self.at(TokenKind::Eq) {
-                let query = self.name()?;
-                let param = if self.eat(TokenKind::LParen)? {
-                    let offset = self.token.offset;
-                    let name = self.name()?;
-                    self.expect(TokenKind::Colon)?;
-                    let ty = self.expression(depth + 1, Context::Type)?;
-                    self.expect(TokenKind::RParen)?;
-                    Some(Parameter {
-                        offset,
-                        name,
-                        moves: false,
-                        ty,
-                    })
-                } else {
-                    None
-                };
-                self.expect(TokenKind::Arrow)?;
-                let result = self.name()?;
-                let body = Node {
-                    offset,
-                    kind: Kind::Object(
-                        result,
-                        self.fields(depth + 1, Context::Expr, Fields::Literal)?,
-                    ),
-                };
-                let body = if let Some(param) = param {
-                    Node {
-                        offset,
-                        kind: Kind::Scoped(Box::new(param), Box::new(body)),
-                    }
-                } else {
-                    body
-                };
-                let entry = fields.entry("queries".into()).or_insert_with(|| Node {
-                    offset,
-                    kind: Kind::List(Vec::new()),
-                });
-                let Kind::List(queries) = &mut entry.kind else {
-                    return Err(self.error(offset, "queries are declared with query blocks"));
-                };
-                queries.push(Node {
-                    offset,
-                    kind: Kind::Query(query, Box::new(body)),
-                });
-                continue;
-            }
-            if mode == Fields::Properties && name == "queries" {
-                return Err(self.error(offset, "use named query blocks instead of a queries field"));
-            }
             if mode == Fields::Properties && name == "constraints" {
                 return Err(self.error(offset, "use a verify block instead of constraints"));
             }

@@ -99,11 +99,11 @@ fn Twice(ctx: &Numbers, n: u32) -> u32 { value = Next(ctx, Next(ctx, n)); }
 import "prelude.spec";
 import "helpers.spec";
 import "host.spec";
-struct Summary { count: u32 }
 struct Data { n: u32 }
 op Example(n: u32) -> () {
     meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
-    storage = Data { n: n }; query summary(ctx: Numbers) -> Summary { count: Twice(ctx, n) }
+    storage = Data { n: n };
+    verify(ctx: Numbers) { require(Twice(ctx, n) > n, "expected a larger value"); }
 }
 "#;
     files.write("consumer.spec", consumer);
@@ -111,7 +111,7 @@ op Example(n: u32) -> () {
     let generated = source.compile().unwrap();
     assert!(generated[veloc_spec::Emit::Instructions].contains("pub trait Numbers"));
     assert_eq!(
-        generated[veloc_spec::Emit::Instructions]
+        generated[veloc_spec::Emit::Validator]
             .matches("crate::type_methods::Numbers>::next")
             .count(),
         2

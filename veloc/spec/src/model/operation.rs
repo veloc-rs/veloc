@@ -102,16 +102,8 @@ pub(super) fn parse(
         })
         .transpose()?;
     let text = fields.optional("text");
-    let queries = expressions.bind(
-        source,
-        fields.optional("queries"),
-        &params,
-        &types,
-        &type_bindings,
-        vocabulary,
-    )?;
     let mut meta_node = fields.take("meta")?;
-    expressions.metadata(source, &mut meta_node, &queries, vocabulary)?;
+    expressions.metadata(source, &mut meta_node, vocabulary)?;
     let meta = crate::model::metadata::Pending::new(source, meta_node, data)?;
     let mut traits = BTreeSet::new();
     let constraints = fields.optional("verify");
@@ -151,7 +143,6 @@ pub(super) fn parse(
         source,
         data,
         expressions,
-        &queries,
         vocabulary,
         &traits,
         semantics.is_some(),
@@ -170,7 +161,6 @@ pub(super) fn parse(
         signature_source,
         text,
         traits,
-        queries: queries,
         constraints: Vec::new(),
         identity,
         absorbing,

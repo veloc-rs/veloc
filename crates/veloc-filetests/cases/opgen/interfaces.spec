@@ -5,106 +5,18 @@ type Example = rust("crate::Example") {
     expr = Type::I32;
 }
 
-// ----- interfaces/arbitrary-interface-and-helper-names
-// run: opgen
-// check: pub struct Summary
-// check: pub count: u32
-// check: pub fn summary(self, dfg:
-// check: count: *_f0
-// check: MemoryEffects>::READ
-struct Summary { count: u32, effects: MemoryEffect }
-// A declaration keyword remains a name in parameter and expression positions.
-fn Describe(op: u32) -> Summary {
-    value = Summary { count: op, effects: MemoryEffect::known(MemoryEffects::READ) };
-}
-struct Data { n: u32 }
-op Example(size: u32) -> Value<Type::I32> {
-    meta = OpInfo { memory: field(summary, effects) };
-    mnemonic = "example"; storage = Data { n: size };
-    query summary -> Summary { count: size, effects: MemoryEffect::known(MemoryEffects::READ) }
-}
-
-// ----- interfaces/refined-ssa-reference
-// run: opgen-error
-// check: projection type mismatch
-struct Address { base: Value(Type::PTR) }
-struct Data { base: Value }
-op Example(base: Value<Type::I32>) -> Value<Type::I32> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
-    mnemonic = "example"; storage = Data { base: base };
-    query address -> Address { base: base }
-}
-
-// ----- interfaces/result-index-is-explicit
-// run: opgen-error
-// check: expected value of type veloc_types::Type
-struct Answer { ty: Type }
-struct Data {}
-op Example() -> Value<Type::I32> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example"; storage = Data {};
-    query answer -> Answer { ty: missing }
-}
-
-// ----- interfaces/multiple-results-need-no-special-rule
-// run: opgen
-// check: dfg.inst_results(self).get(1)?
-struct Answer { ty: Type }
-struct Data {}
-op Example() -> (first: Value<Type::I32>, second: Value<Type::I64>) {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example"; storage = Data {};
-    query answer -> Answer { ty: second }
-}
-
-// ----- interfaces/runtime-data-is-not-static-metadata
-// run: opgen-error
-// check: metadata projection must be compile-time constant
-struct Summary { count: u32 }
-struct Info { count: u32 }
-struct Data { count: u32 }
-op Example(count: u32) -> Value<Type::I32> {
-    meta = Info { count: field(summary, count) };
-    mnemonic = "example"; storage = Data { count: count };
-    query summary -> Summary { count: count }
-}
-
-// ----- interfaces/forward-helpers-and-arrays
-// run: opgen
-// check: pub items: [crate::inst::Item; 2]
-// check: Item { n: *_f0 }
-struct Item { n: u32 }
-struct Pair { items: array(Item, 2) }
-fn Describe(n: u32) -> Pair { value = Pair { items: [Make(n), Make(n)] }; }
-fn Make(n: u32) -> Item { value = Item { n: n }; }
-struct Data { n: u32 }
-op Example(n: u32) -> Value<Type::I32> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example"; storage = Data { n: n };
-    query pair -> Pair { items: [Make(n), Make(n)] }
-}
-
 // ----- interfaces/recursive-helpers-even-if-unused
 // run: opgen-error
 // check: recursive projection functions are not supported
 fn First(n: u32) -> u32 { value = Second(n); }
 fn Second(n: u32) -> u32 { value = First(n); }
 
-// ----- interfaces/a-storage-struct-can-also-be-query-data
-// run: opgen
-// check: pub struct Data
-// check: pub struct Summary
-// check: data: Data { n: *_f0 }
-struct Data { n: u32 }
-struct Summary { data: Data }
-op Example(n: u32) -> Value<Type::I32> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example"; storage = Data { n: n };
-    query summary -> Summary { data: Data { n: n } }
-}
-
 // ----- interfaces/unused-function-body-is-checked
 // run: opgen-error
 // check: projection type mismatch
 fn Bad(n: bool) -> u32 { value = n; }
 
-// ----- interfaces/recursive-query-data
+// ----- interfaces/recursive-data
 // run: opgen-error
 // check: recursive inline data type
 struct First { other: optional(Second) }
@@ -115,57 +27,24 @@ struct Second { other: First }
 // check: projection conversion must be lossless
 fn Narrow(n: u64) -> u32 { value = u32(n); }
 
-// ----- interfaces/missing-binding
-// run: opgen-error
-// check: projection fields must exactly match the declaration
-struct Summary { count: u32, valid: bool }
-struct Data { n: u32 }
-op Example(n: u32) -> Value<Type::I32> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example"; storage = Data { n: n };
-    query summary -> Summary { count: n }
-}
-
-// ----- interfaces/duplicate-interface
-// run: opgen-error
-// check: duplicate query `summary`
-struct Summary { count: u32 }
-struct Data { n: u32 }
-op Example(n: u32) -> Value<Type::I32> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example"; storage = Data { n: n };
-    query summary -> Summary { count: n }
-    query summary -> Summary { count: n }
-}
-
 // ----- interfaces/old-record-keyword-is-rejected
 // run: opgen-error
 // check: unknown definition kind `record`
 record Legacy {}
 
-// ----- interfaces/unknown-query-must-not-imply-purity
-// run: opgen-error
-// check: unmodeled operations must declare their memory effect
-struct Summary { count: u32 }
-struct Data { n: u32 }
-op Example(n: u32) -> Value<Type::I32> {
-    meta = OpInfo {}; mnemonic = "example"; storage = Data { n: n };
-    query summary -> Summary { count: n }
-}
-
 // ----- host/arbitrary-host-methods-are-declaration-driven
 // run: opgen
 // check: pub trait Numbers
 // check: fn next(&self, n: u32) -> Option<u32>
-// check: pub fn summary(self, dfg:
 // check: <crate::host::Numbers as crate::type_methods::Numbers>::next(_context, *_f0)
 type Numbers = rust("crate::host::Numbers") {
     fn next(&self, n: u32) -> optional(u32);
 }
-struct Summary { count: u32 }
 fn Count(ctx: &Numbers, n: u32) -> u32 { value = ctx.next(n)?; }
 struct Data { n: u32 }
 op Example(n: u32) -> () {
     meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
-    storage = Data { n: n }; query summary(ctx: Numbers) -> Summary { count: Count(ctx, n) }
+    storage = Data { n: n };
     verify(ctx: Numbers) { require(Count(ctx, n) > n, "no next value"); }
 }
 
@@ -173,11 +52,11 @@ op Example(n: u32) -> () {
 // run: opgen
 // check: <crate::host::VerifyContext as crate::type_methods::VerifyContextInfo>::signature(_context, *_f0)
 fn Count(ctx: &VerifyContext, sig: SigId) -> i128 { value = len(ctx.signature(sig)?.params()); }
-struct Summary { count: i128 }
 struct Data { sig: SigId }
 op Example(sig: SigId) -> () {
     meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
-    storage = Data { sig: sig }; query summary(ctx: VerifyContext) -> Summary { count: Count(ctx, sig) }
+    storage = Data { sig: sig };
+    verify(ctx: VerifyContext) { require(Count(ctx, sig) > 0, "expected parameters"); }
 }
 
 // ----- host/optional-host-results-must-be-handled
@@ -194,22 +73,6 @@ fn Next(n: u32) -> u32 { value = n?; }
 // run: opgen-error
 // check: projection type mismatch
 fn Bad(ctx: &VerifyContext, n: u32) -> optional(&Signature) { value = ctx.function_signature(n); }
-
-// ----- host/opaque-host-queries-are-not-static-metadata
-// run: opgen-error
-// check: metadata projection must be compile-time constant
-type Numbers = rust("crate::host::Numbers") {
-    fn next(&self, n: u32) -> optional(u32);
-}
-fn Count(ctx: &Numbers, n: u32) -> u32 { value = ctx.next(n)?; }
-struct Summary { count: u32 }
-struct Info { count: u32, memory: MemoryEffect }
-struct Empty {}
-op Example() -> () {
-    meta = Info { count: field(summary, count), memory: MemoryEffect::NONE };
-    query summary(ctx: Numbers) -> Summary { count: Count(ctx, 1) }
-    mnemonic = "example"; storage = Empty {};
-}
 
 // ----- host/legacy-module-query-is-not-a-hidden-hook
 // run: opgen-error
@@ -229,14 +92,12 @@ context query {}
 // ----- host/unused-host-needs-no-adapter
 // run: opgen
 // check: pub trait Unused
-// check: pub fn summary(self, dfg:
 // not: let _host
 type Unused = rust("crate::host::Unused") { fn number(&self) -> u32; }
-struct Summary { count: u32 }
 struct Data { n: u32 }
 op Example(n: u32) -> () {
     meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
-    storage = Data { n: n }; query summary -> Summary { count: n }
+    storage = Data { n: n };
 }
 
 // ----- rust-types/declared-paths-are-shared-by-fields-and-host-signatures
@@ -550,21 +411,19 @@ op Check() -> () {
     mnemonic = "check"; storage = Empty {};
 }
 
-// ----- expressions/helpers-share-verification-query-and-metadata-expressions
+// ----- expressions/helpers-share-verification-and-metadata-expressions
 // run: opgen
-// check: pub fn summary(self, dfg:
 // check: checked_mul(2u64)
 // check: count: 14
 // check: valid: true
 struct Info { count: u64, valid: bool, memory: MemoryEffect }
-struct Summary { count: u64 }
 fn Twice(n: u64) -> u64 { value = n * 2; }
 fn Positive(n: u64) -> bool { value = 0 < n; }
 struct Data { n: u64 }
 op Example(n: u64) -> () {
     meta = Info { count: Twice(7), valid: Positive(Twice(7)), memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Data { n: n };
-    query summary -> Summary { count: Twice(n) }
+
     verify {
         require(Positive(Twice(n)), "expected a positive doubled value");
     }
@@ -611,7 +470,7 @@ fn len(n: u32) -> u32 { value = n; }
 struct Data {}
 op Example() -> Value<Type::I32> { constraints = [true]; }
 
-// ----- borrowed-types/query-results-cannot-retain-borrowed-views
+// ----- borrowed-types/records-cannot-retain-borrowed-views
 // run: opgen-error
 // check: expected data type name
 struct Escaped { signature: &Signature }
@@ -636,91 +495,12 @@ op Example() -> () {
 // check: expected `{`
 extern struct Legacy { fn count() -> u32; }
 
-// ----- borrowed-types/query-contexts-must-agree
-// run: opgen-error
-// check: query `summary` requires incompatible context types
-type FirstContext = rust("crate::FirstContext") { fn count(&self) -> u32; }
-type SecondContext = rust("crate::SecondContext") { fn count(&self) -> u32; }
-struct Summary { count: u32 }
-struct Empty {}
-op First() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "first"; storage = Empty {};
-    query summary(ctx: FirstContext) -> Summary { count: ctx.count() }
-}
-op Second() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "second"; storage = Empty {};
-    query summary(ctx: SecondContext) -> Summary { count: ctx.count() }
-}
-
-// ----- borrowed-types/context-free-and-contextual-query-arms
-// run: opgen
-// check: _context: &crate::Counter
-// not: ::from(
-type Counter = rust("crate::Counter") { fn count(&self) -> u32; }
-struct Summary { count: u32 }
-struct Empty {}
-op First() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "first"; storage = Empty {};
-    query summary(ctx: Counter) -> Summary { count: ctx.count() }
-}
-op Second() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "second"; storage = Empty {};
-    query summary -> Summary { count: 0 }
-}
-
-// ----- expressions/query-emits-declared-host-calls
-// run: opgen
-// check: <crate::host::VerifyContext as crate::type_methods::VerifyContextInfo>::function_signature(_context, *_f0)
-struct Summary { count: i128 }
-struct Data { function: FuncId }
-op Example(function: FuncId) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
-    mnemonic = "example"; storage = Data { function: function };
-    query summary(ctx: VerifyContext) -> Summary { count: len(ctx.function_signature(function)?.params()) }
-}
-
-// ----- interfaces/constant-query-needs-no-view-or-results
-// run: opgen
-// check: pub fn summary(self, dfg:
-// check: match dfg.opcode(self)
-// not: dfg.inst(self)
-// not: dfg.inst_results(self)
-struct Summary { count: u32 }
-struct Empty {}
-op Example() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
-    mnemonic = "example"; storage = Empty {};
-    query summary -> Summary { count: 7 }
-}
-
-// ----- queries/plain-structs-do-not-create-query-methods
-// run: opgen
-// check: pub struct SizeInfo
-// not: pub fn size_info
-struct SizeInfo { count: u32 }
-struct size_info { count: u32 }
-
-// ----- queries/one-name-requires-one-result-type
-// run: opgen-error
-// check: query `info` requires the same result type across operations
-struct First { count: u32 }
-struct Second { count: u32 }
-struct Empty {}
-op A() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "a"; storage = Empty {};
-    query info -> First { count: 1 }
-}
-op B() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "b"; storage = Empty {};
-    query info -> Second { count: 2 }
-}
-
-// ----- queries/legacy-interface-is-rejected
+// ----- interfaces/legacy-interface-is-rejected
 // run: opgen-error
 // check: unknown definition kind `interface`
 interface Old { count = u32; }
 
-// ----- queries/legacy-implements-is-rejected
+// ----- interfaces/legacy-implements-is-rejected
 // run: opgen-error
 // check: unknown field `implements`
 struct Info { count: u32 }

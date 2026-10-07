@@ -1,4 +1,4 @@
-//! Checked expression rules shared by concrete SSA matching and e-class queries.
+//! Checked expression rules for direct reductions and e-class queries.
 //! Type sources refer to pattern slots; storage layout and application policy
 //! belong to the runtime hosts.
 use crate::{
@@ -84,7 +84,6 @@ pub(super) struct CheckedRule {
     pub pattern: Vec<Pattern>,
     pub replacement: Recipe,
     pub guard: Option<Predicate>,
-    pub canonical: bool,
     pub name: String,
 }
 pub(super) enum Filter {
@@ -92,7 +91,7 @@ pub(super) enum Filter {
     Constant(usize, u64, bool),
 }
 impl CheckedRule {
-    /// Operand permutations are shared by both matchers and the flat fast path.
+    /// Operand permutations are shared by e-class queries and direct reductions.
     pub fn orders(&self, slot: usize) -> Vec<Vec<usize>> {
         let PatternKind::Operation {
             args, commutative, ..
@@ -256,7 +255,6 @@ pub(super) fn compile(
                     ty,
                     &rhs,
                     None,
-                    false,
                     format!("{} primitive law", op.name),
                 )?);
             }
@@ -268,9 +266,7 @@ pub(super) fn compile(
         };
         let fail = |message| Error::at(source.text(), decl.offset, message);
         if decl.fields.keys().any(|k| k != "cases") {
-            return Err(fail(
-                "expression groups only contain cases; application policy is per case",
-            ));
+            return Err(fail("expression groups only contain cases"));
         }
         if !matches!(&sig.results, Results::Fixed(r) if r.is_empty()) {
             return Err(fail("expression rules do not declare return values"));
@@ -336,7 +332,6 @@ pub(super) fn compile(
                 ty,
                 rhs,
                 fields.get("when"),
-                fields.contains_key("canonical"),
                 format!("{path} case at byte {}", case.offset),
             )?;
             if checker.attributes.contains_key(&root.name)
@@ -488,7 +483,6 @@ impl<'a> Checker<'a> {
         ty: TypeRef,
         rhs: &Node,
         guard: Option<&Node>,
-        canonical: bool,
         name: String,
     ) -> Result<CheckedRule, Error> {
         self.pattern.push(Pattern {
@@ -510,7 +504,6 @@ impl<'a> Checker<'a> {
             pattern: std::mem::take(&mut self.pattern),
             replacement,
             guard,
-            canonical,
             name,
         })
     }

@@ -3,7 +3,7 @@
 //! unused reads; value forwarding remains a separate memory optimization.
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::memory::Access;
+use veloc_mir::{InstView, MemFlags, memory::Location};
 
 pub struct MemoryValidityPass;
 
@@ -23,38 +23,34 @@ impl FunctionPass for MemoryValidityPass {
         let f = am.function_mut();
         let mut dead = Vec::new();
         for block in f.layout().block_order() {
-            let mut reads = Vec::<(Access, i64)>::new();
+            let mut reads = Vec::<(Location, MemFlags, i64)>::new();
             for inst in f.layout().block_insts(block) {
                 let view = f.dfg().inst(inst);
                 if view.memory_effect().may_free() || view.has_volatile_access() {
                     reads.clear();
                     continue;
                 }
-                if view.opcode() != veloc_mir::Opcode::Load {
-                    continue;
-                }
-                let Some(access) = inst.memory_access(f.dfg()).and_then(|a| a.canonical(f)) else {
+                let InstView::Load { flags, .. } = view else {
                     continue;
                 };
-                if access.stored.is_some() {
-                    continue;
-                }
-                let Some(bytes) = access.bytes(layout) else {
+                let Some(location) = f.memory_location(inst, layout) else {
                     continue;
                 };
-                let Some(end) = access.offset.checked_add(i64::from(bytes)) else {
+                let Some(end) = location.offset.checked_add(i64::from(location.bytes)) else {
                     continue;
                 };
-                let covered = reads.iter().any(|&(previous, previous_end)| {
-                    previous.ptr == access.ptr
-                        && previous.offset <= access.offset
-                        && end <= previous_end
-                        && previous.flags.alignment() >= access.flags.alignment()
-                        && access
-                            .offset
-                            .checked_sub(previous.offset)
-                            .is_some_and(|delta| delta % i64::from(access.flags.alignment()) == 0)
-                });
+                let covered = reads
+                    .iter()
+                    .any(|&(previous, previous_flags, previous_end)| {
+                        previous.base == location.base
+                            && previous.offset <= location.offset
+                            && end <= previous_end
+                            && previous_flags.alignment() >= flags.alignment()
+                            && location
+                                .offset
+                                .checked_sub(previous.offset)
+                                .is_some_and(|delta| delta % i64::from(flags.alignment()) == 0)
+                    });
                 if covered
                     && f.dfg()
                         .inst_results(inst)
@@ -67,7 +63,7 @@ impl FunctionPass for MemoryValidityPass {
                     if reads.len() == 64 {
                         reads.remove(0);
                     }
-                    reads.push((access, end));
+                    reads.push((location, flags, end));
                 }
             }
         }

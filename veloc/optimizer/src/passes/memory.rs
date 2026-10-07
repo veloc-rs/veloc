@@ -57,11 +57,14 @@ pub fn run_memory(
     for &block in &blocks {
         for inst in func.layout().block_insts(block) {
             let view = func.dfg().inst(inst);
-            let access = inst.memory_access(func.dfg());
             for &value in func.dfg().operands(inst) {
                 let address_only = match view {
                     InstView::PtrOffset { .. } => true,
-                    _ => access.is_some_and(|a| value == a.ptr && a.stored != Some(value)),
+                    InstView::Load { ptr, .. } => value == ptr,
+                    InstView::Store {
+                        ptr, value: stored, ..
+                    } => value == ptr && value != stored,
+                    _ => false,
                 };
                 if !address_only {
                     escape_roots.push(value);
@@ -106,14 +109,18 @@ pub fn run_memory(
                 }
             }
             let effect = view.memory_effect();
-            let known = inst.memory_access(func.dfg()).and_then(|access| {
-                if view.has_volatile_access() {
+            let known = func.memory_location(inst, layout).and_then(|location| {
+                let flags = match view {
+                    InstView::Load { flags, .. } | InstView::Store { flags, .. } => flags,
+                    _ => return None,
+                };
+                if flags.is_volatile() {
                     return None;
                 }
-                let (object, offset) = func.stack_access(access, layout)?;
-                Some((access, object, offset, access.bytes(layout)?))
+                let (object, offset) = func.stack_access(location, flags)?;
+                Some((object, offset, location.bytes))
             });
-            let Some((access, object, offset, bytes)) = known else {
+            let Some((object, offset, bytes)) = known else {
                 if !effect.is_none()
                     || view.has_volatile_access()
                     || view.opcode().spec().may_trap()
@@ -122,7 +129,7 @@ pub fn run_memory(
                 }
                 continue;
             };
-            if let Some(value) = access.stored {
+            if let InstView::Store { value, .. } = view {
                 cells.retain(|cell| {
                     if !cell.overlaps(object, offset, bytes) {
                         return true;
@@ -139,17 +146,18 @@ pub fn run_memory(
                     object,
                     offset,
                     bytes,
-                    ty: access.ty,
+                    ty: func.dfg().value_type(value),
                     value,
                     store: Some(inst),
                 });
-            } else {
-                let previous = cells.iter().find(|cell| {
-                    cell.object == object && cell.offset == offset && cell.ty == access.ty
-                });
+            } else if let InstView::Load { .. } = view {
+                let result = func.dfg().first_result(inst).expect("load result");
+                let ty = func.dfg().value_type(result);
+                let previous = cells
+                    .iter()
+                    .find(|cell| cell.object == object && cell.offset == offset && cell.ty == ty);
                 if let Some(previous) = previous {
                     let value = previous.value;
-                    let result = func.dfg().first_result(inst).expect("read result");
                     func.edit().replace_all_uses(result, value);
                     dead.insert(inst);
                 } else {
@@ -163,8 +171,8 @@ pub fn run_memory(
                         object,
                         offset,
                         bytes,
-                        ty: access.ty,
-                        value: func.dfg().first_result(inst).expect("read result"),
+                        ty,
+                        value: result,
                         store: None,
                     });
                 }

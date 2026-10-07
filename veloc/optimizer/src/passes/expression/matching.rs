@@ -1,12 +1,12 @@
-//! Equality queries over a stable graph. Captured matches use the same checked
-//! construction plans as SSA simplification after enumeration finishes.
+//! Equality queries over a stable graph. Captured matches construct checked
+//! replacement plans after enumeration finishes.
 use super::storage::{Expressions, Value};
+use crate::evaluate::matches_constant;
 use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use veloc_bytecode::{Reader, equivalence::Instruction as Op};
-use veloc_mir::{Opcode, Type, constant::ScalarConst};
-use veloc_types::TypeInfo;
+use veloc_mir::{Opcode, Type};
 
 use super::{
     Limit,
@@ -18,6 +18,10 @@ struct Group {
     cursors: usize,
     entry: usize,
     work: usize,
+}
+
+pub(super) fn supports(opcode: Opcode) -> bool {
+    group(opcode).is_some()
 }
 
 /// One input to a generated query. Its entry contains only branches compatible
@@ -50,18 +54,6 @@ impl Trigger {
             matches_constant(Some(value), PROGRAM.constants[constant], equal)
         })
     }
-}
-
-/// Pattern literals are masked to the matched type. Unknown values establish
-/// neither equality nor inequality; scheduling and the VM use the same check.
-fn matches_constant(value: Option<ScalarConst>, bits: u64, equal: bool) -> bool {
-    value.is_some_and(|c| {
-        c.ty()
-            .element_bits()
-            .and_then(|n| 64u32.checked_sub(n))
-            .and_then(|shift| u64::MAX.checked_shr(shift))
-            .is_some_and(|mask| (c.to_bits() == (bits & mask)) == equal)
-    })
 }
 
 pub(super) struct Edge {

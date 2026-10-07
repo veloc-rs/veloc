@@ -111,7 +111,6 @@ impl Pending {
         source: &str,
         types: &Types,
         expressions: &mut Library,
-        env: &BTreeMap<String, Expr>,
         vocabulary: super::Vocabulary<'_>,
         traits: &BTreeSet<String>,
         semantic: bool,
@@ -233,7 +232,6 @@ impl Pending {
                 source,
                 &node,
                 &PropertyType::Named("bool".into()),
-                env,
                 vocabulary,
             )?)
         } else {
@@ -250,7 +248,7 @@ impl Pending {
                         format!("missing field `{}` in {name_}", field.name),
                     )
                 })?;
-                let expr = expressions.metadata_field(source, &node, &field.ty, env, vocabulary)?;
+                let expr = expressions.metadata_field(source, &node, &field.ty, vocabulary)?;
                 Ok((field.name.clone(), expr))
             })
             .collect::<Result<_, Error>>()?;
@@ -262,7 +260,6 @@ impl Pending {
                         source,
                         &node,
                         &PropertyType::Named("bool".into()),
-                        env,
                         vocabulary,
                     )?,
                     message,

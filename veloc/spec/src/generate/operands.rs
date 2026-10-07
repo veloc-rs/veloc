@@ -1,4 +1,4 @@
-//! Array-storage Rust host. Logical accesses, queries and contracts are shared.
+//! Array-storage Rust host. Logical accesses and contracts are shared.
 use crate::model::{Definitions, Op};
 use crate::storage::operands::{Domain, Operands, Shape, domain_index};
 use std::fmt::Write;
@@ -104,7 +104,6 @@ impl Operands {
                         .iter()
                         .filter(|c| !c.type_only || c.binding.is_some())
                         .map(|c| &c.condition)
-                        .chain(op.queries.values())
                 })
                 .any(crate::model::expr::Expr::needs_value_types);
         let type_method = if value_types {
@@ -167,10 +166,6 @@ impl Operands {
         out.push_str("_ => panic!(\"expected instruction from this opcode set\"),\n} }\n");
         self.emit_signature_host(&mut out, defs);
         self.emit_validator(&mut out, defs);
-        out.push_str(&crate::generate::queries::generate(
-            defs,
-            crate::generate::queries::Host::Operands,
-        ));
         out.push_str(&crate::generate::ownership::operand_methods(defs));
         out.push_str("}\n");
         let (host, fields) = self.payloads.as_ref().map_or(

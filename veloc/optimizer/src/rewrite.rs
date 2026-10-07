@@ -1,11 +1,10 @@
-//! Shared directed rewrites. Matching is immutable; each consumer decides how
-//! to materialize the checked plan and publish the resulting equality.
+//! Checked replacement plans for equality search. Construction folds direct
+//! reductions before the graph allocates candidates or publishes equalities.
 use crate::evaluate::Properties;
-use hashbrown::HashSet;
 use smallvec::SmallVec;
-use veloc_mir::{FuncBody, Inst, Opcode, ScalarConst, Type, TypeInfo, Value};
+use veloc_mir::{Opcode, ScalarConst, Type, TypeInfo};
 
-/// Read-only operation access shared by MIR and candidate storage.
+/// Facts available to generated guards and replacement recipes.
 pub(crate) trait View {
     type Value: Copy + Eq;
     fn ty(&self, value: Self::Value) -> Type;
@@ -13,42 +12,7 @@ pub(crate) trait View {
     fn properties(&self, value: Self::Value) -> Option<Properties>;
 }
 
-pub(crate) struct Node<'a> {
-    pub opcode: Opcode,
-    pub args: &'a [Value],
-}
-
-impl View for FuncBody {
-    type Value = Value;
-    fn ty(&self, value: Value) -> Type {
-        self.dfg().value_type(value)
-    }
-    fn constant(&self, value: Value) -> Option<ScalarConst> {
-        self.dfg().as_scalar_const(value)
-    }
-    fn properties(&self, value: Value) -> Option<Properties> {
-        Some(Properties::read(
-            self.dfg().inst(self.dfg().value_inst(value)?),
-        ))
-    }
-}
-
-impl Context<'_> {
-    pub fn node(&self, value: Value) -> Option<Node<'_>> {
-        let dfg = self.body.dfg();
-        let inst = dfg.value_inst(value)?;
-        let view = dfg.inst(inst);
-        if dfg.inst_results(inst).len() != 1 || !view.can_speculate() {
-            return None;
-        }
-        Some(Node {
-            opcode: view.opcode(),
-            args: dfg.operands(inst),
-        })
-    }
-}
-
-pub(crate) struct Context<'a, R: View + ?Sized = FuncBody> {
+pub(crate) struct Context<'a, R: View + ?Sized> {
     pub body: &'a R,
     pub layout: Option<veloc_types::DataLayout>,
 }
@@ -65,24 +29,15 @@ impl<R: View + ?Sized> Context<'_, R> {
     pub fn properties(&self, value: R::Value) -> Option<Properties> {
         self.body.properties(value)
     }
-    pub fn matches_constant(&self, value: R::Value, bits: u64) -> bool {
-        self.constant(value).is_some_and(|c| {
-            c.ty()
-                .element_bits()
-                .and_then(|n| 64u32.checked_sub(n))
-                .and_then(|shift| u64::MAX.checked_shr(shift))
-                .is_some_and(|mask| c.to_bits() == (bits & mask))
-        })
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Input<V = Value> {
+pub(crate) enum Input<V> {
     Value(V),
     Step(usize),
 }
 
-pub(crate) enum Step<V = Value> {
+pub(crate) enum Step<V> {
     Constant(ScalarConst),
     Build {
         opcode: Opcode,
@@ -103,7 +58,7 @@ impl<V> Default for PlanBuilder<V> {
     }
 }
 
-pub(crate) struct Plan<V = Value> {
+pub(crate) struct Plan<V> {
     steps: SmallVec<[Step<V>; 2]>,
     result: Input<V>,
 }
@@ -171,7 +126,7 @@ impl<V: Copy + Eq> PlanBuilder<V> {
             return None;
         }
         // Folding a parent can discard a whole planned subtree. Keep only the
-        // reachable steps so both hosts price and materialize the same work.
+        // reachable steps so discarded computations consume no graph budget.
         let mut live = SmallVec::<[bool; 4]>::new();
         live.resize(self.steps.len(), false);
         if let Input::Step(i) = result {
@@ -216,66 +171,6 @@ impl<V: Copy + Eq> PlanBuilder<V> {
     }
 }
 
-impl Plan {
-    /// Price only computations that this replacement can actually remove.
-    /// Shared definitions and values reused by the plan remain live.
-    pub fn profitable(&self, body: &FuncBody, root: Value, canonical: bool) -> bool {
-        if matches!(self.result, Input::Value(v) if v == root) {
-            return false;
-        }
-        let Some(inst) = body.dfg().value_inst(root) else {
-            return false;
-        };
-        let mut retained = HashSet::new();
-        let mut retain = |input: Input| {
-            if let Input::Value(v) = input {
-                retained.insert(v);
-            }
-        };
-        retain(self.result);
-        let mut builds = 0;
-        for step in &self.steps {
-            if let Step::Build { args, .. } = step {
-                builds += 1;
-                for &arg in args {
-                    retain(arg);
-                }
-            }
-        }
-        if retained.contains(&root) {
-            return false;
-        }
-        if builds == 0 {
-            return true;
-        }
-        let mut removed = HashSet::<Inst>::new();
-        removed.insert(inst);
-        let mut pending: Vec<_> = body.dfg().operands(inst).to_vec();
-        while let Some(value) = pending.pop() {
-            if retained.contains(&value) {
-                continue;
-            }
-            let Some(def) = body.dfg().value_inst(value) else {
-                continue;
-            };
-            if removed.contains(&def) || !body.dfg().inst(def).can_speculate() {
-                continue;
-            }
-            if body.dfg().inst_results(def).iter().all(|v| {
-                !retained.contains(v)
-                    && body
-                        .dfg()
-                        .uses(*v)
-                        .all(|site| removed.contains(&site.inst()))
-            }) {
-                removed.insert(def);
-                pending.extend(body.dfg().operands(def));
-            }
-        }
-        builds < removed.len() || (canonical && builds == removed.len())
-    }
-}
-
 impl<V: Copy> Plan<V> {
     pub fn materialize<E>(
         &self,
@@ -297,33 +192,4 @@ impl<V: Copy> Plan<V> {
         }
         Ok(value(self.result, &values))
     }
-}
-
-/// Materialize before the matched instruction; the caller replaces its uses,
-/// erases it and wakes all affected instructions in its worklist.
-pub(crate) fn apply(f: &mut FuncBody, anchor: Inst, plan: &Plan) -> (Value, SmallVec<[Inst; 2]>) {
-    let mut created = SmallVec::new();
-    let value = plan
-        .materialize::<core::convert::Infallible>(|step, args| {
-            let value = match *step {
-                Step::Constant(c) => f.edit().constant(c.into()),
-                Step::Build {
-                    opcode,
-                    ty,
-                    properties,
-                    ..
-                } => {
-                    let inst = f.edit().insert_before(
-                        anchor,
-                        |w| properties.write(opcode, args, w),
-                        &[ty],
-                    );
-                    created.push(inst);
-                    f.dfg().first_result(inst).unwrap()
-                }
-            };
-            Ok(value)
-        })
-        .unwrap();
-    (value, created)
 }

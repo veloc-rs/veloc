@@ -4,7 +4,7 @@ use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use hashbrown::{HashMap, HashSet};
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::memory::{Address, Location};
-use veloc_mir::{Block, FuncBody, Inst, Type};
+use veloc_mir::{Block, FuncBody, Inst, InstView, Type};
 use veloc_types::DataLayout;
 
 pub struct LoadCsePass;
@@ -66,7 +66,7 @@ impl FunctionPass for LoadCsePass {
                     let location = config
                         .data_layout
                         .as_ref()
-                        .and_then(|layout| inst.memory_access(func.dfg())?.location(func, layout));
+                        .and_then(|layout| func.memory_location(inst, layout));
                     if !barrier && let Some(location) = location {
                         stores.push((index, location));
                     } else {
@@ -82,20 +82,22 @@ impl FunctionPass for LoadCsePass {
         for block in order.into_iter().rev() {
             let insts: Vec<_> = func.layout().block_insts(block).collect();
             for inst in insts {
-                let Some(access) = inst.memory_access(func.dfg()) else {
+                let InstView::Load { ptr, offset, flags } = func.dfg().inst(inst) else {
                     continue;
                 };
-                if access.stored.is_some() || func.dfg().inst(inst).has_volatile_access() {
+                if flags.is_volatile() {
                     continue;
                 }
-                let Some(address) = func.address(access.ptr, access.offset) else {
+                let Some(address) = func.address(ptr, i64::from(offset)) else {
                     continue;
                 };
                 let location = config
                     .data_layout
                     .as_ref()
-                    .and_then(|layout| access.location(func, layout));
-                let candidates = available.entry((address, access.ty)).or_default();
+                    .and_then(|layout| func.memory_location(inst, layout));
+                let result = func.dfg().first_result(inst).expect("load result");
+                let ty = func.dfg().value_type(result);
+                let candidates = available.entry((address, ty)).or_default();
                 let previous = candidates.iter().rev().copied().find(|old| {
                     let (definition, start) = positions[old];
                     dom.dominates(definition, block)
@@ -110,7 +112,6 @@ impl FunctionPass for LoadCsePass {
                 });
                 if let Some(old) = previous {
                     let value = func.dfg().first_result(old).unwrap();
-                    let result = func.dfg().first_result(inst).unwrap();
                     func.edit().replace_all_uses(result, value);
                     removed.push(inst);
                 } else {

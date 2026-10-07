@@ -4,17 +4,6 @@ import "formats.spec";
 // Storage mappings preserve the current compact MIR layout and SSA traversal order.
 // Structural constraints compile to direct checks, not a runtime rule list.
 
-// Query data, not instruction storage. Value(Type::PTR) checks the logical signature
-// at definition time; the runtime representation is an ordinary SSA Value.
-struct MemoryAccess {
-    ptr: Value(Type::PTR),
-    offset: i64,
-    ty: Type,
-    stored: optional(Value),
-    flags: MemFlags,
-    effects: MemoryEffect,
-}
-
 // First-class callable values. Captures bind a prefix of the function parameters;
 // the resulting callable signature describes the remaining inputs and answer.
 // Allocation/ownership are effects: these operations are not arithmetic CSE/DCE.
@@ -555,33 +544,17 @@ op PtrToInt(arg: Value<Type::PTR>) -> Value<ScalarInteger> {
 }
 
 op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
-    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) };
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
     mnemonic = "load";
     storage = Load { ptr, offset, flags };
     text = "{.flags} {ptr}, offset={offset}";
-    query memory_access -> MemoryAccess {
-        ptr,
-        offset: i64(offset),
-        ty: result,
-        stored: none,
-        flags,
-        effects: MemoryEffect::known(MemoryEffects::READ),
-    }
 }
 
 op Store(ptr: Value<Type::PTR>, value: Value<Any>, offset: u32, flags: MemFlags) -> () {
-    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) };
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::WRITE) };
     mnemonic = "store";
     storage = Store { ptr, value, offset, flags };
     text = "{.flags} {value}, {ptr}, offset={offset}";
-    query memory_access -> MemoryAccess {
-        ptr,
-        offset: i64(offset),
-        ty: value.ty(),
-        stored: some(value),
-        flags,
-        effects: MemoryEffect::known(MemoryEffects::WRITE),
-    }
 }
 
 op GlobalAddr(global: GlobalId) -> Value<Type::PTR> {

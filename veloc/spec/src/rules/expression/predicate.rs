@@ -52,7 +52,7 @@ impl Predicate {
             Self::Bits(ty) => format!("u64::from(({}).element_bits()?)", code(ty)),
             Self::IsConstant(slot) => format!("cx.constant(values[{slot}]).is_some()"),
             Self::Constant { value, bits, equal } => format!(
-                "(cx.constant(values[{value}]).is_some() && cx.matches_constant(values[{value}], {bits}u64) == {equal})"
+                "crate::evaluate::matches_constant(cx.constant(values[{value}]), {bits}u64, {equal})"
             ),
             Self::Binary(op @ ("+" | "-" | "*"), a, b) => {
                 let method = match *op {

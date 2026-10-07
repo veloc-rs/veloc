@@ -135,7 +135,6 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
             signature_source: None,
             text: Some(alt.text.clone()),
             traits: BTreeSet::new(),
-            queries: BTreeMap::new(),
             constraints: Vec::new(),
             identity: None,
             absorbing: None,

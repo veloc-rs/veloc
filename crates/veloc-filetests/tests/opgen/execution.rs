@@ -279,7 +279,6 @@ fn generated_mapping_executes_in_logical_argument_order() {
         r#"
 type Cell = rust("crate::Cell");
 struct Tag { bits: u32 }
-struct Summary { bits: u32, ty: Type }
 type Limits = rust("crate::Limits") {
     trait = rust("crate::LimitsInfo");
     fn max(&self) -> u32;
@@ -291,7 +290,6 @@ op Pair(move first: Value<Type::I32>, second: Value<Type::I64>, tag: Tag) -> (lo
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = Pair { tag: some(tag), right: second, high, left: first, low };
     text = "{first}, {second}, tag={tag.bits}";
-    query summary -> Summary { bits: tag.bits, ty: first.ty() }
     verify(ctx: Limits) {
         require(tag.bits != 0, "zero tag");
         require(tag.bits <= ctx.max(), "tag exceeds limit");
@@ -491,7 +489,6 @@ type Cell = u32;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tag {{ pub bits: u32 }}
 pub type Type = u32;
-pub struct Summary {{ pub bits: u32, pub ty: Type }}
 pub struct Limits(u32);
 pub trait LimitsInfo {{ fn max(&self) -> u32; }}
 impl LimitsInfo for Limits {{ fn max(&self) -> u32 {{ self.0 }} }}
@@ -538,7 +535,6 @@ mod text {{
 struct Handle<'a>(&'a (Vec<Cell>, Vec<Cell>, Vec<Payload>));
 impl<'a> Read<'a> for Handle<'a> {{
     type Error = String;
-    fn value_type(self, value: Cell) -> Type {{ value + 1000 }}
     fn opcode(self) -> Option<Code> {{ Some(Code::Pair) }}
     fn results(self) -> &'a [Cell] {{ &self.0.0 }}
     fn inputs(self) -> &'a [Cell] {{ &self.0.1 }}
@@ -554,8 +550,6 @@ fn main() {{
     Handle(&store[id]).validate(&Limits(100)).unwrap();
     let View::Pair(pair) = Handle(&store[id]).view();
     assert_eq!((pair.low, pair.high, pair.left, pair.right, pair.tag.map(|tag| tag.bits)), (10, 20, 30, 40, Some(99)));
-    assert_eq!(Handle(&store[id]).summary().unwrap().bits, 99);
-    assert_eq!(Handle(&store[id]).summary().unwrap().ty, 1030);
     let mut visited = Vec::new();
     Handle(&store[id]).try_visit_ownership::<core::convert::Infallible>(|reg, moved| {{
         visited.push((reg, moved)); Ok(())

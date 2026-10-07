@@ -39,24 +39,6 @@ impl Plan {
             crate::model::metadata::record_type(&definitions.ops),
             source,
         )?;
-        // A query has one concrete input context across all its opcodes.
-        // Context-free arms can still participate in that same query.
-        let mut contexts = BTreeMap::new();
-        for op in &definitions.ops {
-            for (name, expr) in &op.queries {
-                if let Some(ty) = expr.context_type()
-                    && let Some(previous) = contexts.insert(name, ty)
-                    && previous != ty
-                {
-                    return Err(Error::at(
-                        source,
-                        op.offset,
-                        format!("query `{name}` requires incompatible context types"),
-                    ));
-                }
-            }
-        }
-
         let output = match &definitions.storage.strategy {
             Strategy::Packed => {
                 let indices = definitions

@@ -107,7 +107,7 @@ impl<'a> Expressions<'a> {
         let dfg = self.body.dfg();
         let view = dfg.inst(original);
         let supported = crate::evaluate::can_reduce(dfg, original)
-            || (crate::evaluate::can_rewrite(view.opcode()) && view.can_speculate())
+            || (super::matching::supports(view.opcode()) && view.can_speculate())
             || matches!(
                 view,
                 veloc_mir::InstView::PtrOffset { .. } | veloc_mir::InstView::PtrIndex { .. }

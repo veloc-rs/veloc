@@ -1,9 +1,7 @@
-//! Memory semantics shared by analyses and lowerings. An Access is a query
-//! result, not a second authoritative copy of instruction operands.
-use crate::{FuncBody, Inst, Value};
+//! Shared address normalization, access ranges and stack bounds proofs.
+//! Instruction operands and access properties remain in InstView and MemFlags.
+use crate::{FuncBody, Inst, InstView, MemFlags, Value};
 use veloc_types::DataLayout;
-
-pub use crate::inst::MemoryAccess as Access;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Address {
@@ -12,29 +10,28 @@ pub struct Address {
 }
 pub type Location = veloc_types::MemoryLocation<Value>;
 
-impl Access {
-    pub fn canonical(mut self, function: &FuncBody) -> Option<Self> {
-        let address = function.address(self.ptr, self.offset)?;
-        self.ptr = address.base;
-        self.offset = address.offset;
-        Some(self)
-    }
-    pub fn location(self, function: &FuncBody, layout: &DataLayout) -> Option<Location> {
-        let address = function.address(self.ptr, self.offset)?;
+impl FuncBody {
+    /// Fixed byte range of an ordinary load or store in the target layout.
+    /// Unknown sizes or addresses return None, not a proof of no memory effect.
+    pub fn memory_location(&self, inst: Inst, layout: &DataLayout) -> Option<Location> {
+        let dfg = self.dfg();
+        let (ptr, offset, value) = match dfg.inst(inst) {
+            InstView::Load { ptr, offset, .. } => (ptr, offset, dfg.first_result(inst)?),
+            InstView::Store {
+                ptr, offset, value, ..
+            } => (ptr, offset, value),
+            _ => return None,
+        };
+        let address = self.address(ptr, i64::from(offset))?;
         Some(Location {
             base: address.base,
             offset: address.offset,
-            bytes: self.bytes(layout)?,
+            bytes: layout
+                .layout_of(dfg.value_type(value))?
+                .store_size
+                .fixed_bytes()?,
         })
     }
-    /// Access width follows the supplied representation, never the host layout.
-    /// Scalable or unlisted representations have no known fixed access width.
-    pub fn bytes(self, layout: &DataLayout) -> Option<u32> {
-        layout.layout_of(self.ty)?.store_size.fixed_bytes()
-    }
-}
-
-impl FuncBody {
     /// Normalize constant byte offsets without claiming allocation provenance.
     pub fn address(&self, mut ptr: Value, mut offset: i64) -> Option<Address> {
         for _ in 0..64 {
@@ -78,17 +75,16 @@ impl FuncBody {
 
     /// A complete, aligned access inside a known live entry object.
     /// This is a bounds proof, not a claim that the bytes are initialized.
-    pub fn stack_access(&self, access: Access, layout: &DataLayout) -> Option<(Inst, u32)> {
-        let (object, offset) = self.stack_address(access.ptr)?;
-        let offset = u32::try_from(offset.checked_add(access.offset)?).ok()?;
+    pub fn stack_access(&self, location: Location, flags: MemFlags) -> Option<(Inst, u32)> {
+        let (object, offset) = self.stack_address(location.base)?;
+        let offset = u32::try_from(offset.checked_add(location.offset)?).ok()?;
         let crate::InstView::Alloca { size, align } = self.dfg().inst(object) else {
             unreachable!("stack address ends at an allocation")
         };
-        let bytes = access.bytes(layout)?;
-        (bytes != 0
-            && offset.checked_add(bytes)? <= size
-            && align >= access.flags.alignment()
-            && offset % access.flags.alignment() == 0)
+        (location.bytes != 0
+            && offset.checked_add(location.bytes)? <= size
+            && align >= flags.alignment()
+            && offset % flags.alignment() == 0)
             .then_some((object, offset))
     }
 }

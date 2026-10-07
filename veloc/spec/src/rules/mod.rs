@@ -6,6 +6,7 @@ pub(crate) mod equivalence;
 mod expression;
 mod functions;
 pub(crate) mod graph;
+pub(crate) mod instruction;
 mod rust;
 pub(crate) mod typed;
 pub use decision::{DecisionRust, decisions};

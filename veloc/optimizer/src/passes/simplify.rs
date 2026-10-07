@@ -1,11 +1,16 @@
-//! Worklist constant propagation and root-local simplification before memory
-//! optimization. Every CFG edge is considered; this pass does not prune branches.
+//! Worklist constant propagation and single-instruction reductions. Structural
+//! expression rules run in ExpressionPass; directed rewrites come from spec.
+//! Every CFG edge is considered; this pass does not prune branches.
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile, evaluate};
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{Block, FuncBody, Inst, InstView, Value, function::EdgeRef};
+use veloc_mir::{Block, FuncBody, Inst, Value, function::EdgeRef};
+
+mod rewrites {
+    include!(concat!(env!("OUT_DIR"), "/rewrites.rs"));
+}
 
 pub struct SimplifyPass;
 
@@ -37,9 +42,7 @@ impl FunctionPass for SimplifyPass {
                         func.dfg()
                             .inst(inst)
                             .visit_successors(|edge| work.block(edge.block));
-                    } else if fold_rewrite(func, inst, config, &mut work)
-                        || fold_instruction(func, inst, &mut work)
-                    {
+                    } else if fold_instruction(func, inst, &mut work) {
                         folded += 1;
                     }
                 }
@@ -101,63 +104,10 @@ impl FunctionPass for SimplifyPass {
     }
 }
 
-/// Apply the same directed rules that equality rebuilding consumes.
-fn fold_rewrite(f: &mut FuncBody, inst: Inst, config: &OptConfig, work: &mut Worklist) -> bool {
-    if !evaluate::can_rewrite(f.dfg().inst(inst).opcode()) {
-        return false;
-    }
-    let Some(result) = f.dfg().first_result(inst) else {
-        return false;
-    };
-    let cx = crate::rewrite::Context {
-        body: f,
-        layout: config.data_layout,
-    };
-    let Some(plan) = evaluate::rewrite(&cx, result) else {
-        return false;
-    };
-    let (replacement, created) = crate::rewrite::apply(f, inst, &plan);
-    for instruction in created {
-        work.instruction(instruction);
-    }
-    work.replace(f, result, replacement);
-    f.edit().erase_inst(inst);
-    true
-}
-
 fn fold_instruction(func: &mut FuncBody, inst: Inst, work: &mut Worklist) -> bool {
-    if let Some(access) = inst.memory_access(func.dfg())
-        && let Some(address) = func.dfg().value_inst(access.ptr)
-        && let InstView::PtrOffset { ptr, offset } = func.dfg().inst(address)
-        && let Ok(combined) = u32::try_from(access.offset + i64::from(offset))
-    {
-        match func.dfg().inst(inst) {
-            InstView::Load { flags, .. } => {
-                func.edit()
-                    .replace_inst(inst, |w| w.load(ptr, combined, flags));
-            }
-            InstView::Store { value, flags, .. } => {
-                func.edit()
-                    .replace_inst(inst, |w| w.store(ptr, value, combined, flags));
-            }
-            _ => return false,
-        }
-        work.instruction(inst);
+    if rewrites::rewrite(func, inst) {
+        work.changed(func, inst);
         return true;
-    }
-    if let InstView::PtrIndex { ptr, index, imm_id } = func.dfg().inst(inst)
-        && let Some(index) = func.dfg().as_scalar_const(index)
-    {
-        let offset = index
-            .to_bits()
-            .wrapping_mul(imm_id.scale as u64)
-            .wrapping_add(imm_id.offset as u64) as i64;
-        if let Ok(offset) = i32::try_from(offset) {
-            func.edit()
-                .replace_inst(inst, |w| w.ptr_offset(ptr, offset));
-            work.instruction(inst);
-            return true;
-        }
     }
     let dfg = func.dfg();
     let Some(folds) = evaluate::reduce_inst(dfg, inst, |value| dfg.as_scalar_const(value)) else {
@@ -235,10 +185,21 @@ impl Worklist {
         Some(item)
     }
 
-    fn replace(&mut self, func: &mut FuncBody, old: Value, new: Value) {
-        for site in func.dfg().uses(old) {
+    fn users(&mut self, func: &FuncBody, value: Value) {
+        for site in func.dfg().uses(value) {
             self.instruction(site.inst());
         }
+    }
+
+    fn changed(&mut self, func: &FuncBody, inst: Inst) {
+        self.instruction(inst);
+        for &value in func.dfg().inst_results(inst) {
+            self.users(func, value);
+        }
+    }
+
+    fn replace(&mut self, func: &mut FuncBody, old: Value, new: Value) {
+        self.users(func, old);
         func.edit().replace_all_uses(old, new);
     }
 }

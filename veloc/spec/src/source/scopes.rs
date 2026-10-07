@@ -229,7 +229,7 @@ impl Checker<'_> {
                 locals.insert(param.name.clone());
                 self.node(body, space, &locals)?;
             }
-            Kind::Query(_, value) | Kind::Let(_, value) => self.node(value, None, locals)?,
+            Kind::Let(_, value) => self.node(value, None, locals)?,
             Kind::List(nodes) | Kind::Union(nodes) | Kind::Intersection(nodes) => {
                 let mut locals = locals.clone();
                 for node in nodes {

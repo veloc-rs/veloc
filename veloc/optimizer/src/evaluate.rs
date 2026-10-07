@@ -2,7 +2,7 @@
 //! Spec supplies concrete semantics and local identities; callers own analysis
 //! state, control-flow reachability and publication of the returned results.
 use veloc_mir::constant::ScalarConst;
-use veloc_mir::{IntCC, Opcode, Type, Value};
+use veloc_mir::{IntCC, Opcode, Type, TypeInfo, Value};
 
 include!(concat!(env!("OUT_DIR"), "/evaluation.rs"));
 
@@ -99,11 +99,22 @@ pub fn fold(
 
 mod local {
     use super::*;
-    use veloc_types::TypeInfo;
     include!(concat!(env!("OUT_DIR"), "/local_folds.rs"));
 }
 
-pub(crate) use local::{Properties, accepts, can_rewrite, plan, rewrite};
+pub(crate) use local::{Properties, accepts, plan};
+
+/// Pattern literals are masked to the operand width. An unknown constant proves
+/// neither equality nor inequality, in direct reductions, guards or queries.
+pub(crate) fn matches_constant(value: Option<ScalarConst>, bits: u64, equal: bool) -> bool {
+    value.is_some_and(|c| {
+        c.ty()
+            .element_bits()
+            .and_then(|n| 64u32.checked_sub(n))
+            .and_then(|shift| u64::MAX.checked_shr(shift))
+            .is_some_and(|mask| (c.to_bits() == (bits & mask)) == equal)
+    })
+}
 
 /// Restrict folding to operations whose effects are modeled by the evaluator.
 /// A potentially trapping operation may only be erased after a successful fold.

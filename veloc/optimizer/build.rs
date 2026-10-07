@@ -2,7 +2,7 @@ use std::{
     env,
     path::{Path, PathBuf},
 };
-use veloc_spec::{Emit, Equivalences, Options, Source};
+use veloc_spec::{Emit, Equivalences, Options, Rewrites, Source};
 
 fn main() {
     println!("cargo:rerun-if-changed=../../rustfmt.toml");
@@ -35,6 +35,24 @@ fn main() {
         )
         .expect("compile equivalence rules");
     files.extend(generated.write(&dir).expect("write equivalence rules"));
+    let rewrites = Source::load("defs/rewrites.spec").expect("load instruction rewrites");
+    for path in rewrites.dependencies() {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    let generated = rewrites
+        .generate(
+            &[Emit::Rewrites],
+            Options {
+                rewrites: Some(Rewrites {
+                    definitions: &source,
+                    dialect: "mir",
+                    rust: "veloc_mir",
+                }),
+                ..Default::default()
+            },
+        )
+        .expect("compile instruction rewrites");
+    files.extend(generated.write(&dir).expect("write instruction rewrites"));
     veloc_spec::format_rust(&files, Path::new("../../rustfmt.toml"))
         .expect("format optimizer artifacts");
 }

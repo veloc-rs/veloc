@@ -43,3 +43,47 @@ pub(crate) fn projections(
 }
 
 pub(crate) type Inputs = BTreeMap<String, Access>;
+
+/// Emit a storage constructor from logical operands, using the checked mapping.
+pub(crate) fn constructor(
+    op: &super::Op,
+    storage: &crate::storage::Storage,
+    inputs: &BTreeMap<String, String>,
+    opcode: &str,
+    writer: &str,
+) -> String {
+    fn binding(value: &super::Binding, inputs: &BTreeMap<String, String>) -> String {
+        match value {
+            super::Binding::Name(name) => inputs[name].clone(),
+            super::Binding::Array(parts) => format!(
+                "[{}]",
+                parts
+                    .iter()
+                    .map(|p| binding(p, inputs))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            super::Binding::Table { .. } => unreachable!("fixed operation has no successors"),
+        }
+    }
+    let format = storage
+        .formats
+        .iter()
+        .find(|f| f.name == op.format)
+        .unwrap();
+    let fields = format
+        .fields
+        .iter()
+        .map(|f| {
+            op.bindings()
+                .get(&f.name)
+                .map(|b| binding(b, inputs))
+                .unwrap_or_else(|| opcode.into())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{writer}.{}({fields})",
+        crate::storage::constructor_name(&op.format)
+    )
+}

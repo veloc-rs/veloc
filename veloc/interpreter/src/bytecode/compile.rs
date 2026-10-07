@@ -1373,19 +1373,17 @@ impl<'a> Compiler<'a> {
                 let dst = self.mapper.reg(res);
                 emit::StackAddr(&mut self.code, dst, self.stack.offsets[inst]);
             }
-            InstView::Load { ptr, offset, .. } => {
-                let access = inst
-                    .memory_access(self.func.dfg())
-                    .expect("load access contract");
-                if !access.flags.is_volatile()
-                    && let Some((object, offset)) =
-                        self.func.stack_access(access, &crate::DATA_LAYOUT)
+            InstView::Load { ptr, offset, flags } => {
+                if !flags.is_volatile()
+                    && let Some(location) = self.func.memory_location(inst, &crate::DATA_LAYOUT)
+                    && let Some((object, offset)) = self.func.stack_access(location, *flags)
                 {
-                    let dst = self.mapper.reg(self.func.dfg().first_result(inst).unwrap());
+                    let result = self.func.dfg().first_result(inst).unwrap();
+                    let dst = self.mapper.reg(result);
                     emit::StackLoad(
                         &mut self.code,
                         dst,
-                        access.ty,
+                        self.func.dfg().value_type(result),
                         self.stack.offsets[object] + offset,
                     );
                 } else {
@@ -1393,20 +1391,20 @@ impl<'a> Compiler<'a> {
                 }
             }
             InstView::Store {
-                ptr, value, offset, ..
+                ptr,
+                value,
+                offset,
+                flags,
             } => {
-                let access = inst
-                    .memory_access(self.func.dfg())
-                    .expect("store access contract");
-                if !access.flags.is_volatile()
-                    && let Some((object, offset)) =
-                        self.func.stack_access(access, &crate::DATA_LAYOUT)
+                if !flags.is_volatile()
+                    && let Some(location) = self.func.memory_location(inst, &crate::DATA_LAYOUT)
+                    && let Some((object, offset)) = self.func.stack_access(location, *flags)
                 {
                     let src = self.mapper.reg(*value);
                     emit::StackStore(
                         &mut self.code,
                         src,
-                        access.ty,
+                        self.func.dfg().value_type(*value),
                         self.stack.offsets[object] + offset,
                     );
                 } else {

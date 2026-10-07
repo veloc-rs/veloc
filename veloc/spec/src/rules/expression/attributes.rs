@@ -1,7 +1,7 @@
 //! Attribute adapters come from logical operands and their checked storage
 //! projections. Matching, congruence and construction use the same representation.
 use super::*;
-use crate::model::{Binding, ParamKind, expr::Emitter};
+use crate::model::{ParamKind, expr::Emitter};
 use std::fmt::Write;
 
 pub(in crate::rules) fn emit_attributes(defs: &Definitions) -> String {
@@ -119,44 +119,14 @@ pub(in crate::rules) fn emit_attributes(defs: &Definitions) -> String {
         {
             inputs.insert(p.name.clone(), format!("args[{i}]"));
         }
-        fn binding(b: &Binding, inputs: &BTreeMap<String, String>) -> String {
-            match b {
-                Binding::Name(name) => inputs[name].clone(),
-                Binding::Array(parts) => format!(
-                    "[{}]",
-                    parts
-                        .iter()
-                        .map(|p| binding(p, inputs))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                Binding::Table { .. } => unreachable!("expression has no successors"),
-            }
-        }
-        let format = defs
-            .storage
-            .formats
-            .iter()
-            .find(|f| f.name == op.format)
-            .unwrap();
-        let fields = format
-            .fields
-            .iter()
-            .map(|f| {
-                op.bindings()
-                    .get(&f.name)
-                    .map(|b| binding(b, &inputs))
-                    .unwrap_or_else(|| "opcode".into())
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+        let constructor =
+            crate::model::access::constructor(op, &defs.storage, &inputs, "opcode", "writer");
         writeln!(
             code,
-            "(Opcode::{}, Self::{} {{ {} }}) => writer.{}({fields}),",
+            "(Opcode::{}, Self::{} {{ {} }}) => {constructor},",
             op.name,
             op.name,
-            props.join(", "),
-            crate::storage::constructor_name(&op.format)
+            props.join(", ")
         )
         .unwrap();
     }

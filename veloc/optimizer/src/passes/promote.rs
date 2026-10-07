@@ -51,41 +51,56 @@ impl FunctionPass for PromotePass {
                 }
                 for site in f.dfg().uses(pointer) {
                     let inst = site.inst();
-                    let access = inst.memory_access(f.dfg());
-                    match f.dfg().inst(inst) {
+                    let flags = match f.dfg().inst(inst) {
                         InstView::PtrOffset { .. } => {
-                            pending.extend_from_slice(f.dfg().inst_results(inst))
+                            pending.extend_from_slice(f.dfg().inst_results(inst));
+                            continue;
                         }
-                        _ if access.is_some_and(|a| {
-                            a.ptr == pointer
-                                && a.stored != Some(pointer)
-                                && !a.flags.is_volatile()
-                                && f.stack_access(a, &layout).is_some()
-                        }) => {}
+                        InstView::Load { ptr, flags, .. } if ptr == pointer => flags,
+                        InstView::Store {
+                            ptr, value, flags, ..
+                        } if ptr == pointer && value != pointer => flags,
                         _ => {
                             escaped.insert(allocation);
+                            continue;
                         }
+                    };
+                    if flags.is_volatile()
+                        || f.memory_location(inst, &layout)
+                            .and_then(|location| f.stack_access(location, flags))
+                            .is_none()
+                    {
+                        escaped.insert(allocation);
                     }
                 }
             }
         }
         let mut cells = BTreeMap::<(Inst, u32), Cell>::new();
         for &inst in &insts {
-            let Some(access) = inst.memory_access(f.dfg()) else {
+            let (ty, flags) = match f.dfg().inst(inst) {
+                InstView::Load { flags, .. } => (
+                    f.dfg()
+                        .value_type(f.dfg().first_result(inst).expect("load result")),
+                    flags,
+                ),
+                InstView::Store { value, flags, .. } => (f.dfg().value_type(value), flags),
+                _ => continue,
+            };
+            let Some(location) = f.memory_location(inst, &layout) else {
                 continue;
             };
-            let Some((object, offset)) = f.stack_access(access, &layout) else {
+            let Some((object, offset)) = f.stack_access(location, flags) else {
                 continue;
             };
-            let bytes = access.bytes(&layout).unwrap();
+            let bytes = location.bytes;
             let cell = cells.entry((object, offset)).or_insert(Cell {
                 object,
                 offset,
                 bytes,
-                ty: access.ty,
+                ty,
                 accesses: vec![],
             });
-            if cell.bytes != bytes || cell.ty != access.ty {
+            if cell.bytes != bytes || cell.ty != ty {
                 escaped.insert(object);
             }
             cell.accesses.push(inst);

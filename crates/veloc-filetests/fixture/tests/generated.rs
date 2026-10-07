@@ -25,46 +25,9 @@ mod offline {
 }
 
 #[test]
-fn shared_expressions_execute_in_queries_and_explicit_validation() {
-    use veloc_mir::{dfg::DataFlowGraph, inst::SizeInfo};
-    let mut dfg = DataFlowGraph::new();
-    for (size, expected, valid) in [
-        (
-            8,
-            Some(SizeInfo {
-                next: 9,
-                aligned: true,
-            }),
-            true,
-        ),
-        (
-            0,
-            Some(SizeInfo {
-                next: 1,
-                aligned: false,
-            }),
-            false,
-        ),
-        (
-            3,
-            Some(SizeInfo {
-                next: 4,
-                aligned: false,
-            }),
-            false,
-        ),
-        (u32::MAX, None, false),
-    ] {
-        // Construction and parsing intentionally accept invalid contracts.
-        let inst = dfg.writer().checked_size(size);
-        assert_eq!(inst.size_info(&dfg), expected);
-        assert_eq!(
-            inst.original_size(&dfg),
-            Some(SizeInfo {
-                next: size,
-                aligned: false
-            })
-        );
+fn shared_expressions_execute_in_explicit_validation() {
+    for (size, valid) in [(8, true), (0, false), (3, false), (u32::MAX, false)] {
+        // Parsing intentionally accepts invalid contracts.
         let text = format!(
             "local function test() -> void\nblock0():\n  checked-size size={size}\n  return\n"
         );
@@ -116,48 +79,6 @@ fn new_ops_get_constraints_and_ownership_without_rust_opcode_cases() {
             .to_string()
             .contains("used after move")
     );
-}
-
-#[test]
-fn instruction_queries_use_their_own_results() {
-    use veloc_mir::{Block, MemFlags, dfg::DataFlowGraph};
-    let mut dfg = DataFlowGraph::new();
-    dfg.create_block();
-    let ptr = dfg.append_block_param(Block(0), Type::PTR);
-    let flags = MemFlags::empty();
-    let first = dfg.create_inst_with_results(|w| w.load(ptr, 4, flags), &[Type::I32]);
-    let second = dfg.create_inst_with_results(|w| w.load(ptr, 8, flags), &[Type::I64]);
-    for (inst, ty, offset) in [(first, Type::I32, 4), (second, Type::I64, 8)] {
-        let access = inst.memory_access(&dfg).unwrap();
-        assert_eq!((access.ptr, access.ty, access.offset), (ptr, ty, offset));
-        assert!(access.stored.is_none());
-    }
-    let value = dfg.first_result(second).unwrap();
-    let store = dfg.writer().store(ptr, value, 12, flags);
-    let access = store.memory_access(&dfg).unwrap();
-    assert_eq!(access.ty, Type::I64);
-    assert_eq!(access.stored, Some(value));
-    let unrelated = dfg.writer().checked_size(8);
-    assert!(unrelated.memory_access(&dfg).is_none());
-}
-
-#[test]
-fn host_queries_preserve_optional_results_through_helpers() {
-    use veloc_mir::{Block, CallableKind, SigId, dfg::DataFlowGraph};
-    let mut dfg = DataFlowGraph::new();
-    dfg.create_block();
-    for (ty, expected) in [
-        (
-            Type::callable(SigId(7), CallableKind::Local),
-            Some(SigId(7)),
-        ),
-        (Type::I32, None),
-    ] {
-        let value = dfg.append_block_param(Block(0), ty);
-        let inst = dfg.writer().unary(Opcode::Rebind, value);
-        let info = inst.callable_info(&dfg).unwrap();
-        assert_eq!(info.signature, expected);
-    }
 }
 
 #[test]
@@ -1092,20 +1013,12 @@ fn a_record_can_be_both_instruction_storage_and_plain_data() {
 }
 
 #[test]
-fn rust_type_bindings_preserve_paths_in_records_enums_and_host_queries() {
+fn rust_type_bindings_preserve_paths_in_records_and_enums() {
     use veloc_mir::{
-        dfg::DataFlowGraph,
         inst::{StampRecord, StampResult},
         tokens::Stamp,
     };
-    let mut dfg = DataFlowGraph::new();
-    let inst = dfg.writer().stamp_input(17);
-    let info = inst
-        .stamp_info(&dfg, &veloc_mir::tokens::Tokens(&0))
-        .unwrap();
-    assert_eq!(info.stamp, Stamp(17));
-    assert_eq!(info.doubled, 34);
-    let record = StampRecord { stamp: info.stamp };
+    let record = StampRecord { stamp: Stamp(17) };
     assert_eq!(
         StampResult::Present(record.stamp),
         StampResult::Present(Stamp(17))

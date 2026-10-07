@@ -1,4 +1,4 @@
-//! Shared typed, pure expressions for verification, queries and static metadata. The language knows values, types and data
+//! Shared typed, pure expressions for verification and static metadata. The language knows values, types and data
 //! constructors; domain-specific queries and helper functions live in defs.
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,7 +38,7 @@ fn possible(
 }
 
 /// Expression types differ from storage types: Value(PTR) is a checked SSA
-/// reference, erased to Value only when emitting a runtime query result.
+/// reference, represented as Value in generated Rust.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Ty {
     Named(String),
@@ -134,6 +134,8 @@ pub(crate) enum ExprKind {
     Operand(String),
     ResultType(usize),
     Convert(Box<Expr>),
+    CheckedCast(Box<Expr>),
+    WrappingCast(Box<Expr>),
     Field(Box<Expr>, String),
     Record(BTreeMap<String, Expr>),
     Variant(String, Vec<Expr>),
@@ -155,6 +157,8 @@ impl Expr {
             | E::Unary(_, v)
             | E::Query(_, v)
             | E::Convert(v)
+            | E::CheckedCast(v)
+            | E::WrappingCast(v)
             | E::Some(v)
             | E::Try(v)
             | E::Field(v, _) => v.needs_value_types(),
@@ -190,6 +194,8 @@ impl Expr {
             E::Rust(binding, args) => binding.is_const && args.iter().all(safe),
             E::Unary(_, v)
             | E::Convert(v)
+            | E::CheckedCast(v)
+            | E::WrappingCast(v)
             | E::Some(v)
             | E::Try(v)
             | E::Field(v, _)
@@ -211,7 +217,7 @@ impl Expr {
     }
 
     pub(crate) fn const_rust(&self, prefix: &str) -> String {
-        let mut emitter = Emitter::query(BTreeMap::new());
+        let mut emitter = Emitter::new(BTreeMap::new());
         emitter.constant = true;
         emitter.prefix = prefix;
         emitter.term(self)
@@ -226,6 +232,8 @@ impl Expr {
             | ExprKind::Unary(_, v)
             | ExprKind::Query(_, v)
             | ExprKind::Convert(v)
+            | ExprKind::CheckedCast(v)
+            | ExprKind::WrappingCast(v)
             | ExprKind::Some(v)
             | ExprKind::Try(v)
             | ExprKind::Field(v, _) => v.context_type(),
@@ -348,6 +356,12 @@ impl Expr {
                 ExprKind::Rust(binding.clone(), args)
             }
             ExprKind::Convert(e) => ExprKind::Convert(Box::new(e.expand(args, locals, next))),
+            ExprKind::CheckedCast(e) => {
+                ExprKind::CheckedCast(Box::new(e.expand(args, locals, next)))
+            }
+            ExprKind::WrappingCast(e) => {
+                ExprKind::WrappingCast(Box::new(e.expand(args, locals, next)))
+            }
             ExprKind::Some(e) => ExprKind::Some(Box::new(e.expand(args, locals, next))),
             ExprKind::Field(e, name) => {
                 return Self::field(e.expand(args, locals, next), name, self.ty.clone());
@@ -410,7 +424,6 @@ struct Function {
 
 #[derive(Clone, Default)]
 pub(crate) struct Library {
-    pub(crate) queries: BTreeMap<String, String>,
     functions: BTreeMap<String, Function>,
     methods: String,
     bindings: String,
@@ -498,7 +511,7 @@ fn bind_types(
 }
 
 impl Library {
-    /// Compile a host projection using the same expression checker as queries.
+    /// Compile a host projection using the shared expression checker.
     /// Bindings are typed by the caller; Rust code is emitted, never executed.
     pub(crate) fn expression(
         &mut self,
@@ -533,7 +546,7 @@ impl Library {
             kind: Kind::Name(result.into()),
         })?;
         let expr = checker.expr(node, Some(&expected), &env, None)?;
-        let mut emitter = Emitter::query(
+        let mut emitter = Emitter::new(
             bindings
                 .iter()
                 .map(|(n, (_, rust))| (n.clone(), rust.clone()))
@@ -696,7 +709,7 @@ impl Library {
         }
         Ok(result)
     }
-    /// Storage structs used as query data still need their ordinary Rust type.
+    /// Storage structs referenced by helper signatures need their ordinary Rust type.
     pub fn data_types(&self) -> BTreeSet<&str> {
         fn visit<'a>(ty: &'a Ty, names: &mut BTreeSet<&'a str>) {
             match ty {
@@ -714,7 +727,6 @@ impl Library {
                 visit(ty, &mut names);
             }
         }
-        names.extend(self.queries.values().map(String::as_str));
         names
     }
 
@@ -765,83 +777,10 @@ impl Library {
         Ok(library)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn bind(
-        &mut self,
-        source: &str,
-        node: Option<Node>,
-        params: &[Param],
-        signature: &TypeDef,
-        slots: &BTreeMap<String, super::Slot>,
-        vocabulary: super::Vocabulary<'_>,
-    ) -> Result<BTreeMap<String, Expr>, Error> {
-        let super::Vocabulary {
-            types,
-            encodings,
-            data,
-        } = vocabulary;
-        let mut bindings = BTreeMap::new();
-        let Some(node) = node else {
-            return Ok(bindings);
-        };
-        let mut env = operands(params, Some(signature), types);
-        bind_types(&mut env, params, Some(signature), slots, types);
-        let mut checker = Checker {
-            source,
-            library: self,
-            data,
-            encodings,
-            types,
-            declarations: &[],
-            active: BTreeSet::new(),
-            verification: false,
-            next_local: 0,
-        };
-        for node in super::list(source, node)? {
-            let Kind::Query(name, body) = node.kind else {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    "expected a query declaration",
-                ));
-            };
-            super::identifier(source, node.offset, &name)?;
-            let mut locals = env.clone();
-            let body = checker
-                .library
-                .context(source, *body, &mut locals, &data.rust)?;
-            let expression = checker.expr(&body, None, &locals, Some(signature))?;
-            let Ty::Named(result) = &expression.ty else {
-                return Err(Error::at(source, node.offset, "query must return a struct"));
-            };
-            if !data.records.iter().any(|r| r.name == *result) {
-                return Err(Error::at(source, node.offset, "query must return a struct"));
-            }
-            if let Some(previous) = checker.library.queries.insert(name.clone(), result.clone())
-                && previous != *result
-            {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    format!("query `{name}` requires the same result type across operations"),
-                ));
-            }
-            if bindings.insert(name.clone(), expression).is_some() {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    format!("duplicate query `{name}`"),
-                ));
-            }
-        }
-        Ok(bindings)
-    }
-
     pub fn metadata(
         &mut self,
         source: &str,
         node: &mut Node,
-        bindings: &BTreeMap<String, Expr>,
         vocabulary: super::Vocabulary<'_>,
     ) -> Result<(), Error> {
         let super::Vocabulary {
@@ -860,11 +799,7 @@ impl Library {
             verification: false,
             next_local: 0,
         };
-        fn visit(
-            checker: &mut Checker<'_>,
-            node: &mut Node,
-            env: &BTreeMap<String, Expr>,
-        ) -> Result<(), Error> {
+        fn visit(checker: &mut Checker<'_>, node: &mut Node) -> Result<(), Error> {
             let method = matches!(
                 &node.kind,
                 Kind::Method(..)
@@ -874,9 +809,9 @@ impl Library {
                     | Kind::Binary(..)
             );
             if method
-                || matches!(&node.kind, Kind::Call(name,_) if name == "field" || checker.library.functions.contains_key(name))
+                || matches!(&node.kind, Kind::Call(name,_) if checker.library.functions.contains_key(name))
             {
-                let expr = checker.expr(node, None, env, None)?;
+                let expr = checker.expr(node, None, &BTreeMap::new(), None)?;
                 if let Some(value) = expr.constant_node(checker.types, node.offset) {
                     *node = value;
                 } else if !expr.is_const() {
@@ -890,12 +825,12 @@ impl Library {
                 match &mut node.kind {
                     Kind::Object(_, fields) => {
                         for node in fields.values_mut() {
-                            visit(checker, node, env)?;
+                            visit(checker, node)?;
                         }
                     }
                     Kind::Call(_, args) | Kind::List(args) => {
                         for node in args {
-                            visit(checker, node, env)?;
+                            visit(checker, node)?;
                         }
                     }
                     _ => {}
@@ -903,7 +838,7 @@ impl Library {
             }
             Ok(())
         }
-        visit(&mut checker, node, bindings)
+        visit(&mut checker, node)
     }
 
     pub fn metadata_field(
@@ -911,7 +846,6 @@ impl Library {
         source: &str,
         node: &Node,
         ty: &PropertyType,
-        env: &BTreeMap<String, Expr>,
         vocabulary: super::Vocabulary<'_>,
     ) -> Result<Expr, Error> {
         let super::Vocabulary {
@@ -930,7 +864,12 @@ impl Library {
             verification: false,
             next_local: 0,
         };
-        let expr = checker.expr(node, Some(&Ty::property(ty, &data.rust)), env, None)?;
+        let expr = checker.expr(
+            node,
+            Some(&Ty::property(ty, &data.rust)),
+            &BTreeMap::new(),
+            None,
+        )?;
         if !expr.is_const() {
             return Err(Error::at(
                 source,
@@ -1287,8 +1226,9 @@ impl Checker<'_> {
         }
         if matches!(
             name,
-            "field"
-                | "type"
+            "type"
+                | "checked_cast"
+                | "wrapping_cast"
                 | "some"
                 | "i128"
                 | "i64"
@@ -1694,12 +1634,6 @@ impl Checker<'_> {
                     kind: ExprKind::Record(checked),
                 }
             }
-            Kind::Call(name, args) if name == "field" && args.len() == 2 => {
-                let Kind::Name(field) = &args[1].kind else {
-                    return Err(fail("field requires a field name"));
-                };
-                self.member(node.offset, &args[0], field, env, signature)?
-            }
             Kind::Call(name, args) if name == "type" && args.len() == 1 => {
                 let value = self.expr(&args[0], None, env, signature)?;
                 let ty = match &value.ty {
@@ -1742,6 +1676,24 @@ impl Checker<'_> {
                     types: None,
                     ty: Ty::named(name),
                     kind: ExprKind::Convert(Box::new(value)),
+                }
+            }
+            Kind::Call(name, args) if matches!(name.as_str(), "checked_cast" | "wrapping_cast") => {
+                let [value, target] = args.as_slice() else {
+                    return Err(fail("integer cast expects a value and destination type"));
+                };
+                let value = self.expr(value, None, env, signature)?;
+                let ty = self.ty(target)?;
+                if !value.ty.integer() || !ty.integer() {
+                    return Err(fail("integer cast requires integer types"));
+                }
+                if name == "checked_cast" {
+                    Expr::new(
+                        Ty::Optional(Box::new(ty)),
+                        ExprKind::CheckedCast(Box::new(value)),
+                    )
+                } else {
+                    Expr::new(ty, ExprKind::WrappingCast(Box::new(value)))
                 }
             }
             Kind::Call(name, args) if name == "some" && args.len() == 1 => {
@@ -1909,7 +1861,7 @@ pub(crate) struct Emitter<'a> {
 }
 
 impl<'a> Emitter<'a> {
-    pub fn query(projections: BTreeMap<String, String>) -> Self {
+    pub fn new(projections: BTreeMap<String, String>) -> Self {
         Self {
             projections,
             error: None,
@@ -1926,7 +1878,7 @@ impl<'a> Emitter<'a> {
         Self {
             dfg,
             results: ResultAccess::Values(results),
-            ..Self::query(projections)
+            ..Self::new(projections)
         }
     }
 
@@ -1945,7 +1897,7 @@ impl<'a> Emitter<'a> {
                 .enumerate()
                 .map(|(i, p)| (p.name.clone(), format!("{operands}[{i}]")))
                 .collect(),
-            ..Self::query(projections)
+            ..Self::new(projections)
         }
     }
 
@@ -2081,6 +2033,18 @@ impl<'a> Emitter<'a> {
                 }
             }
 
+            ExprKind::CheckedCast(e) => {
+                let Ty::Optional(ty) = &term.ty else {
+                    unreachable!("checked cast type")
+                };
+                let value = self.term(e);
+                let target = ty.name();
+                // Range comparisons also work in const contexts, without const TryFrom.
+                format!(
+                    "{{ let value = {value} as i128; if value >= {target}::MIN as i128 && value <= {target}::MAX as i128 {{ Some(value as {target}) }} else {{ None }} }}"
+                )
+            }
+            ExprKind::WrappingCast(e) => format!("({} as {})", self.term(e), term.ty.name()),
             ExprKind::Convert(e) if self.constant => {
                 format!("(({}) as {})", self.term(e), term.ty.name())
             }

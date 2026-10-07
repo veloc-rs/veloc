@@ -6,7 +6,6 @@ mod operands;
 pub(crate) mod ownership;
 pub(crate) mod packing;
 mod plan;
-pub(crate) mod queries;
 pub(crate) mod views;
 pub use plan::Plan;
 
@@ -73,19 +72,19 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
         }
         Emit::Instructions => {
             let methods = defs.expressions.method_code();
-            let query_types = defs.expressions.data_types();
+            let helper_types = defs.expressions.data_types();
             let mut instructions = defs.data.generate(
                 &defs
                     .storage
                     .formats
                     .iter()
-                    .filter(|f| !query_types.contains(f.name.as_str()))
+                    .filter(|f| !helper_types.contains(f.name.as_str()))
                     .map(|f| f.name.clone())
                     .chain(
                         defs.storage
                             .alternatives
                             .iter()
-                            .filter(|a| !query_types.contains(a.name.as_str()))
+                            .filter(|a| !helper_types.contains(a.name.as_str()))
                             .map(|a| a.name.clone()),
                     )
                     .collect::<Vec<_>>(),
@@ -93,10 +92,6 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
             ) + &defs.storage.instructions();
             instructions.push_str(&methods);
             instructions.push_str(&ownership::generate(defs));
-            instructions.push_str(&queries::generate(
-                defs,
-                queries::Host::Packed(&packed.formats),
-            ));
             instructions
         }
         Emit::Opcodes => {

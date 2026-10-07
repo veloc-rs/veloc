@@ -30,6 +30,7 @@ pub enum Emit {
     Decisions,
     Equivalences,
     LocalFolds,
+    Rewrites,
 }
 impl Emit {
     pub const ALL: &'static [Self] = &[
@@ -54,6 +55,7 @@ impl Emit {
         Self::Decisions,
         Self::Equivalences,
         Self::LocalFolds,
+        Self::Rewrites,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -78,6 +80,7 @@ impl Emit {
             Self::Decisions => "decisions",
             Self::Equivalences => "equivalences",
             Self::LocalFolds => "local-folds",
+            Self::Rewrites => "rewrites",
         }
     }
     pub fn filename(self) -> String {
@@ -118,6 +121,14 @@ pub struct Options<'a> {
     pub rules: Option<ValueRules<'a>>,
     pub decisions: Option<Decisions<'a>>,
     pub equivalences: Option<Equivalences<'a>>,
+    pub rewrites: Option<Rewrites<'a>>,
+}
+
+/// Directed rewrites over an instruction container with stable SSA results.
+pub struct Rewrites<'a> {
+    pub definitions: &'a Source,
+    pub dialect: &'a str,
+    pub rust: &'a str,
 }
 
 pub struct Equivalences<'a> {
@@ -199,6 +210,17 @@ impl Source {
                 continue;
             }
             let text = match kind {
+                Emit::Rewrites => {
+                    let config = options.rewrites.as_ref().ok_or_else(|| {
+                        fail("rewrites require definitions, dialect and IR Rust namespace")
+                    })?;
+                    crate::rules::instruction::generate(
+                        self,
+                        &config.definitions.parse()?,
+                        config.dialect,
+                        config.rust,
+                    )?
+                }
                 Emit::Equivalences | Emit::LocalFolds => {
                     let config = options.equivalences.as_ref().ok_or_else(|| {
                         fail("equivalences require definitions and Rust bindings")

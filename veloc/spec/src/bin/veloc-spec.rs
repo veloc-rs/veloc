@@ -4,7 +4,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
 };
-use veloc_spec::{Decisions, Emit, Equivalences, Options, Source, Target, ValueRules};
+use veloc_spec::{Decisions, Emit, Equivalences, Options, Rewrites, Source, Target, ValueRules};
 
 /// Compile instruction definitions into selected Rust artifacts.
 #[derive(Parser)]
@@ -27,7 +27,7 @@ struct Args {
     /// Operation definitions for transformation rules.
     #[arg(long)]
     definitions: Option<PathBuf>,
-    /// Rust namespace for generated interfaces.
+    /// Rust namespace for generated interfaces or the IR used by rewrites.
     #[arg(long)]
     namespace: Option<String>,
     /// Source dialect definition module for cross-IR rules.
@@ -152,6 +152,17 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             interfaces: args.namespace.as_deref(),
             rules,
             decisions,
+            rewrites: if args.emit.contains(&Emit::Rewrites) {
+                Some(Rewrites {
+                    definitions: definitions
+                        .as_ref()
+                        .ok_or("rewrites require --definitions")?,
+                    dialect: required(args.source_dialect.as_deref(), "source-dialect")?,
+                    rust: required(args.namespace.as_deref(), "namespace")?,
+                })
+            } else {
+                None
+            },
             equivalences: if args.emit.contains(&Emit::Equivalences)
                 || args.emit.contains(&Emit::LocalFolds)
             {

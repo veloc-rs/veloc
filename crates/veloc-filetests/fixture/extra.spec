@@ -2,15 +2,12 @@ import "../../../veloc/mir/defs/module.spec";
 
 // Exercise contracts not represented by production MIR instructions.
 // These have no control lowering interface: validation comes only from defs.
-struct SizeInfo { next: u32, aligned: bool }
 fn NextSize(size: u32) -> u32 { value = size + 1; }
 struct CheckedSize { size: u32 }
 op CheckedSize(size: u32) -> () {
     meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "checked-size"; storage = CheckedSize { size };
     text = "size={size}";
-    query size_info -> SizeInfo { next: NextSize(size), aligned: is_power_of_two(size) }
-    query original_size -> SizeInfo { next: size, aligned: false }
     verify {
         require(NextSize(size) > size, "size overflow");
         require(is_power_of_two(size), "invalid size alignment");
@@ -29,14 +26,9 @@ op VectorLiteral(data: VectorConst) -> Value<type(data)> {
     }
 }
 
-struct CallableInfo { signature: optional(SigId) }
-fn InspectCallable(ty: Type) -> CallableInfo {
-    value = CallableInfo { signature: ty.signature() };
-}
 op Rebind(move value: Value<Callable>) -> (result: Value<Callable>) {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
     mnemonic = "rebind"; storage = Unary { arg: value };
-    query callable_info -> CallableInfo { signature: value.ty().signature() }
 
     verify {
         require(value.ty() == result, "rebind type mismatch");
@@ -264,22 +256,14 @@ op Wrapped(inner: LiteralPayload) -> Value<Type::I32> {
     text = "{inner.bits}"
 ; }
 
-type Stamp = rust("crate::tokens::Stamp") {
-    fn number(self) -> u32;
-    fn twice(self) -> u32 { value = self.number() * 2; }
-}
-type Tokens = rust("crate::tokens::Tokens") {
-    fn stamp(&self, number: u32) -> Stamp;
-}
+type Stamp = rust("crate::tokens::Stamp");
 struct StampRecord { stamp: Stamp }
 enum StampResult { variants = [Present(Stamp), Absent]; }
-struct StampInfo { stamp: Stamp, doubled: u32 }
 struct StampInput { number: u32 }
 op ReadStamp(number: u32) -> () {
     meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "read-stamp"; storage = StampInput { number };
     text = "{number}";
-    query stamp_info(ctx: Tokens) -> StampInfo { stamp: ctx.stamp(number), doubled: ctx.stamp(number).twice() }
 }
 
 fn double_bits(from: Type, to: Type) -> bool {

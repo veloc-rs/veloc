@@ -6,7 +6,7 @@
 mod bytecode;
 mod emit;
 mod generate;
-pub use emit::{Artifacts, Decisions, Emit, Equivalences, Options, Target, ValueRules};
+pub use emit::{Artifacts, Decisions, Emit, Equivalences, Options, Rewrites, Target, ValueRules};
 mod model;
 pub mod rules;
 pub mod schema;

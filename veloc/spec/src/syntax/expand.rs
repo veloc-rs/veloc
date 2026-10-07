@@ -280,7 +280,7 @@ fn visit_names(node: &mut Node, visit: &mut impl FnMut(&str)) {
     });
 }
 
-fn children<E>(
+pub(crate) fn children<E>(
     node: &mut Node,
     visit: &mut impl FnMut(&mut Node) -> Result<(), E>,
 ) -> Result<(), E> {
@@ -328,8 +328,7 @@ fn children<E>(
         | Kind::Lambda(_, value)
         | Kind::Try(value)
         | Kind::Ref(value)
-        | Kind::Let(_, value)
-        | Kind::Query(_, value) => visit(value)?,
+        | Kind::Let(_, value) => visit(value)?,
         Kind::Scoped(param, value) => {
             visit(&mut param.ty)?;
             visit(value)?;

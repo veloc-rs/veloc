@@ -41,7 +41,6 @@ pub enum Kind {
     /// A field body with an explicit, typed host context.
     Scoped(Box<Parameter>, Box<Node>),
     Let(String, Box<Node>),
-    Query(String, Box<Node>),
 }
 
 #[derive(Debug, Clone)]
@@ -207,7 +206,9 @@ impl Decl {
                 signature.relocate(base);
                 match body {
                     FunctionBody::Value(node) => node.relocate(base),
-                    FunctionBody::Rust { offset, .. } | FunctionBody::Vm { offset, .. } => *offset += base,
+                    FunctionBody::Rust { offset, .. } | FunctionBody::Vm { offset, .. } => {
+                        *offset += base
+                    }
                 }
             }
             DeclKind::Op(signature)
@@ -278,7 +279,6 @@ impl Node {
             | Kind::Ref(node)
             | Kind::Unary(_, node)
             | Kind::Lambda(_, node)
-            | Kind::Query(_, node)
             | Kind::Try(node) => node.relocate(base),
             Kind::Match(value, arms) => {
                 value.relocate(base);
