@@ -1,11 +1,12 @@
 //! Equality indexes, congruence rebuilding and saturation over search values.
 use super::storage::{Expressions, Inst, Value};
 use super::{Limit, matching};
-use crate::evaluate::{Fold, Properties};
+use crate::evaluate::Fold;
 use core::hash::BuildHasher;
 use cranelift_entity::{EntityRef, PrimaryMap, SecondaryMap, packed_option::PackedOption};
 use hashbrown::{HashMap, HashTable, hash_map::DefaultHashBuilder};
 use smallvec::SmallVec;
+use veloc_mir::InstFields;
 use veloc_mir::Opcode as Op;
 use veloc_mir::constant::ScalarConst;
 use veloc_types::Type;
@@ -115,13 +116,12 @@ impl<K: EntityRef> Worklist<K> {
 
 /// A temporary lookup key, reconstructed from search storage. The hash table stores only
 /// Inst IDs and cached hashes; it owns no second instruction representation.
-/// Properties are precisely those exposed by the supported semantic recipes.
+/// Fields are the same owned instruction heads used by MIR.
 #[derive(PartialEq, Eq, Hash)]
-struct Key {
-    opcode: Op,
+struct Key<'a> {
     args: SmallVec<[Root; 3]>,
     results: SmallVec<[Type; 2]>,
-    properties: Properties,
+    fields: &'a InstFields,
 }
 
 /// Mutations are batched until congruence indexes have been repaired.
@@ -283,24 +283,23 @@ impl Graph {
         }
     }
 
-    fn key(&self, f: &Expressions, inst: Inst) -> Key {
+    fn key<'a>(&self, f: &'a Expressions, inst: Inst) -> Key<'a> {
         Key {
-            opcode: f.opcode(inst),
             args: f.operands(inst).iter().map(|&v| self.find(v)).collect(),
             results: f
                 .inst_results(inst)
                 .iter()
                 .map(|&v| f.value_type(v))
                 .collect(),
-            properties: f.properties(inst),
+            fields: f.fields(inst),
         }
     }
 
-    fn lookup(&self, f: &Expressions, key: &Key) -> Option<Inst> {
+    fn lookup(&self, f: &Expressions, key: &Key<'_>) -> Option<Inst> {
         self.memo
             .find(self.hasher.hash_one(key), |&inst| {
                 let mut stored = self.key(f, inst);
-                Self::order_args(stored.opcode, &mut stored.args);
+                Self::order_args(stored.fields.opcode(), &mut stored.args);
                 stored == *key
             })
             .copied()
@@ -424,9 +423,9 @@ impl Graph {
 
     /// Bounded local reasoning over a not-yet-allocated operation. Argument
     /// order is preserved so Operand(i) also identifies the source input.
-    fn reduce(&self, f: &Expressions, key: &Key) -> Option<SmallVec<[Fold; 2]>> {
+    fn reduce(&self, f: &Expressions, key: &Key<'_>) -> Option<SmallVec<[Fold; 2]>> {
         let args: SmallVec<[Value; 3]> = key.args.iter().map(|root| root.value()).collect();
-        crate::evaluate::reduce(key.opcode, &args, &key.results, &key.properties, |value| {
+        crate::evaluate::reduce(key.fields, &args, &key.results, |value| {
             f.as_scalar_const(value)
         })
     }
@@ -439,7 +438,7 @@ impl Graph {
         self.union(ir, value, literal);
     }
 
-    fn try_fold(&mut self, ir: &mut Expressions, inst: Inst, key: &Key) -> bool {
+    fn try_fold(&mut self, ir: &mut Expressions, inst: Inst) -> bool {
         let results: SmallVec<[Value; 2]> = ir.inst_results(inst).iter().copied().collect();
         // A known value alone cannot discharge a pinned operation's trap.
         // Evaluate its actual inputs before granting permission to erase it.
@@ -448,7 +447,7 @@ impl Graph {
                 .iter()
                 .all(|&v| ir.as_const(self.find(v).value()).is_some());
         if !known {
-            let Some(reduced) = self.reduce(ir, key) else {
+            let Some(reduced) = self.reduce(ir, &self.key(ir, inst)) else {
                 return false;
             };
             assert_eq!(reduced.len(), results.len(), "fold result arity");
@@ -482,14 +481,14 @@ impl Graph {
             if let Ok(entry) = self.memo.find_entry(self.hashes[inst], |&old| old == inst) {
                 entry.remove();
             }
-            let mut key = self.key(ir, inst);
-            if self.try_fold(ir, inst, &key) {
+            if self.try_fold(ir, inst) {
                 continue;
             }
             if self.kinds[inst] != InstKind::Floating {
                 continue;
             }
-            Self::order_args(key.opcode, &mut key.args);
+            let mut key = self.key(ir, inst);
+            Self::order_args(key.fields.opcode(), &mut key.args);
             let hash = self.hasher.hash_one(&key);
             self.hashes[inst] = hash;
             if let Some(other) = self.lookup(ir, &key) {
@@ -652,16 +651,14 @@ impl Graph {
     pub(super) fn build(
         &mut self,
         ir: &mut Expressions,
-        opcode: Op,
+        fields: &InstFields,
         args: &[Value],
         ty: Type,
-        properties: Properties,
     ) -> Result<Value, Limit> {
         let mut key = Key {
-            opcode,
             args: args.iter().map(|&v| self.find(v)).collect(),
             results: smallvec::smallvec![ty],
-            properties,
+            fields,
         };
         if let Some(reduced) = self.reduce(ir, &key) {
             assert_eq!(reduced.len(), 1, "rule operation result arity");
@@ -673,7 +670,7 @@ impl Graph {
                 }
             });
         }
-        Self::order_args(opcode, &mut key.args);
+        Self::order_args(fields.opcode(), &mut key.args);
         if let Some(inst) = self.lookup(ir, &key) {
             return Ok(ir.first_result(inst).expect("expression result"));
         }
@@ -683,12 +680,12 @@ impl Graph {
         // Detached candidates may use representatives; executable operands are
         // selected separately under dominance checks during extraction.
         let args: SmallVec<[Value; 3]> = key.args.iter().map(|root| root.value()).collect();
-        let inst = ir.create(opcode, &args, ty, properties);
+        let hash = self.hasher.hash_one(&key);
+        let inst = ir.create(fields.clone(), &args, ty);
         self.remaining_nodes -= 1;
         self.register_inst(ir, inst);
         // Make new nodes reusable within this update batch. Existing keys made
         // stale by unions are repaired together at the next query boundary.
-        let hash = self.hasher.hash_one(&key);
         self.hashes[inst] = hash;
         self.memo.insert_unique(hash, inst, |&i| self.hashes[i]);
         Ok(ir.first_result(inst).expect("expression result"))

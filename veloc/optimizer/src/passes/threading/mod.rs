@@ -235,13 +235,9 @@ fn duplicate(
             .collect();
         let results = f.dfg().inst_results(inst).to_vec();
         let types: Vec<_> = results.iter().map(|&v| f.dfg().value_type(v)).collect();
-        if let Some(folds) = evaluate::reduce(
-            f.dfg().opcode(inst),
-            &args,
-            &types,
-            &evaluate::Properties::read(f.dfg().inst(inst)),
-            |v| f.dfg().as_scalar_const(v),
-        ) {
+        if let Some(folds) = evaluate::reduce(f.dfg().inst_fields(inst), &args, &types, |v| {
+            f.dfg().as_scalar_const(v)
+        }) {
             for (&old, fold) in results.iter().zip(folds) {
                 let new = match fold {
                     evaluate::Fold::Operand(i) => args[i],

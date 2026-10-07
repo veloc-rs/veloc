@@ -1,4 +1,4 @@
-use super::inst::{FieldPool, Inst, InstFields, InstView, InstWriter, StoredInst};
+use super::inst::{Inst, InstFields, InstView, InstWriter, StoredInst};
 use crate::constant::Constant;
 use crate::types::{Block, Type, Value, ValueData, ValueDef, ValueList, ValueListPool};
 use alloc::boxed::Box;
@@ -21,7 +21,6 @@ pub struct BlockData {
 pub struct DataFlowGraph {
     pub(crate) blocks: PrimaryMap<crate::Block, BlockData>,
     pub(crate) instructions: PrimaryMap<Inst, StoredInst>,
-    pub(crate) fields: FieldPool,
     pub(crate) values: PrimaryMap<Value, ValueData>,
     constants: PrimaryMap<crate::ConstId, Constant>,
     literals: HashMap<Constant, Value>,
@@ -36,8 +35,7 @@ impl DataFlowGraph {
     /// Finalize parser-local function identities without touching SSA operands.
     pub(crate) fn remap_functions(&mut self, map: &[crate::FuncId]) {
         for (_, inst) in &mut self.instructions {
-            inst.fields
-                .map_functions(&mut self.fields, |id| map[id.0 as usize]);
+            inst.fields.map_functions(|id| map[id.0 as usize]);
         }
     }
 
@@ -45,7 +43,6 @@ impl DataFlowGraph {
         Self {
             blocks: PrimaryMap::new(),
             instructions: PrimaryMap::new(),
-            fields: FieldPool::default(),
             values: PrimaryMap::new(),
             constants: PrimaryMap::new(),
             literals: HashMap::new(),
@@ -88,6 +85,11 @@ impl DataFlowGraph {
         &self.blocks[block].params
     }
 
+    /// Borrow the operand-independent fields of an installed instruction.
+    pub fn inst_fields(&self, inst: Inst) -> &InstFields {
+        &self.instructions[inst].fields
+    }
+
     pub fn inst_count(&self) -> usize {
         self.instructions.len()
     }
@@ -106,13 +108,12 @@ impl DataFlowGraph {
     }
 
     pub fn opcode(&self, inst: Inst) -> crate::Opcode {
-        self.instructions[inst].fields.opcode(&self.fields)
+        self.instructions[inst].fields.opcode()
     }
 
     pub fn inst(&self, inst: Inst) -> InstView<'_> {
         let data = &self.instructions[inst];
-        data.fields
-            .view(self.operands.get(data.operands), &self.fields)
+        data.fields.view(self.operands.get(data.operands))
     }
 
     pub fn instructions(&self) -> impl ExactSizeIterator<Item = (Inst, InstView<'_>)> {
@@ -141,7 +142,6 @@ impl DataFlowGraph {
         values: &[Value],
     ) -> Inst {
         let inst = if let Some(inst) = target {
-            self.instructions[inst].fields.release(&mut self.fields);
             self.operands
                 .release(core::mem::take(&mut self.instructions[inst].operands));
             self.instructions[inst].fields = fields;
@@ -241,7 +241,6 @@ impl DataFlowGraph {
     fn clear_inst(&mut self, inst: Inst) {
         self.operands
             .release(core::mem::take(&mut self.instructions[inst].operands));
-        self.instructions[inst].fields.release(&mut self.fields);
         self.instructions[inst].fields = InstFields::Nop;
         self.inst_results[inst].clear(&mut self.value_list_pool);
     }

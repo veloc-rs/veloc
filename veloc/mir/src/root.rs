@@ -24,8 +24,8 @@ pub use error::{Error, Result};
 pub use function::{EdgeRef, FuncBody, FuncDecl, FunctionRef, InstCursor};
 pub use inst::type_methods;
 pub use inst::{
-    Arguments, FloatCC, Inst, InstView, InstWriter, IntCC, MemFlags, Opcode, Successor, Successors,
-    VectorMemOptions,
+    Arguments, FloatCC, Inst, InstFields, InstView, InstWriter, IntCC, MemFlags, Opcode, Successor,
+    Successors, VectorMemOptions,
 };
 pub use intrinsic::{Intrinsic, ids as intrinsic_ids};
 pub use module::{DataRelocation, Global, GlobalData, Linkage, Module};

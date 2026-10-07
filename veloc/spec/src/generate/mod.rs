@@ -2,6 +2,7 @@
 mod checks;
 pub(crate) mod construction;
 pub(crate) mod evaluate;
+pub(crate) mod fields;
 mod operands;
 pub(crate) mod ownership;
 pub(crate) mod packing;

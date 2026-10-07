@@ -32,7 +32,7 @@ pub(crate) fn generate(
     }
     let rules = expression::compile(source, defs, dialect)?;
     let local_folds =
-        expression::emit_attributes(defs) + &expression::emit_local(&rules, opcode, types);
+        expression::emit_attributes(defs) + &expression::emit_local(defs, &rules, opcode, types);
     let mut groups = BTreeMap::<&str, Vec<(usize, &CheckedRule)>>::new();
     for (id, rule) in rules.iter().enumerate().filter(|(_, r)| !r.is_flat()) {
         groups.entry(rule.opcode()).or_default().push((id, rule));
@@ -244,7 +244,8 @@ struct Trigger {
     work: usize,
 }
 
-struct Bytecode {
+struct Bytecode<'a> {
+    definitions: &'a Definitions,
     scans: usize,
     code: Code,
     opcodes: Vec<String>,
@@ -258,9 +259,10 @@ struct Bytecode {
     commutative: BTreeSet<String>,
 }
 
-impl Bytecode {
-    fn new(defs: &Definitions) -> Self {
+impl<'a> Bytecode<'a> {
+    fn new(defs: &'a Definitions) -> Self {
         Self {
+            definitions: defs,
             scans: 0,
             code: Code::default(),
             opcodes: Vec::new(),
@@ -724,15 +726,23 @@ impl Bytecode {
                 ..
             } => {
                 for (index, attr) in attributes.iter().enumerate() {
-                    let lhs = format!(
-                        "crate::evaluate::Properties::{opcode} {{ {}: a, .. }}",
-                        attr.name
+                    let operation = self
+                        .definitions
+                        .ops
+                        .iter()
+                        .find(|o| o.name == *opcode)
+                        .unwrap();
+                    let lhs = crate::storage::compact::bind_attributes(
+                        operation,
+                        &self.definitions.storage,
+                        &BTreeMap::from([(attr.name.clone(), "a".into())]),
+                        "lhs",
+                        "return false;",
                     );
                     let (other, predicate) = match &attr.value {
-                        AttributeValue::Literal(literal) => (
-                            source,
-                            format!("|lhs, _| matches!(lhs, {lhs} if a == {literal})"),
-                        ),
+                        AttributeValue::Literal(literal) => {
+                            (source, format!("|lhs, _| {{ {lhs} a == {literal} }}"))
+                        }
                         AttributeValue::Binding { node, index: field }
                             if *node != source || *field != index =>
                         {
@@ -744,16 +754,20 @@ impl Bytecode {
                             else {
                                 unreachable!()
                             };
-                            let rhs = format!(
-                                "crate::evaluate::Properties::{other_op} {{ {}: b, .. }}",
-                                attributes[*field].name
+                            let operation = self
+                                .definitions
+                                .ops
+                                .iter()
+                                .find(|o| o.name == *other_op)
+                                .unwrap();
+                            let rhs = crate::storage::compact::bind_attributes(
+                                operation,
+                                &self.definitions.storage,
+                                &BTreeMap::from([(attributes[*field].name.clone(), "b".into())]),
+                                "rhs",
+                                "return false;",
                             );
-                            (
-                                *node,
-                                format!(
-                                    "|lhs, rhs| matches!((lhs, rhs), ({lhs}, {rhs}) if a == b)"
-                                ),
-                            )
+                            (*node, format!("|lhs, rhs| {{ {lhs} {rhs} a == b }}"))
                         }
                         _ => continue,
                     };

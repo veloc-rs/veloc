@@ -1,46 +1,52 @@
-use super::{CheckedRule, PatternKind, Recipe};
+use super::{CheckedRule, PatternKind, Recipe, capture_code};
 use std::{collections::BTreeMap, fmt::Write};
 
 /// Generate direct operand/constant reductions and e-graph construction plans.
 /// Structural matching belongs exclusively to the graph query compiler.
-pub(in crate::rules) fn emit_local(rules: &[CheckedRule], opcode: &str, types: &str) -> String {
+pub(in crate::rules) fn emit_local(
+    defs: &crate::Definitions,
+    rules: &[CheckedRule],
+    opcode: &str,
+    types: &str,
+) -> String {
     let mut code = String::new();
-    code.push_str("#[allow(unused_mut, unused_variables, unused_assignments)]\npub(crate) fn accepts<R: crate::rewrite::View + ?Sized>(rule: usize, cx: &crate::rewrite::Context<'_, R>, captures: &[R::Value], nodes: &[R::Value]) -> bool { (|| { match rule {\n");
+    code.push_str("#[allow(unused_mut, unused_variables, unused_assignments)]\npub(crate) fn accepts(rule: usize, cx: &crate::rewrite::Context<'_, '_>, captures: &[crate::passes::expression::ExprValue], nodes: &[crate::passes::expression::ExprValue]) -> bool { (|| { match rule {\n");
     for (id, rule) in rules.iter().enumerate().filter(|(_, r)| !r.is_flat()) {
         writeln!(code, "{id} => {{").unwrap();
-        emit_conditions(rule, &mut code, types);
+        emit_conditions(defs, rule, &mut code, types);
         code.push_str("Some(()) },\n");
     }
     code.push_str("_ => unreachable!(\"generated rule ID\"),\n} })().is_some() }\n");
-    code.push_str("#[allow(unused_mut, unused_variables)]\npub(crate) fn plan<R: crate::rewrite::View + ?Sized>(rule: usize, cx: &crate::rewrite::Context<'_, R>, captures: &[R::Value], nodes: &[R::Value]) -> Option<crate::rewrite::Plan<R::Value>> { match rule {\n");
+    code.push_str("#[allow(unused_mut, unused_variables)]\npub(crate) fn plan(rule: usize, cx: &crate::rewrite::Context<'_, '_>, captures: &[crate::passes::expression::ExprValue], nodes: &[crate::passes::expression::ExprValue]) -> Option<crate::rewrite::Plan> { match rule {\n");
     for (id, rule) in rules.iter().enumerate().filter(|(_, r)| !r.is_flat()) {
         writeln!(code, "{id} => {{").unwrap();
-        emit_conditions(rule, &mut code, types);
+        emit_conditions(defs, rule, &mut code, types);
         code.push_str("let mut plan = crate::rewrite::PlanBuilder::default();\n");
-        let result = emit_recipe(&rule.replacement, &mut code, &mut 0, opcode, types);
+        let captures = rule.captures();
+        let result = emit_recipe(
+            defs,
+            &rule.replacement,
+            &mut code,
+            &mut 0,
+            opcode,
+            types,
+            &captures,
+        );
+        let root = capture_code(&captures, 0);
         writeln!(
             code,
-            "let result = {result};\nplan.finish(cx, result, cx.ty(values[0]))\n}},"
+            "let result = {result};\nplan.finish(cx, result, cx.ty({root}))\n}},"
         )
         .unwrap();
     }
     code.push_str("_ => unreachable!(\"generated rule ID\"),\n} }\n");
-    emit_flat(rules, &mut code, opcode, types);
+    emit_flat(defs, rules, &mut code, opcode, types);
     code
 }
 /// Conditions are shared by query filtering and checked construction. Query
 /// filtering does not allocate a replacement plan; application checks again
 /// after canonicalizing captured classes against the latest graph.
-fn emit_conditions(rule: &CheckedRule, code: &mut String, types: &str) {
-    writeln!(
-        code,
-        "let mut values = [captures[0]; {}];",
-        rule.pattern.len()
-    )
-    .unwrap();
-    for (i, slot) in rule.captures().iter().enumerate() {
-        writeln!(code, "values[{slot}] = captures[{i}];").unwrap();
-    }
+fn emit_conditions(defs: &crate::Definitions, rule: &CheckedRule, code: &mut String, types: &str) {
     for (i, slot) in rule.nodes().into_iter().enumerate() {
         let PatternKind::Operation {
             opcode: op,
@@ -53,10 +59,16 @@ fn emit_conditions(rule: &CheckedRule, code: &mut String, types: &str) {
         let bindings = attributes
             .iter()
             .enumerate()
-            .map(|(j, a)| format!("{}: attr_{slot}_{j}", a.name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(code, "let Properties::{op} {{ {bindings} }} = cx.properties(nodes[{i}])? else {{ return None; }};").unwrap();
+            .map(|(j, a)| (a.name.clone(), format!("attr_{slot}_{j}")))
+            .collect();
+        let operation = defs.ops.iter().find(|o| o.name == *op).unwrap();
+        code.push_str(&crate::storage::compact::bind_attributes(
+            operation,
+            &defs.storage,
+            &bindings,
+            &format!("cx.fields(nodes[{i}])?"),
+            "return None;",
+        ));
     }
     for slot in rule.nodes() {
         let PatternKind::Operation { attributes, .. } = &rule.pattern[slot].kind else {
@@ -70,19 +82,31 @@ fn emit_conditions(rule: &CheckedRule, code: &mut String, types: &str) {
         }
     }
     if let Some(guard) = &rule.guard {
-        writeln!(code, "if !({}) {{ return None; }}", guard.code(types)).unwrap();
+        writeln!(
+            code,
+            "if !({}) {{ return None; }}",
+            guard.code(types, &rule.captures())
+        )
+        .unwrap();
     }
 }
 fn emit_recipe(
+    defs: &crate::Definitions,
     recipe: &Recipe,
     code: &mut String,
     next: &mut usize,
     opcode: &str,
     types: &str,
+    captures: &[usize],
 ) -> String {
     match recipe {
-        Recipe::Value(slot) => format!("crate::rewrite::Input::Value(values[{slot}])"),
-        Recipe::Constant(ty, bits) => format!("plan.constant({}, {bits}u64)?", ty.code(types)),
+        Recipe::Value(slot) => format!(
+            "crate::rewrite::Input::Value({})",
+            capture_code(captures, *slot)
+        ),
+        Recipe::Constant(ty, bits) => {
+            format!("plan.constant({}, {bits}u64)?", ty.code(types, captures))
+        }
         Recipe::Build {
             opcode: op,
             ty,
@@ -91,33 +115,38 @@ fn emit_recipe(
         } => {
             let mut inputs = Vec::new();
             for arg in args {
-                let expr = emit_recipe(arg, code, next, opcode, types);
+                let expr = emit_recipe(defs, arg, code, next, opcode, types, captures);
                 let name = format!("r{next}");
                 *next += 1;
                 writeln!(code, "let {name} = {expr};").unwrap();
                 inputs.push(name);
             }
-            let properties = if attributes.is_empty() {
-                "Properties::None".into()
-            } else {
-                format!(
-                    "Properties::{op} {{ {} }}",
-                    attributes
-                        .iter()
-                        .map(|a| format!("{}: {}", a.name, a.value.code()))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            };
+            let operation = defs.ops.iter().find(|o| o.name == *op).unwrap();
+            let attributes = attributes
+                .iter()
+                .map(|a| (a.name.clone(), a.value.code()))
+                .collect();
+            let fields = crate::generate::fields::constructor(
+                defs,
+                operation,
+                &attributes,
+                &format!("{opcode}::{op}"),
+            );
             format!(
-                "plan.build(cx, {opcode}::{op}, {}, &[{}], {properties})?",
-                ty.code(types),
+                "plan.build(cx, {fields}, {}, &[{}])?",
+                ty.code(types, captures),
                 inputs.join(", ")
             )
         }
     }
 }
-fn emit_flat(rules: &[CheckedRule], code: &mut String, opcode: &str, types: &str) {
+fn emit_flat(
+    defs: &crate::Definitions,
+    rules: &[CheckedRule],
+    code: &mut String,
+    opcode: &str,
+    types: &str,
+) {
     let mut groups = BTreeMap::<&str, Vec<&CheckedRule>>::new();
     for rule in rules.iter().filter(|r| r.is_flat()) {
         groups.entry(rule.opcode()).or_default().push(rule);
@@ -136,11 +165,14 @@ fn emit_flat(rules: &[CheckedRule], code: &mut String, opcode: &str, types: &str
         "pub(super) fn can_fold(opcode: {opcode}) -> bool {{ {supported} }}"
     )
     .unwrap();
-    writeln!(code, "#[allow(unused_variables)]\npub(super) fn fold<V: Copy + Eq>(opcode: {opcode}, ty: {types}, args: &[V], mut constant: impl FnMut(V) -> Option<ScalarConst>) -> Option<crate::evaluate::Fold> {{ match opcode {{").unwrap();
+    writeln!(code, "#[allow(unused_variables)]\npub(super) fn fold<V: Copy + Eq>(fields: &veloc_mir::InstFields, ty: {types}, args: &[V], mut constant: impl FnMut(V) -> Option<ScalarConst>) -> Option<crate::evaluate::Fold> {{ match fields.opcode() {{").unwrap();
     for (op, rules) in groups {
         writeln!(code, "{opcode}::{op} => {{").unwrap();
         for rule in rules {
-            let PatternKind::Operation { args, .. } = &rule.pattern[0].kind else {
+            let PatternKind::Operation {
+                args, attributes, ..
+            } = &rule.pattern[0].kind
+            else {
                 unreachable!()
             };
             let orders = rule.orders(0);
@@ -150,10 +182,31 @@ fn emit_flat(rules: &[CheckedRule], code: &mut String, opcode: &str, types: &str
                     crate::types::generate::accepts(&rule.pattern[0].ty.domain, "ty"),
                     format!("args.len() == {}", args.len()),
                 ];
+                if !attributes.is_empty() {
+                    let fields = attributes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| (a.name.clone(), format!("attr_0_{i}")))
+                        .collect();
+                    let operation = defs.ops.iter().find(|o| o.name == op).unwrap();
+                    code.push_str(&crate::storage::compact::bind_attributes(
+                        operation,
+                        &defs.storage,
+                        &fields,
+                        "fields",
+                        "return None;",
+                    ));
+                    for (i, attribute) in attributes.iter().enumerate() {
+                        let expected = attribute.value.code();
+                        if expected != format!("attr_0_{i}") {
+                            checks.push(format!("attr_0_{i} == {expected}"));
+                        }
+                    }
+                }
                 for &slot in args {
                     let c = column(slot);
                     match rule.pattern[slot].kind {
-                        PatternKind::Value(previous) if previous != slot => checks.push(format!("args[{c}] == args[{}]", column(previous))),
+                        PatternKind::Value(previous) if previous != slot => checks.push(format!("crate::evaluate::same_value(args[{c}], args[{}], &mut constant)", column(previous))),
                         PatternKind::Constant(bits) => checks.push(format!("crate::evaluate::matches_constant(constant(args[{c}]), {bits}u64, true)")),
                         _ => {}
                     }

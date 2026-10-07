@@ -7,8 +7,7 @@ use std::fmt::Write;
 
 use veloc_semantics::{BvOp, ComparisonRef, Conversion, IntPredicate, Sort, Step, TypeRef};
 
-use crate::Error;
-use crate::model::{Binding, Definitions, Semantic, expr::Emitter};
+use crate::model::{Definitions, Semantic, expr::Emitter};
 use crate::semantic::Instance;
 use crate::types::{Primitive, Scalar};
 
@@ -19,7 +18,6 @@ pub(crate) struct Plan {
 struct Operation {
     opcode: usize,
     cases: Vec<Case>,
-    properties: Vec<String>,
 }
 
 struct Case {
@@ -29,7 +27,7 @@ struct Case {
 }
 
 impl Plan {
-    pub(crate) fn prepare(defs: &Definitions, source: &str) -> Result<Self, Error> {
+    pub(crate) fn prepare(defs: &Definitions) -> Self {
         let mut operations = Vec::new();
         for (opcode, op) in defs.ops.iter().enumerate() {
             let Some(sem) = &op.semantics else { continue };
@@ -62,32 +60,9 @@ impl Plan {
                     variants,
                 });
             }
-            let properties = sem
-                .properties
-                .iter()
-                .map(|property| {
-                    op.bindings()
-                        .iter()
-                        .find_map(|(field, binding)| match binding {
-                            Binding::Name(name) if name == property => Some(field.clone()),
-                            _ => None,
-                        })
-                        .ok_or_else(|| {
-                            Error::at(
-                                source,
-                                op.offset,
-                                "semantic comparison properties require a direct storage field",
-                            )
-                        })
-                })
-                .collect::<Result<_, _>>()?;
-            operations.push(Operation {
-                opcode,
-                cases,
-                properties,
-            });
+            operations.push(Operation { opcode, cases });
         }
-        Ok(Self { operations })
+        Self { operations }
     }
 }
 
@@ -95,8 +70,8 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
     let mut code = String::from(
         "// @generated from checked operation semantics.\n\
          #[allow(unused_variables, unreachable_patterns)]\n\
-         pub(crate) fn evaluate(opcode: Opcode, args: &[ScalarConst], results: &[Type], properties: &[IntCC]) -> Option<smallvec::SmallVec<[ScalarConst; 2]>> {\n\
-         match opcode {\n",
+         pub(crate) fn evaluate(fields: &veloc_mir::InstFields, args: &[ScalarConst], results: &[Type]) -> Option<smallvec::SmallVec<[ScalarConst; 2]>> {\n\
+         match fields.opcode() {\n",
     );
     let mut supported = Vec::new();
     for prepared in &plan.operations {
@@ -143,10 +118,23 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
             let inputs = sem.inputs as usize;
             let results = prepared.cases[0].instance.kinds.len() - inputs;
             let constraints = applicability(op);
-            let fields = (0..prepared.properties.len())
-                .map(|i| format!("let p{i} = properties[{i}];"))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let bindings = sem
+                .properties
+                .iter()
+                .enumerate()
+                .map(|(i, name)| (name.clone(), format!("p{i}")))
+                .collect();
+            let fields = if sem.properties.is_empty() {
+                String::new()
+            } else {
+                crate::storage::compact::bind_attributes(
+                    op,
+                    &defs.storage,
+                    &bindings,
+                    "fields",
+                    "return None;",
+                )
+            };
             writeln!(
                 code,
                 "Opcode::{} => {{\nassert_eq!(args.len(), {inputs}, \"semantic operand count\");\nassert_eq!(results.len(), {results}, \"semantic result count\");\n{fields}{constraints}match (args, results) {{\n{arms}_ => None,\n}}\n}},",
@@ -162,7 +150,6 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
         format!("match opcode {{ {} _ => false }}", supported.join("\n"))
     };
     writeln!(code, "/// Whether this opcode has a generated scalar constant evaluator.\npub const fn can_fold(opcode: Opcode) -> bool {{ {supported} }}").unwrap();
-    code.push_str(&properties(defs, plan));
     code
 }
 
@@ -188,22 +175,6 @@ fn applicability(op: &crate::model::Op) -> String {
         .into_iter()
         .map(|constraint| constraint.emit(&emitter, "return None"))
         .collect()
-}
-
-fn properties(defs: &Definitions, plan: &Plan) -> String {
-    let mut ops = String::from(
-        "#[allow(unused_variables)] pub(crate) fn properties(data: &veloc_mir::InstView<'_>) -> smallvec::SmallVec<[IntCC; 1]> { match data.opcode() {\n",
-    );
-    for prepared in &plan.operations {
-        let op = &defs.ops[prepared.opcode];
-        let fields = &prepared.properties;
-        if fields.is_empty() {
-            continue;
-        }
-        writeln!(ops, "Opcode::{} => {{ let veloc_mir::InstView::{} {{ {}, .. }} = data else {{ unreachable!(\"checked semantic property layout\") }}; smallvec::smallvec![{}] }},", op.name, op.format, fields.join(", "), fields.iter().map(|f| format!("*{f}")).collect::<Vec<_>>().join(", ")).unwrap();
-    }
-    ops.push_str("_ => smallvec::smallvec![],\n} }\n");
-    ops
 }
 
 fn constant(scalar: &Scalar) -> Option<String> {

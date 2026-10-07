@@ -26,12 +26,20 @@ pub(super) enum TypeSource {
     Exact(String),
 }
 impl TypeRef {
-    fn code(&self, types: &str) -> String {
+    fn code(&self, types: &str, captures: &[usize]) -> String {
         match &self.source {
-            TypeSource::Value(slot) => format!("cx.ty(values[{slot}])"),
+            TypeSource::Value(slot) => format!("cx.ty({})", capture_code(captures, *slot)),
             TypeSource::Exact(name) => name.replacen("Type", types, 1),
         }
     }
+}
+
+fn capture_code(captures: &[usize], slot: usize) -> String {
+    let index = captures
+        .iter()
+        .position(|&captured| captured == slot)
+        .expect("referenced pattern slot must be captured");
+    format!("captures[{index}]")
 }
 
 pub(super) struct Pattern {
@@ -161,7 +169,6 @@ impl CheckedRule {
     /// Allocation-free reductions remain a specialized projection of the model.
     pub fn is_flat(&self) -> bool {
         self.guard.is_none()
-            && self.nodes().is_empty()
             && self
                 .pattern
                 .iter()
@@ -277,25 +284,11 @@ pub(super) fn compile(
         if root.moves {
             return Err(fail("expression rules cannot move their root"));
         }
-        let Kind::Call(path, ts) = &root.ty.kind else {
-            return Err(fail("expected a typed root operation"));
+        let Kind::Name(path) = &root.ty.kind else {
+            return Err(fail(
+                "declare only the root operation here; put its result type on each case",
+            ));
         };
-        let [ty] = ts.as_slice() else {
-            return Err(fail("expected one root result type"));
-        };
-        let mut generics = BTreeMap::new();
-        for param in &sig.generics {
-            let domain = defs.types.set(
-                source.text(),
-                &expand_domain(source.text(), &param.ty, &aliases, &mut BTreeSet::new())?,
-            )?;
-            if param.moves
-                || domain.is_empty()
-                || generics.insert(param.name.clone(), domain).is_some()
-            {
-                return Err(fail("invalid rule type parameter"));
-            }
-        }
         let Some(Node {
             kind: Kind::List(cases),
             ..
@@ -307,15 +300,46 @@ pub(super) fn compile(
             return Err(fail("expected nonempty cases"));
         }
         for case in cases {
+            let fail = |message| Error::at(source.text(), case.offset, message);
             let Kind::Record(fields) = &case.kind else {
                 return Err(fail("expected case"));
             };
-            let Some(Node {
-                kind: Kind::List(args),
-                ..
-            }) = fields.get("match")
-            else {
-                return Err(fail("expected operand patterns"));
+            if fields
+                .keys()
+                .any(|k| !matches!(k.as_str(), "match" | "emit" | "when" | "generics"))
+            {
+                return Err(fail("unknown expression case field"));
+            }
+            let mut generics = BTreeMap::new();
+            if let Some(params) = fields.get("generics") {
+                let Kind::Record(params) = &params.kind else {
+                    return Err(fail("expected case type parameters"));
+                };
+                for (name, bound) in params {
+                    let domain = defs.types.set(
+                        source.text(),
+                        &expand_domain(source.text(), bound, &aliases, &mut BTreeSet::new())?,
+                    )?;
+                    if domain.is_empty()
+                        || name == &root.name
+                        || generics.insert(name.clone(), domain).is_some()
+                    {
+                        return Err(fail("invalid or shadowed case type parameter"));
+                    }
+                }
+            }
+            let pattern = fields
+                .get("match")
+                .ok_or_else(|| fail("expected root pattern"))?;
+            let (args, ty) = match &pattern.kind {
+                Kind::TypedCall(name, types, args) if name == &root.name && types.len() == 1 => {
+                    (args, &types[0])
+                }
+                _ => {
+                    return Err(fail(
+                        "expected the declared root with one result type: root<T>(...)",
+                    ));
+                }
             };
             let rhs = fields
                 .get("emit")

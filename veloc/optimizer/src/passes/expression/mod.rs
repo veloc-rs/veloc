@@ -8,7 +8,8 @@ mod storage;
 
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use graph::{Graph, InstKind};
-use storage::{Expressions, Storage, Value as ExprValue};
+use storage::Storage;
+pub(crate) use storage::{Expressions, Value as ExprValue};
 use veloc_analyzer::{AnalysisManager, Dominators};
 use veloc_mir::{FuncBody, Inst};
 
@@ -412,10 +413,9 @@ block0():
         let rebuilt = graph
             .build(
                 ir,
-                Op::ISub,
+                &veloc_mir::InstFields::from_opcode(Op::ISub).unwrap(),
                 &[Value(0), zero],
                 Type::I64,
-                crate::evaluate::Properties::None,
             )
             .unwrap();
         assert_eq!(graph.values.len(), count);
@@ -425,10 +425,9 @@ block0():
         let folded = graph
             .build(
                 ir,
-                Op::IAdd,
+                &veloc_mir::InstFields::from_opcode(Op::IAdd).unwrap(),
                 &[one, one],
                 Type::I64,
-                crate::evaluate::Properties::None,
             )
             .unwrap();
         assert_eq!(ir.as_scalar_const(folded), Some(ScalarConst::from(2i64)));
@@ -500,10 +499,9 @@ block0():
         let sum = graph
             .build(
                 &mut ir,
-                Op::IAdd,
+                &veloc_mir::InstFields::from_opcode(Op::IAdd).unwrap(),
                 &[Value(2), Value(4)],
                 Type::I32,
-                crate::evaluate::Properties::None,
             )
             .unwrap();
         let one = graph.literal(&mut ir, ScalarConst::from(1i32));
@@ -531,10 +529,9 @@ block0():
         let parent = graph
             .build(
                 &mut ir,
-                Op::IAdd,
+                &veloc_mir::InstFields::from_opcode(Op::IAdd).unwrap(),
                 &[Value(5), Value(6)],
                 Type::I32,
-                crate::evaluate::Properties::None,
             )
             .unwrap();
         let mut fuel = Budget::DEFAULT.match_steps;
@@ -628,19 +625,17 @@ block1():
             let sum = graph
                 .build(
                     &mut ir,
-                    Op::IAdd,
+                    &veloc_mir::InstFields::from_opcode(Op::IAdd).unwrap(),
                     &[x, y],
                     ty,
-                    crate::evaluate::Properties::None,
                 )
                 .unwrap();
             let cancel = graph
                 .build(
                     &mut ir,
-                    Op::ISub,
+                    &veloc_mir::InstFields::from_opcode(Op::ISub).unwrap(),
                     &[sum, x],
                     ty,
-                    crate::evaluate::Properties::None,
                 )
                 .unwrap();
             let max = graph.literal(
@@ -651,19 +646,17 @@ block1():
             let left = graph
                 .build(
                     &mut ir,
-                    Op::IAdd,
+                    &veloc_mir::InstFields::from_opcode(Op::IAdd).unwrap(),
                     &[x, max],
                     ty,
-                    crate::evaluate::Properties::None,
                 )
                 .unwrap();
             let wrapped = graph
                 .build(
                     &mut ir,
-                    Op::IAdd,
+                    &veloc_mir::InstFields::from_opcode(Op::IAdd).unwrap(),
                     &[left, one],
                     ty,
-                    crate::evaluate::Properties::None,
                 )
                 .unwrap();
             let mut fuel = Budget::DEFAULT.match_steps;

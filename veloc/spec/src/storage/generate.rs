@@ -14,8 +14,15 @@ pub(super) fn record<'a>(field: &Field, records: &'a [RecordDef]) -> Option<&'a 
     records.iter().find(|r| field.ty.named(&r.name))
 }
 
+pub(super) fn split_record(record: &RecordDef) -> bool {
+    record
+        .fields
+        .iter()
+        .any(|f| f.policy.references.is_operand())
+}
+
 pub(super) fn stored_type(field: &Field, records: &[RecordDef]) -> Option<String> {
-    if let Some(record) = record(field, records) {
+    if let Some(record) = record(field, records).filter(|r| split_record(r)) {
         return Some(format!("{}Fields", record.name));
     }
     match field.access() {
@@ -44,7 +51,7 @@ fn view_type(field: &Field) -> String {
 
 /// Decode one logical field from stored metadata and the shared operand reader.
 pub(super) fn read_field(field: &Field, records: &[RecordDef], value: &str) -> String {
-    if record(field, records).is_some() {
+    if record(field, records).is_some_and(split_record) {
         return format!("{value}.view(&mut reader)");
     }
     match field.access() {
@@ -111,10 +118,10 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
             .collect(),
     };
     out.push_str(&view.generate());
-    for record in records {
+    for record in records.iter().filter(|r| split_record(r)) {
         writeln!(
             out,
-            "#[derive(Debug, Clone, Copy)] pub(crate) struct {}Fields {{",
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)] pub struct {}Fields {{",
             record.name
         )
         .unwrap();
@@ -196,7 +203,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         writeln!(out, "/// Construct this layout without validating its type contract.\npub fn {}{lifetime}(self, {params}) -> Inst {{\nlet mut {values} = Arguments::new();", super::constructor_name(&layout.name)).unwrap();
         for (i, f) in layout.fields.iter().enumerate() {
             let name = &f.name;
-            let expr = if record(f, records).is_some() {
+            let expr = if record(f, records).is_some_and(split_record) {
                 format!("{name}.store(&mut {values})")
             } else {
                 match f.access() {

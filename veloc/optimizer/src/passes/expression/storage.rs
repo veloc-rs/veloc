@@ -1,12 +1,12 @@
 //! Compact search expressions, with MIR occurrences kept as emission witnesses.
-use crate::evaluate::Properties;
 use cranelift_entity::{PrimaryMap, SecondaryMap, entity_impl, packed_option::PackedOption};
 use hashbrown::HashMap;
 use smallvec::SmallVec;
+use veloc_mir::InstFields;
 use veloc_mir::{Constant, FuncBody, Opcode, ScalarConst, Type};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct Value(pub u32);
+pub(crate) struct Value(pub u32);
 entity_impl!(Value, "expr");
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -28,8 +28,7 @@ struct ValueData {
 /// Imported and generated operations have exactly the same representation.
 /// Inputs followed by results occupy one range in the shared edge buffer.
 struct Operation {
-    opcode: Opcode,
-    properties: Properties,
+    fields: InstFields,
     start: u32,
     inputs: u32,
     outputs: u32,
@@ -37,7 +36,7 @@ struct Operation {
 }
 
 #[derive(Default)]
-pub(super) struct Storage {
+pub(crate) struct Storage {
     values: PrimaryMap<Value, ValueData>,
     operations: PrimaryMap<Inst, Operation>,
     edges: Vec<Value>,
@@ -50,7 +49,7 @@ pub(super) struct Storage {
 
 /// MIR is borrowed only at the import and extraction boundaries. Hot search
 /// queries read Storage, without decoding MIR or distinguishing new candidates.
-pub(super) struct Expressions<'a> {
+pub(crate) struct Expressions<'a> {
     body: &'a FuncBody,
     storage: Storage,
     imported: SecondaryMap<veloc_mir::Value, PackedOption<Value>>,
@@ -131,10 +130,9 @@ impl<'a> Expressions<'a> {
             .map(|&v| self.import_value(v))
             .collect();
         let inst = self.storage.push_operation(
-            view.opcode(),
+            dfg.inst_fields(original).clone(),
             &args,
             &results,
-            Properties::read(view),
             view.can_speculate(),
         );
         self.storage.original_insts[inst] = original.into();
@@ -150,24 +148,16 @@ impl<'a> Expressions<'a> {
         self.storage.constant(constant)
     }
 
-    pub(super) fn create(
-        &mut self,
-        opcode: Opcode,
-        args: &[Value],
-        ty: Type,
-        properties: Properties,
-    ) -> Inst {
+    pub(super) fn create(&mut self, fields: InstFields, args: &[Value], ty: Type) -> Inst {
         let types: SmallVec<[Type; 3]> = args.iter().map(|&v| self.value_type(v)).collect();
-        properties
-            .validate(opcode, &types, &[ty])
+        crate::evaluate::validate_fields(&fields, &types, &[ty])
             .expect("checked expression recipe");
         let result = self.storage.values.push(ValueData {
             ty,
             inst: None.into(),
             literal: None.into(),
         });
-        self.storage
-            .push_operation(opcode, args, &[result], properties, true)
+        self.storage.push_operation(fields, args, &[result], true)
     }
 
     pub(super) fn set_replacements(&mut self, replacements: HashMap<Value, Value>) {
@@ -202,15 +192,13 @@ impl<'a> Expressions<'a> {
 impl Storage {
     fn push_operation(
         &mut self,
-        opcode: Opcode,
+        fields: InstFields,
         args: &[Value],
         results: &[Value],
-        properties: Properties,
         movable: bool,
     ) -> Inst {
         let inst = self.operations.push(Operation {
-            opcode,
-            properties,
+            fields,
             start: u32::try_from(self.edges.len()).expect("expression edge count"),
             inputs: u32::try_from(args.len()).expect("expression arity"),
             outputs: u32::try_from(results.len()).expect("expression results"),
@@ -224,7 +212,7 @@ impl Storage {
         inst
     }
 
-    pub(super) fn value_type(&self, value: Value) -> Type {
+    pub(crate) fn value_type(&self, value: Value) -> Type {
         self.values[value].ty
     }
 
@@ -257,16 +245,16 @@ impl Storage {
         Some(&self.constants[self.values[value].literal.expand()?])
     }
 
-    pub(super) fn as_scalar_const(&self, value: Value) -> Option<ScalarConst> {
+    pub(crate) fn as_scalar_const(&self, value: Value) -> Option<ScalarConst> {
         self.as_const(value)?.as_scalar()
     }
 
     pub(super) fn opcode(&self, inst: Inst) -> Opcode {
-        self.operations[inst].opcode
+        self.operations[inst].fields.opcode()
     }
 
-    pub(super) fn properties(&self, inst: Inst) -> Properties {
-        self.operations[inst].properties
+    pub(super) fn fields(&self, inst: Inst) -> &InstFields {
+        &self.operations[inst].fields
     }
 
     pub(super) fn operands(&self, inst: Inst) -> &[Value] {
@@ -331,7 +319,7 @@ impl Storage {
         let operation = &self.operations[source];
         body.edit().insert_before(
             before,
-            |w| operation.properties.write(operation.opcode, args, w),
+            |w| w.from_fields(operation.fields.clone(), args),
             &types,
         )
     }
@@ -347,15 +335,8 @@ impl Storage {
     }
 }
 
-impl crate::rewrite::View for Expressions<'_> {
-    type Value = Value;
-    fn ty(&self, value: Value) -> Type {
-        self.value_type(value)
-    }
-    fn constant(&self, value: Value) -> Option<ScalarConst> {
-        self.as_scalar_const(value)
-    }
-    fn properties(&self, value: Value) -> Option<Properties> {
-        Some(self.storage.properties(self.value_inst(value)?))
+impl Expressions<'_> {
+    pub(crate) fn value_fields(&self, value: Value) -> Option<&InstFields> {
+        Some(self.storage.fields(self.value_inst(value)?))
     }
 }

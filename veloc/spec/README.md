@@ -843,17 +843,20 @@ moving its SSA references out of the operand store.
 The generator uses checked structure, not the Rust type's spelling, to split and
 traverse SSA fields. Fixed `values(N)` groups are inherently SSA operands.
 
-Each out-of-line instruction layout has a generated payload type and its own
-`Pool<T>`. A generated trait selects that pool for the common `push<T>`,
-`get<T>`, and `remove<T>` interface. A payload groups the layout's non-SSA
-fields to avoid a separate allocation/lookup for every field; the pools do not
-store a maximum-sized enum containing every layout. Small layouts stay inline.
-Typed IDs are private to the owning DFG and invalidated on replacement or
-erasure; freed slots are reused. They are not public, generation-checked handles.
-SSA uses remain in the DFG's operand arena and are never managed through these pools.
-`FieldPool` also owns an immutable `InternPool` for constant bytes. Interned
-entries are shared by content and live until the DFG is dropped; erasing an
-instruction never releases them. Small scalar and splat constants stay inline.
+`InstFields` is the owned, operand-independent instruction head shared by MIR
+and expression search. Small layouts stay inline; out-of-line layouts use
+`Box<LayoutFields>`, including `BrTable`'s targets and operand-group lengths.
+Cloning owns a separate payload, equality and hashing inspect its contents,
+and replacement or erasure drops it normally. No DFG-local field pool or pool
+IDs are needed. SSA uses remain in the DFG's operand arena. The generated head
+retains the 16-byte size limit.
+
+Plain nested records without SSA operands are stored directly. Only records
+containing SSA operands need generated `*Fields` metadata and reconstruction.
+`DataFlowGraph::inst_fields()` borrows a head; fixed expression heads also have
+generated constructors. `InstWriter::from_fields()` installs an owned head with
+MIR operands without changing its representation. `InstView` remains the
+borrowed, complete view of a head and its operands.
 
 A single `struct Name { field: Type, ... }` declaration describes both plain
 structured data and instruction storage. `storage: Name { ... }` selects its

@@ -46,7 +46,7 @@ fn size(ty: &str) -> Option<usize> {
     Some(match ty {
         "Opcode" | "IntCC" | "FloatCC" | "bool" | "u8" => 1,
         "MemFlags" | "Intrinsic" => 2,
-        "u32" | "i32" | "FuncId" | "SigId" => 4,
+        "u32" | "i32" | "FuncId" | "GlobalId" | "SigId" => 4,
         "u64" => 8,
         _ => return None,
     })
@@ -171,7 +171,7 @@ pub(super) fn encode(
         construct(&format!("InstFields::{}", layout.name), fields)
     } else {
         format!(
-            "InstFields::{}(self.dfg.fields.push({}))",
+            "InstFields::{}(alloc::boxed::Box::new({}))",
             layout.name,
             construct(&format!("{}Fields", layout.name), fields)
         )
@@ -203,43 +203,25 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
     for layout in &cold {
         writeln!(
             out,
-            "#[derive(Debug, Clone)] pub(crate) struct {}Fields {{",
+            "#[derive(Debug, Clone, PartialEq, Eq, Hash)] pub struct {}Fields {{",
             layout.name
         )
         .unwrap();
         for f in &layout.fields {
             if let Some(ty) = stored_type(f, records) {
-                writeln!(out, "{}: {ty},", f.name).unwrap();
+                writeln!(out, "pub {}: {ty},", f.name).unwrap();
             }
         }
         out.push_str("}\n");
     }
-    out.push_str("#[derive(Debug, Clone, Default)] pub(crate) struct PayloadPool {\n");
+    out.push_str("#[derive(Debug, Clone, PartialEq, Eq, Hash)] pub enum InstFields {\n");
     for layout in &cold {
         writeln!(
             out,
-            "{}: storage::Pool<{}Fields>,",
-            super::constructor_name(&layout.name),
-            layout.name
+            "{}(alloc::boxed::Box<{}Fields>),",
+            layout.name, layout.name
         )
         .unwrap();
-    }
-    out.push_str("}\n");
-    for layout in &cold {
-        let name = &layout.name;
-        let field = super::constructor_name(name);
-        writeln!(
-            out,
-            "impl storage::Pooled for {name}Fields {{
-            fn pool(pools: &FieldPool) -> &storage::Pool<Self> {{ &pools.payloads.{field} }}
-            fn pool_mut(pools: &mut FieldPool) -> &mut storage::Pool<Self> {{ &mut pools.payloads.{field} }}
-        }}"
-        )
-        .unwrap();
-    }
-    out.push_str("#[derive(Debug, Clone)] pub(crate) enum InstFields {\n");
-    for layout in &cold {
-        writeln!(out, "{}(storage::Id<{}Fields>),", layout.name, layout.name).unwrap();
     }
     for layout in &hot {
         writeln!(
@@ -259,24 +241,58 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
         .unwrap();
     }
     out.push_str("}\nconst _: () = assert!(core::mem::size_of::<InstFields>() <= 16);\n#[allow(unused_variables)] impl InstFields {\n");
-    out.push_str("pub(crate) fn clone_in(&self, pool: &mut FieldPool) -> Self { match self {\n");
-    for layout in &cold {
-        writeln!(out, "Self::{0}(id) => {{ let fields = pool.get(*id).clone(); Self::{0}(pool.push(fields)) }},", layout.name).unwrap();
+    // Unallocated expression heads use the same encoding as installed MIR.
+    for layout in layouts.iter().filter(|l| {
+        l.fields.iter().all(|f| {
+            !matches!(
+                f.access(),
+                Some(Access::Values | Access::Edge | Access::Edges)
+            ) && !record(f, records).is_some_and(super::generate::split_record)
+        })
+    }) {
+        let params = layout
+            .fields
+            .iter()
+            .filter(|f| f.access().is_none())
+            .map(|f| format!("{}: {}", f.name, f.rust))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            out,
+            "pub fn {}({params}) -> Self {{ {} }}",
+            super::constructor_name(&layout.name),
+            encode(layout, records, |i| layout.fields[i].name.clone())
+        )
+        .unwrap();
     }
-    out.push_str("_ => self.clone(), } }\n");
-    // A schema can have zero, one, or many pooled variants.
-    out.push_str("#[allow(clippy::single_match)] pub(crate) fn release(&self, pool: &mut FieldPool) { match self {\n");
-    for layout in &cold {
-        writeln!(out, "Self::{}(id) => pool.remove(*id),", layout.name).unwrap();
+    out.push_str("/// Construct a fixed-arity head with no extra attributes.\npub fn from_opcode(opcode: Opcode) -> Option<Self> { match opcode.spec().format {\n");
+    for layout in layouts
+        .iter()
+        .filter(|l| l.canonical && super::value_only(&l.fields))
+    {
+        let args = layout
+            .fields
+            .iter()
+            .filter(|f| f.ty.named("Opcode"))
+            .map(|_| "opcode")
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            out,
+            "OpFormat::{} => Some(Self::{}({args})),",
+            layout.name,
+            super::constructor_name(&layout.name)
+        )
+        .unwrap();
     }
-    out.push_str("_ => {} } }\n");
-    out.push_str("pub(crate) fn opcode(&self, pool: &FieldPool) -> Opcode { match self {\n");
+    out.push_str("_ => None, } }\n");
+    out.push_str("pub fn opcode(&self) -> Opcode { match self {\n");
     for layout in &cold {
         let opcode = match &layout.opcode {
             OpcodeSource::Fixed(op) => format!("Opcode::{op}"),
-            OpcodeSource::Dynamic(i) => format!("pool.get(*id).{}", layout.fields[*i].name),
+            OpcodeSource::Dynamic(i) => format!("fields.{}", layout.fields[*i].name),
         };
-        writeln!(out, "Self::{}(id) => {opcode},", layout.name).unwrap();
+        writeln!(out, "Self::{}(fields) => {opcode},", layout.name).unwrap();
     }
     for layout in &hot {
         let opcode = match &layout.opcode {
@@ -290,17 +306,12 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
         )
         .unwrap();
     }
-    out.push_str("} }\npub(crate) fn map_functions(&mut self, pool: &mut FieldPool, mut map: impl FnMut(crate::FuncId) -> crate::FuncId) { match self {\n");
+    out.push_str("} }\npub(crate) fn map_functions(&mut self, mut map: impl FnMut(crate::FuncId) -> crate::FuncId) { match self {\n");
     for layout in &cold {
-        writeln!(out, "Self::{}(id) => {{", layout.name).unwrap();
+        writeln!(out, "Self::{}(fields) => {{", layout.name).unwrap();
         for f in &layout.fields {
             if f.ty.named("FuncId") {
-                writeln!(
-                    out,
-                    "let fields = pool.get_mut(*id); fields.{0} = map(fields.{0});",
-                    f.name
-                )
-                .unwrap();
+                writeln!(out, "fields.{0} = map(fields.{0});", f.name).unwrap();
             }
         }
         out.push_str("},\n");
@@ -321,9 +332,9 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
         }
         out.push_str("},\n");
     }
-    out.push_str("_ => {},\n} }\npub(crate) fn view<'a>(&'a self, values: &'a [Value], pool: &'a FieldPool) -> InstView<'a> {\nlet mut reader = storage::OperandReader(values);\nlet view = match self {\n");
+    out.push_str("_ => {},\n} }\npub fn view<'a>(&'a self, values: &'a [Value]) -> InstView<'a> {\nlet mut reader = storage::OperandReader(values);\nlet view = match self {\n");
     for layout in &cold {
-        writeln!(out, "Self::{}(id) => {{", layout.name).unwrap();
+        writeln!(out, "Self::{}(fields) => {{", layout.name).unwrap();
         let fields = layout
             .fields
             .iter()
@@ -332,7 +343,7 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
             .map(|(i, f)| (f.name.clone(), format!("_f{i}")));
         writeln!(
             out,
-            "let {} = pool.get(*id);",
+            "let {} = fields.as_ref();",
             construct(&format!("{}Fields", layout.name), fields)
         )
         .unwrap();
@@ -401,11 +412,11 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
 /// Edits report original offsets, so callers can compact operands in one pass.
 fn edge_access(out: &mut String, layouts: &[Layout], records: &[RecordDef], mutable: bool) {
     let (method, borrow, argument, get) = if mutable {
-        ("edit_edges", "&mut ", "&mut storage::Edge", "get_mut")
+        ("edit_edges", "&mut ", "&mut storage::Edge", "as_mut")
     } else {
-        ("visit_edges", "&", "storage::Edge", "get")
+        ("visit_edges", "&", "storage::Edge", "as_ref")
     };
-    writeln!(out, "pub(crate) fn {method}({borrow}self, pool: {borrow}FieldPool, operand_len: u32, mut visit: impl FnMut({argument}, core::ops::Range<u32>)) {{ match self {{").unwrap();
+    writeln!(out, "pub(crate) fn {method}({borrow}self, operand_len: u32, mut visit: impl FnMut({argument}, core::ops::Range<u32>)) {{ match self {{").unwrap();
     for layout in layouts.iter().filter(|layout| {
         layout
             .fields
@@ -416,7 +427,7 @@ fn edge_access(out: &mut String, layouts: &[Layout], records: &[RecordDef], muta
         if hot {
             writeln!(out, "{} => {{", pattern(layout, records, true, "Self")).unwrap();
         } else {
-            writeln!(out, "Self::{}(id) => {{", layout.name).unwrap();
+            writeln!(out, "Self::{}(fields) => {{", layout.name).unwrap();
             let fields = layout
                 .fields
                 .iter()
@@ -425,7 +436,7 @@ fn edge_access(out: &mut String, layouts: &[Layout], records: &[RecordDef], muta
                 .map(|(i, f)| (f.name.clone(), format!("_f{i}")));
             writeln!(
                 out,
-                "let {} = pool.{get}(*id);",
+                "let {} = fields.{get}();",
                 construct(&format!("{}Fields", layout.name), fields)
             )
             .unwrap();
@@ -522,4 +533,76 @@ pub(crate) fn inputs(
         }
     }
     inputs
+}
+
+/// Read logical attributes from the same inline/boxed encoding as MIR views.
+/// No SSA operands are required and no owning instruction head is cloned.
+pub(crate) fn bind_attributes(
+    op: &crate::model::Op,
+    storage: &super::Storage,
+    bindings: &std::collections::BTreeMap<String, String>,
+    value: &str,
+    failure: &str,
+) -> String {
+    let layout = storage
+        .layouts
+        .iter()
+        .find(|l| l.name == op.format)
+        .unwrap();
+    let hot = inline(layout, &storage.records);
+    let mut fields = Vec::new();
+    let mut values = Vec::new();
+    for (i, field) in layout.fields.iter().enumerate() {
+        let Some(crate::model::Binding::Name(param)) = op.bindings().get(&field.name) else {
+            continue;
+        };
+        let Some(binding) = bindings.get(param) else {
+            continue;
+        };
+        assert!(
+            field.access().is_none(),
+            "attribute cannot be an SSA operand"
+        );
+        assert!(
+            !record(field, &storage.records).is_some_and(super::generate::split_record),
+            "attribute cannot contain SSA operands"
+        );
+        let local = format!("_field{i}");
+        fields.push((field.name.clone(), local.clone()));
+        let expression = if hot && field.ty.named("u64") {
+            format!("u64::from_le_bytes(*{local})")
+        } else if field.policy.borrowed {
+            format!("{local}.clone()")
+        } else {
+            format!("*{local}")
+        };
+        values.push(format!("let {binding} = {expression};\n"));
+    }
+    assert_eq!(
+        values.len(),
+        bindings.len(),
+        "checked attribute projections"
+    );
+    let fields = fields
+        .into_iter()
+        .map(|(name, local)| format!("{name}: {local}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let fields = if fields.is_empty() {
+        "..".into()
+    } else {
+        format!("{fields}, ..")
+    };
+    let head = if hot {
+        format!(
+            "let veloc_mir::InstFields::{} {{ {fields} }} = {value} else {{ {failure} }};\n",
+            layout.name
+        )
+    } else {
+        format!(
+            "let veloc_mir::InstFields::{}(_fields) = {value} else {{ {failure} }};\nlet veloc_mir::inst::{}Fields {{ {fields} }} = _fields.as_ref();\n",
+            layout.name, layout.name
+        )
+    };
+    head + &values.concat()
 }

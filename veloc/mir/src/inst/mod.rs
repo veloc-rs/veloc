@@ -13,8 +13,8 @@ pub struct Inst(pub u32);
 entity_impl!(Inst, "inst");
 
 mod storage;
-pub use storage::{Arguments, Successor, Successors};
-pub(crate) use storage::{FieldPool, StoredInst};
+pub(crate) use storage::StoredInst;
+pub use storage::{Arguments, Edge as InstEdge, Edges as InstEdges, Successor, Successors};
 
 /// A single-use write into one DFG. Generated methods encode directly into
 /// persistent fields; no owning instruction draft is materialized.
@@ -23,7 +23,7 @@ pub struct InstWriter<'a> {
     pub(crate) target: Option<Inst>,
 }
 impl InstWriter<'_> {
-    /// Copy an instruction in this DFG, retaining its logical inputs but owning new pooled data.
+    /// Copy an instruction in this DFG, retaining its logical inputs and owning its fields.
     pub fn copy(self, inst: Inst) -> Inst {
         let values = self.dfg.inst(inst).operands_owned();
         self.copy_with_operands(inst, &values)
@@ -37,12 +37,16 @@ impl InstWriter<'_> {
             "operand count mismatch"
         );
         let fields = self.dfg.instructions[inst].fields.clone();
-        let fields = fields.clone_in(&mut self.dfg.fields);
         self.write(fields, values)
     }
 
     fn write(self, fields: InstFields, values: &[Value]) -> Inst {
         self.dfg.write_inst(self.target, fields, values)
+    }
+
+    /// Install an owned instruction head and its operands without type validation.
+    pub fn from_fields(self, fields: InstFields, values: &[Value]) -> Inst {
+        self.write(fields, values)
     }
 }
 

@@ -53,12 +53,43 @@ this same model. The checker identifies direct operand/constant reductions;
 all other rules are handled by equality search.
 
 ```text
-rule<T: ScalarInteger>(root: mir::IAdd<T>) {
-    case (mir::ISub(x, y), y) => x;
-    case (x, mir::IXor(x, -1)) => -1;
-    case (mir::IMul(x, y), mir::IMul(x, z)) => mir::IMul(x, mir::IAdd(y, z));
+rule(root: mir::IAdd) {
+    where T: ScalarInteger {
+        case root<T>(mir::ISub(x, y), y) => x;
+        case root<T>(x, mir::IXor(x, -1)) => -1;
+        case root<T>(mir::IMul(x, y), mir::IMul(x, z))
+            => mir::IMul(x, mir::IAdd(y, z));
+    }
 }
 ```
+
+Group cases by root opcode; the group declares only the operation, not its
+result type. `root<T>(...)` matches the declared root with result type `T`;
+the replacement must preserve that type. The pattern name must match the
+group's parameter name. Fixed result types use the same case syntax, such as
+`root<Type::BOOL>(...)`.
+
+Type variables and their constraints are declared only in `where` blocks,
+whether shared by all cases or just a subset. `rule<T: ...>` and
+`case<T: ...>` declarations are rejected:
+
+```text
+rule(root: mir::Select) {
+    where T: ScalarInteger {
+        case root<T>(condition, 1, 0) => mir::ExtendU<T>(condition);
+        case root<T>(condition, mir::Wrap<T>(x), mir::Wrap<T>(y))
+            if type_of(x) == type_of(y)
+            => mir::Wrap<T>(mir::Select<type_of(x)>(condition, x, y));
+    }
+    case root<Type::BOOL>(condition, true, false) => condition;
+}
+```
+
+`where` blocks may nest and declare multiple parameters separated by commas,
+such as `where T: Integer, W: Integer { ... }`. Inner declarations cannot
+shadow outer parameters or the root name. Parameters do not escape into
+following sibling cases. Parsing flattens blocks into case declarations in
+source order; they add no runtime matching state.
 
 Simplify and SCCP inspect only the current operation, operand identities and
 constant facts for expression reductions. They do not follow operand definitions
@@ -70,18 +101,25 @@ Simplify also applies the directed instruction rewrites described below.
 Attributes use their logical positions in the operation declaration:
 
 ```text
-rule<T: ScalarInteger>(root: mir::Icmp<Type::BOOL>) {
-    case (kind, mir::ISub<T>(x, y), 0)
-        if kind == IntCC::Eq || kind == IntCC::Ne
-        => mir::Icmp<Type::BOOL>(kind, x, y);
+rule(root: mir::Icmp) {
+    case root<Type::BOOL>(IntCC::Eq, x, x) => true;
+    where T: ScalarInteger {
+        case root<Type::BOOL>(kind, mir::ISub<T>(x, y), 0)
+            if kind == IntCC::Eq || kind == IntCC::Ne
+            => mir::Icmp<Type::BOOL>(kind, x, y);
+    }
 }
 ```
 
 The checker distinguishes value and attribute bindings using the operation
-signature. Attribute literals are checked against the declared type. Reading,
-hashing and constructing properties use adapters generated from the same
-storage mapping. E-class captures retain concrete node witnesses for properties;
-an equivalence-class representative cannot substitute for that witness.
+signature. Attribute literals are checked against the declared type. Attribute
+reading and hashing use MIR's generated `InstFields`, borrowed through
+`DataFlowGraph::inst_fields()`. MIR and e-graph nodes share this owned instruction
+head; SSA operands remain in their respective stores. The head also determines
+the opcode. Candidate construction uses generated field constructors and writes
+the same head through `InstWriter::from_fields()`. E-class captures retain
+concrete node witnesses for attributes; an equivalence-class representative
+cannot substitute for that witness.
 Construction checks type and property constraints before allocating anything.
 Properties containing hidden SSA operands and context-dependent contracts are
 not expression attributes.
@@ -106,7 +144,7 @@ expression attributes. No opcode-specific transformations live in the emitter.
 
 ```text
 rule(root: mir::Load) {
-    case (mir::PtrOffset(ptr, inner), outer, flags)
+    case root(mir::PtrOffset(ptr, inner), outer, flags)
         => mir::Load(ptr, checked_cast(i64(inner) + i64(outer), u32)?, flags);
 }
 ```
@@ -160,8 +198,10 @@ Rules that inspect nested operations, use guards or construct instructions run
 in the e-graph, including equal-cost alternatives:
 
 ```text
-rule<T: ScalarInteger>(root: mir::ISub<T>) {
-    case (x, c) if is_const(c) => mir::IAdd<T>(x, mir::INeg<T>(c));
+rule(root: mir::ISub) {
+    where T: ScalarInteger {
+        case root<T>(x, c) if is_const(c) => mir::IAdd<T>(x, mir::INeg<T>(c));
+    }
 }
 ```
 
@@ -183,9 +223,11 @@ Untyped nested calls inherit the result type implied by their operand position.
 Casts and other independent types can use explicit result types:
 
 ```text
-rule<T: Integer, W: Integer>(root: mir::Wrap<T>) {
-    case (mir::ExtendU<W>(x)) if type_of(x) == T => x;
-    case (mir::ExtendU<W>(x)) if bits(type_of(x)) < bits(T) => mir::ExtendU<T>(x);
+rule(root: mir::Wrap) {
+    where T: Integer, W: Integer {
+        case root<T>(mir::ExtendU<W>(x)) if type_of(x) == T => x;
+        case root<T>(mir::ExtendU<W>(x)) if bits(type_of(x)) < bits(T) => mir::ExtendU<T>(x);
+    }
 }
 ```
 
@@ -242,7 +284,7 @@ class alone cannot discharge a potentially trapping operation. Ordinary DCE
 subsequently removes unused dependencies.
 
 Equality search imports supported operations into compact search storage. Imported
-operations and new candidates share one representation: opcode, semantic properties
+operations and new candidates share one representation: MIR instruction fields
 and ranges in a shared input/result buffer. Search IDs are dense and independent of
 MIR IDs. Referenced parameters and unsupported results are opaque typed leaves;
 calls, branches and other unsupported operations stay in MIR. Types belong to search

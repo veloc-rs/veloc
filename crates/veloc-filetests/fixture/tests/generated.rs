@@ -708,73 +708,73 @@ fn named_and_inline_sets_observe_actual_types() {
 
 #[test]
 fn generated_evaluators_execute_compositions_properties_and_traps() {
-    for (opcode, args, results, properties, expected) in [
+    for (opcode, args, results, fields, expected) in [
         (
             Opcode::Direct,
             vec![ScalarConst::from(7i32), ScalarConst::from(3i32)],
             vec![Type::I32],
-            vec![],
+            veloc_mir::InstFields::from_opcode(Opcode::Direct).unwrap(),
             Some(vec![ScalarConst::from(4i32)]),
         ),
         (
             Opcode::Reversed,
             vec![ScalarConst::from(7i32), ScalarConst::from(3i32)],
             vec![Type::I32],
-            vec![],
+            veloc_mir::InstFields::from_opcode(Opcode::Reversed).unwrap(),
             Some(vec![ScalarConst::from(-4i32)]),
         ),
         (
             Opcode::Composed,
             vec![ScalarConst::from(7i32), ScalarConst::from(3i32)],
             vec![Type::I32],
-            vec![],
+            veloc_mir::InstFields::from_opcode(Opcode::Composed).unwrap(),
             Some(vec![ScalarConst::from(9i32)]),
         ),
         (
             Opcode::Trapping,
             vec![ScalarConst::from(7i32), ScalarConst::from(0i32)],
             vec![Type::I32],
-            vec![],
+            veloc_mir::InstFields::from_opcode(Opcode::Trapping).unwrap(),
             None,
         ),
         (
             Opcode::Trapping,
             vec![ScalarConst::from(7i32), ScalarConst::from(3i32)],
             vec![Type::I32],
-            vec![],
+            veloc_mir::InstFields::from_opcode(Opcode::Trapping).unwrap(),
             Some(vec![ScalarConst::from(2i32)]),
         ),
         (
             Opcode::Multiple,
             vec![ScalarConst::from(7i32), ScalarConst::from(7i32)],
             vec![Type::I32, Type::BOOL],
-            vec![],
+            veloc_mir::InstFields::from_opcode(Opcode::Multiple).unwrap(),
             Some(vec![ScalarConst::from(14i32), ScalarConst::from(true)]),
         ),
         (
             Opcode::CompareValue,
             vec![ScalarConst::from(7i32), ScalarConst::from(3i32)],
             vec![Type::BOOL],
-            vec![IntCC::GtS],
+            veloc_mir::InstFields::compare(IntCC::GtS),
             Some(vec![ScalarConst::from(true)]),
         ),
         (
             Opcode::ExtendS,
             vec![ScalarConst::from(-1i8)],
             vec![Type::I64],
-            vec![],
+            veloc_mir::InstFields::from_opcode(Opcode::ExtendS).unwrap(),
             Some(vec![ScalarConst::from(-1i64)]),
         ),
         (
             Opcode::ExtendS,
             vec![ScalarConst::from(-1i64)],
             vec![Type::I8],
-            vec![],
+            veloc_mir::InstFields::from_opcode(Opcode::ExtendS).unwrap(),
             None,
         ),
     ] {
         assert_eq!(
-            evaluator::evaluate(opcode, &args, &results, &properties),
+            evaluator::evaluate(&fields, &args, &results),
             expected,
             "{opcode:?}"
         );
@@ -811,10 +811,9 @@ fn generated_evaluators_execute_compositions_properties_and_traps() {
                 let expected = cc.test(32, lhs as u32 as u128, rhs as u32 as u128);
                 assert_eq!(
                     evaluator::evaluate(
-                        Opcode::CompareValue,
+                        &veloc_mir::InstFields::compare(cc),
                         &[ScalarConst::from(lhs), ScalarConst::from(rhs)],
-                        &[Type::BOOL],
-                        &[cc]
+                        &[Type::BOOL]
                     ),
                     Some(vec![ScalarConst::from(expected)])
                 );
@@ -832,12 +831,6 @@ fn generated_evaluators_execute_compositions_properties_and_traps() {
     }
     assert!(!evaluator::can_fold(Opcode::VectorOnly));
     assert!(!evaluator::can_fold(Opcode::Difference));
-    let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
-    let compare = dfg.writer().compare(IntCC::GtS, [Value(0), Value(1)]);
-    assert_eq!(
-        evaluator::properties(&dfg.inst(compare)).as_slice(),
-        &[IntCC::GtS]
-    );
     assert!(!Opcode::Composed.spec().is_commutative());
     assert!(!Opcode::Composed.spec().is_associative());
     assert!(Opcode::Trapping.spec().may_trap());
@@ -1093,19 +1086,17 @@ fn type_constraints_drive_validation_and_generated_evaluation() {
     assert_eq!(dfg.inst(inst).opcode(), Opcode::DoubleWidth);
     assert_eq!(
         evaluator::evaluate(
-            Opcode::DoubleWidth,
+            &veloc_mir::InstFields::from_opcode(Opcode::DoubleWidth).unwrap(),
             &[ScalarConst::from(-1i8)],
-            &[Type::I16],
-            &[]
+            &[Type::I16]
         ),
         Some(vec![ScalarConst::from(-1i16)])
     );
     assert_eq!(
         evaluator::evaluate(
-            Opcode::DoubleWidth,
+            &veloc_mir::InstFields::from_opcode(Opcode::DoubleWidth).unwrap(),
             &[ScalarConst::from(-1i8)],
-            &[Type::I32],
-            &[]
+            &[Type::I32]
         ),
         None
     );

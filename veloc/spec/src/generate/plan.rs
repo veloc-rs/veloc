@@ -61,7 +61,7 @@ impl Plan {
                 let alternatives = packing::prepare_alternatives(&definitions, &formats, source)?;
                 let text =
                     crate::text::Plan::prepare(&definitions, &formats, &alternatives, source)?;
-                let evaluation = evaluate::Plan::prepare(&definitions, source)?;
+                let evaluation = evaluate::Plan::prepare(&definitions);
                 Output::Packed(Packed {
                     formats,
                     builders,

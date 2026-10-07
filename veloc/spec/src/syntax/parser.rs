@@ -13,6 +13,71 @@ pub(crate) fn parse_file(source: &str) -> Result<File, Error> {
     Parser::new(source)?.file()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn where_blocks_preserve_order_and_lexical_parameters() {
+        let file = parse_file(
+            "rule(root: mir::IAdd) {
+                where T: Integer, W: Integer {
+                    case root<T>(x, 0) => x;
+                    where U: ScalarInteger {
+                        case root<U>(y, 0) => y;
+                    }
+                    case root<W>(z, 0) => z;
+                }
+                where T: Any { case root<T>(v, 0) => v; }
+                case root<Type::I32>(w, 0) => w;
+            }",
+        )
+        .unwrap();
+        let Kind::List(cases) = &file.declarations[0].fields["cases"].kind else {
+            panic!("expected cases");
+        };
+        assert_eq!(cases.len(), 5);
+        for (case, (expected, replacement)) in cases.iter().zip([
+            (vec!["T", "W"], "x"),
+            (vec!["T", "U", "W"], "y"),
+            (vec!["T", "W"], "z"),
+            (vec!["T"], "v"),
+            (vec![], "w"),
+        ]) {
+            let Kind::Record(fields) = &case.kind else {
+                panic!("expected case");
+            };
+            let names: Vec<_> = match fields.get("generics") {
+                Some(Node {
+                    kind: Kind::Record(params),
+                    ..
+                }) => params.keys().map(String::as_str).collect(),
+                None => Vec::new(),
+                _ => panic!("expected type parameters"),
+            };
+            assert_eq!(names, expected);
+            assert!(matches!(&fields["emit"].kind, Kind::Name(name) if name == replacement));
+        }
+    }
+
+    #[test]
+    fn rejects_old_and_invalid_type_parameter_declarations() {
+        for source in [
+            "rule<T: Integer>(root: mir::IAdd) { case root<T>(x, 0) => x; }",
+            "rule(root: mir::IAdd) { case<T: Integer> root<T>(x, 0) => x; }",
+            "rule(root: mir::IAdd) { scope<T: Integer> { case root<T>(x, 0) => x; } }",
+            "rule(root: mir::IAdd) { where<T: Integer> { case root<T>(x, 0) => x; } }",
+            "rule(root: mir::IAdd) { where { case root<T>(x, 0) => x; } }",
+            "rule(root: mir::IAdd) { where T: Integer {} }",
+            "rule(root: mir::IAdd) { where T: Integer, T: Any { case root<T>(x, 0) => x; } }",
+            "rule(root: mir::IAdd) { where T: Integer { where T: Any { case root<T>(x, 0) => x; } } }",
+            "rule(root: mir::IAdd) { where move T: Integer { case root<T>(x, 0) => x; } }",
+        ] {
+            assert!(parse_file(source).is_err(), "accepted {source}");
+        }
+    }
+}
+
 pub fn parse(source: &str) -> Result<Vec<Decl>, Error> {
     let file = parse_file(source)?;
     if let Some(import) = file.imports.first() {
@@ -264,6 +329,74 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Flatten lexical generic scopes into cases without changing their order.
+    /// The opening brace has already been consumed.
+    fn rule_cases(
+        &mut self,
+        inherited: &BTreeMap<String, Node>,
+        depth: u8,
+    ) -> Result<Vec<Node>, Error> {
+        self.check_depth(depth, Context::Rewrite)?;
+        let mut cases = Vec::new();
+        while !self.at(TokenKind::RBrace) {
+            let at = self.token.offset;
+            if self.eat(TokenKind::Name("where"))? {
+                let mut generics = inherited.clone();
+                let params = self.sequence(TokenKind::LBrace, Self::parameter)?;
+                if params.is_empty() {
+                    return Err(self.error(at, "expected type parameters"));
+                }
+                for param in params {
+                    if param.moves || generics.insert(param.name, param.ty).is_some() {
+                        return Err(self.error(param.offset, "invalid or shadowed type parameter"));
+                    }
+                }
+                let nested = self.rule_cases(&generics, depth + 1)?;
+                if nested.is_empty() {
+                    return Err(self.error(at, "where requires cases"));
+                }
+                cases.extend(nested);
+                continue;
+            }
+            self.expect(TokenKind::Name("case"))?;
+            if self.at(TokenKind::Lt) {
+                return Err(self.error(at, "declare type parameters in a where block"));
+            }
+            let pattern = if self.eat(TokenKind::LParen)? {
+                Node {
+                    offset: at,
+                    kind: Kind::List(
+                        self.sequence(TokenKind::RParen, |p| p.expression(0, Context::Rewrite))?,
+                    ),
+                }
+            } else {
+                self.expression(0, Context::Rewrite)?
+            };
+            let mut fields = BTreeMap::from([("match".into(), pattern)]);
+            if !inherited.is_empty() {
+                fields.insert(
+                    "generics".into(),
+                    Node {
+                        offset: at,
+                        kind: Kind::Record(inherited.clone()),
+                    },
+                );
+            }
+            if self.eat(TokenKind::Name("if"))? {
+                fields.insert("when".into(), self.expression(0, Context::Condition)?);
+            }
+            self.expect(TokenKind::FatArrow)?;
+            fields.insert("emit".into(), self.expression(0, Context::Rewrite)?);
+            self.expect(TokenKind::Semi)?;
+            cases.push(Node {
+                offset: at,
+                kind: Kind::Record(fields),
+            });
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(cases)
+    }
+
     fn declaration(&mut self, offset: usize, kind: TokenKind<'a>) -> Result<Decl, Error> {
         let declaration_name = kind
             .name()
@@ -301,35 +434,13 @@ impl<'a> Parser<'a> {
         // Anonymous equality rules share signatures and expression parsing with
         // named target rules, but do not introduce callable symbols.
         if declaration_name == "rule" && (self.at(TokenKind::Lt) || self.at(TokenKind::LParen)) {
+            if self.at(TokenKind::Lt) {
+                return Err(self.error(offset, "declare type parameters in a where block"));
+            }
             let signature = self.signature(None, false, true)?;
             self.expect(TokenKind::LBrace)?;
-            let mut cases = Vec::new();
+            let cases = self.rule_cases(&BTreeMap::new(), 0)?;
             let mut group_fields = BTreeMap::new();
-            while !self.at(TokenKind::RBrace) {
-                let at = self.token.offset;
-                self.expect(TokenKind::Name("case"))?;
-                self.expect(TokenKind::LParen)?;
-                let args =
-                    self.sequence(TokenKind::RParen, |p| p.expression(0, Context::Rewrite))?;
-                let mut fields = BTreeMap::from([(
-                    "match".into(),
-                    Node {
-                        offset: at,
-                        kind: Kind::List(args),
-                    },
-                )]);
-                if self.eat(TokenKind::Name("if"))? {
-                    fields.insert("when".into(), self.expression(0, Context::Condition)?);
-                }
-                self.expect(TokenKind::FatArrow)?;
-                fields.insert("emit".into(), self.expression(0, Context::Rewrite)?);
-                self.expect(TokenKind::Semi)?;
-                cases.push(Node {
-                    offset: at,
-                    kind: Kind::Record(fields),
-                });
-            }
-            self.expect(TokenKind::RBrace)?;
             group_fields.insert(
                 "cases".into(),
                 Node {

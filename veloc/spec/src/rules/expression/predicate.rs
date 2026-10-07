@@ -26,23 +26,26 @@ pub(in crate::rules) enum Predicate {
 }
 
 impl Predicate {
-    pub(super) fn code(&self, types: &str) -> String {
-        let code = |p: &Self| p.code(types);
+    pub(super) fn code(&self, types: &str, captures: &[usize]) -> String {
+        let code = |p: &Self| p.code(types, captures);
+        let value = |slot| capture_code(captures, slot);
         match self {
-            Self::Value(slot) => format!("values[{slot}]"),
+            Self::Value(slot) => value(*slot),
             Self::Number(n) => format!("{n}u64"),
-            Self::Type(ty) => ty.code(types),
+            Self::Type(ty) => ty.code(types, captures),
             Self::Attribute(value) => value.code(),
             Self::PointerBits => "u64::from(cx.pointer_bits()?)".into(),
             Self::Integer { slot, signed } => {
+                let value = value(*slot);
                 if *signed {
-                    format!("cx.constant(values[{slot}])?.as_int()?.signed()")
+                    format!("cx.constant({value})?.as_int()?.signed()")
                 } else {
-                    format!("cx.constant(values[{slot}])?.as_int()?.to_bits()")
+                    format!("cx.constant({value})?.as_int()?.to_bits()")
                 }
             }
             Self::ShiftAmount(slot) => format!(
-                "cx.constant(values[{slot}])?.as_int()?.to_bits() % u64::from(cx.ty(values[{slot}]).element_bits()?)"
+                "cx.constant({value})?.as_int()?.to_bits() % u64::from(cx.ty({value}).element_bits()?)",
+                value = value(*slot)
             ),
             Self::LowMask(bits) => format!(
                 "u64::MAX.checked_shr(64u32.checked_sub(u32::try_from({}).ok()?)?)?",
@@ -50,9 +53,10 @@ impl Predicate {
             ),
             Self::TypeOf(value) => format!("cx.ty({})", code(value)),
             Self::Bits(ty) => format!("u64::from(({}).element_bits()?)", code(ty)),
-            Self::IsConstant(slot) => format!("cx.constant(values[{slot}]).is_some()"),
+            Self::IsConstant(slot) => format!("cx.constant({}).is_some()", value(*slot)),
             Self::Constant { value, bits, equal } => format!(
-                "crate::evaluate::matches_constant(cx.constant(values[{value}]), {bits}u64, {equal})"
+                "crate::evaluate::matches_constant(cx.constant({}), {bits}u64, {equal})",
+                capture_code(captures, *value)
             ),
             Self::Binary(op @ ("+" | "-" | "*"), a, b) => {
                 let method = match *op {

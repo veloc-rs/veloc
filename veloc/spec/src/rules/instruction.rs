@@ -74,8 +74,24 @@ pub(crate) fn generate(
             let Kind::Record(fields) = &case.kind else {
                 unreachable!("parsed case")
             };
-            let Kind::List(args) = &fields["match"].kind else {
-                unreachable!("parsed pattern")
+            if fields
+                .keys()
+                .any(|k| !matches!(k.as_str(), "match" | "when" | "emit"))
+            {
+                return Err(fail(
+                    case.offset,
+                    "instruction rewrite cases do not declare type parameters or result types",
+                ));
+            }
+            let args = match &fields["match"].kind {
+                Kind::List(args) => args,
+                Kind::Call(name, args) if name == &root.name => args,
+                _ => {
+                    return Err(fail(
+                        case.offset,
+                        "expected the declared root without type arguments",
+                    ));
+                }
             };
             let root_op = compiler.operation(path, args.len(), case.offset)?;
             compiler.pattern(root_op, args, "inst")?;

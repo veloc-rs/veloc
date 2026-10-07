@@ -2,7 +2,7 @@
 //! Spec supplies concrete semantics and local identities; callers own analysis
 //! state, control-flow reachability and publication of the returned results.
 use veloc_mir::constant::ScalarConst;
-use veloc_mir::{IntCC, Opcode, Type, TypeInfo, Value};
+use veloc_mir::{InstFields, Opcode, Type, TypeInfo, Value};
 
 include!(concat!(env!("OUT_DIR"), "/evaluation.rs"));
 
@@ -52,14 +52,6 @@ impl Evaluation {
             Self::Fact(fact) => fact,
         }
     }
-
-    fn into_fold(self) -> Option<Fold> {
-        match self {
-            Self::Operand(i) => Some(Fold::Operand(i)),
-            Self::Fact(Fact::Constant(c)) => Some(Fold::Constant(c)),
-            Self::Fact(Fact::Unknown | Fact::Varying) => None,
-        }
-    }
 }
 
 impl From<Fold> for Evaluation {
@@ -93,8 +85,7 @@ pub fn fold(
         .iter()
         .map(|&v| dfg.value_type(v))
         .collect();
-    let data = dfg.inst(inst);
-    evaluate(data.opcode(), &args, &results, &properties(&data))
+    evaluate(dfg.inst_fields(inst), &args, &results)
 }
 
 mod local {
@@ -102,7 +93,7 @@ mod local {
     include!(concat!(env!("OUT_DIR"), "/local_folds.rs"));
 }
 
-pub(crate) use local::{Properties, accepts, plan};
+pub(crate) use local::{accepts, plan, validate_fields};
 
 /// Pattern literals are masked to the operand width. An unknown constant proves
 /// neither equality nor inequality, in direct reductions, guards or queries.
@@ -114,6 +105,16 @@ pub(crate) fn matches_constant(value: Option<ScalarConst>, bits: u64, equal: boo
             .and_then(|shift| u64::MAX.checked_shr(shift))
             .is_some_and(|mask| (c.to_bits() == (bits & mask)) == equal)
     })
+}
+
+/// Repeated pattern variables accept identical values or identical established
+/// constant facts. ScalarConst equality includes the type and exact bit pattern.
+pub(crate) fn same_value<V: Copy + Eq>(
+    lhs: V,
+    rhs: V,
+    mut constant: impl FnMut(V) -> Option<ScalarConst>,
+) -> bool {
+    lhs == rhs || constant(lhs).is_some_and(|value| constant(rhs) == Some(value))
 }
 
 /// Restrict folding to operations whose effects are modeled by the evaluator.
@@ -141,78 +142,65 @@ pub(crate) fn evaluate_inst(
     inst: veloc_mir::Inst,
     fact: impl FnMut(Value) -> Fact,
 ) -> smallvec::SmallVec<[Evaluation; 2]> {
-    let view = dfg.inst(inst);
     let results: smallvec::SmallVec<[Type; 2]> = dfg
         .inst_results(inst)
         .iter()
         .map(|&v| dfg.value_type(v))
         .collect();
-    evaluate_expression(
-        view.opcode(),
-        dfg.operands(inst),
-        &results,
-        &Properties::read(view),
-        fact,
-    )
+    evaluate_expression(dfg.inst_fields(inst), dfg.operands(inst), &results, fact)
 }
 
-/// Fold using only established constants. Nonconstant operands supply Varying,
-/// so provisional facts from an iterative analysis cannot leak into IR edits.
+/// Fold using only established constants, without abstract analysis facts.
 pub(crate) fn reduce_inst(
     dfg: &veloc_mir::dfg::DataFlowGraph,
     inst: veloc_mir::Inst,
-    mut constant: impl FnMut(Value) -> Option<ScalarConst>,
+    constant: impl FnMut(Value) -> Option<ScalarConst>,
 ) -> Option<smallvec::SmallVec<[Fold; 2]>> {
-    if dfg.inst_results(inst).is_empty() {
-        return None;
-    }
-    evaluate_inst(dfg, inst, |v| {
-        constant(v).map_or(Fact::Varying, Fact::Constant)
-    })
-    .into_iter()
-    .map(Evaluation::into_fold)
-    .collect()
+    let results: smallvec::SmallVec<[Type; 2]> = dfg
+        .inst_results(inst)
+        .iter()
+        .map(|&v| dfg.value_type(v))
+        .collect();
+    reduce(
+        dfg.inst_fields(inst),
+        dfg.operands(inst),
+        &results,
+        constant,
+    )
 }
 
 /// Reduce an existing or proposed expression without constructing MIR nodes.
 /// Operand indices refer to the original argument order; callers may supply
 /// canonical values for equality checks while retaining their own SSA witnesses.
 pub(crate) fn reduce<V: Copy + Eq>(
-    opcode: Opcode,
+    fields: &InstFields,
     args: &[V],
     results: &[Type],
-    attributes: &Properties,
-    mut constant: impl FnMut(V) -> Option<ScalarConst>,
+    constant: impl FnMut(V) -> Option<ScalarConst>,
 ) -> Option<smallvec::SmallVec<[Fold; 2]>> {
-    if results.is_empty() {
+    if !supports(fields.opcode(), results.iter().copied()) {
         return None;
     }
-    evaluate_expression(opcode, args, results, attributes, |v| {
-        constant(v).map_or(Fact::Varying, Fact::Constant)
-    })
-    .into_iter()
-    .map(Evaluation::into_fold)
-    .collect()
+    try_fold(fields, args, results, constant)
 }
 
 /// Identities use `V::eq`; abstract facts are queried separately. Returning an
 /// operand keeps its identity even when its current fact is Unknown or Varying.
 /// The caller supplies a well-typed expression, whether or not it exists in MIR.
 pub(crate) fn evaluate_expression<V: Copy + Eq>(
-    opcode: Opcode,
+    fields: &InstFields,
     args: &[V],
     results: &[Type],
-    attributes: &Properties,
     mut fact: impl FnMut(V) -> Fact,
 ) -> smallvec::SmallVec<[Evaluation; 2]> {
     let repeated = |fact| results.iter().map(|_| Evaluation::Fact(fact)).collect();
-    if !supports(opcode, results.iter().copied()) {
+    if !supports(fields.opcode(), results.iter().copied()) {
         return repeated(Fact::Varying);
     }
-    if let Some(folds) = try_fold(opcode, args, results, attributes, |v| fact(v).constant()) {
+    if let Some(folds) = try_fold(fields, args, results, |v| fact(v).constant()) {
         return folds.into_iter().map(Evaluation::from).collect();
     }
-    let result = if opcode == Opcode::Select {
+    let result = if fields.opcode() == Opcode::Select {
         // Spec already handled constant conditions and identical operands.
         // Join facts before the general Unknown check: a varying condition can
         // provisionally resolve a Select with one as-yet-unknown branch.
@@ -229,34 +217,15 @@ pub(crate) fn evaluate_expression<V: Copy + Eq>(
     repeated(result)
 }
 
-/// Concrete evaluation and identities shared by all abstract callers.
+/// Concrete evaluation and identities shared by analysis and direct rewriting.
 fn try_fold<V: Copy + Eq>(
-    opcode: Opcode,
+    fields: &InstFields,
     args: &[V],
     results: &[Type],
-    attributes: &Properties,
     mut constant: impl FnMut(V) -> Option<ScalarConst>,
 ) -> Option<smallvec::SmallVec<[Fold; 2]>> {
-    let comparisons;
-    let properties: &[IntCC] = match *attributes {
-        Properties::None => &[],
-        Properties::Icmp { kind } => {
-            comparisons = [kind];
-            &comparisons
-        }
-        _ => return None,
-    };
-    if opcode == Opcode::Icmp
-        && args.len() == 2
-        && args[0] == args[1]
-        && let [kind] = properties
-    {
-        let value = ScalarConst::from_bits(Type::BOOL, u64::from(kind.test(64, 0, 0))).unwrap();
-        return Some(smallvec::smallvec![Fold::Constant(value)]);
-    }
     if let [ty] = results
-        && properties.is_empty()
-        && let Some(fold) = local::fold(opcode, *ty, args, &mut constant)
+        && let Some(fold) = local::fold(fields, *ty, args, &mut constant)
     {
         return Some(smallvec::smallvec![fold]);
     }
@@ -264,6 +233,6 @@ fn try_fold<V: Copy + Eq>(
         .iter()
         .map(|&value| constant(value))
         .collect::<Option<_>>()?;
-    evaluate(opcode, &constants, results, properties)
+    evaluate(fields, &constants, results)
         .map(|values| values.into_iter().map(Fold::Constant).collect())
 }

@@ -3,11 +3,11 @@ import "../../mir/defs/formats.spec";
 // Directed replacements preserve the root's position, SSA results and memory
 // operation. Failed conversions leave the original instruction untouched.
 rule(root: mir::Load) {
-    case (mir::PtrOffset(ptr, inner), outer, flags)
+    case root(mir::PtrOffset(ptr, inner), outer, flags)
         => mir::Load(ptr, checked_cast(i64(inner) + i64(outer), u32)?, flags);
 }
 rule(root: mir::Store) {
-    case (mir::PtrOffset(ptr, inner), value, outer, flags)
+    case root(mir::PtrOffset(ptr, inner), value, outer, flags)
         => mir::Store(ptr, value, checked_cast(i64(inner) + i64(outer), u32)?, flags);
 }
 
@@ -19,6 +19,6 @@ fn index_offset(index: u64, imm: PtrIndexImm) -> optional(i32) {
         i32);
 }
 rule(root: mir::PtrIndex) {
-    case (ptr, index, imm)
+    case root(ptr, index, imm)
         => mir::PtrOffset(ptr, index_offset(constant_bits(index), imm)?);
 }

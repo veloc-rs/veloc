@@ -113,7 +113,7 @@ struct Program {
     constants: &'static [u64],
     bindings: &'static [Bindings],
     types: &'static [fn(Type) -> bool],
-    properties: &'static [fn(crate::evaluate::Properties, crate::evaluate::Properties) -> bool],
+    properties: &'static [fn(&veloc_mir::InstFields, &veloc_mir::InstFields) -> bool],
     rules: &'static [Rule],
 }
 
@@ -171,7 +171,7 @@ enum Source {
 struct Relation {
     cursor: RuleCursor,
     rows: Vec<Row>,
-    seen: HashSet<(SmallVec<[Root; 3]>, crate::evaluate::Properties)>,
+    seen: HashSet<(SmallVec<[Root; 3]>, veloc_mir::InstFields)>,
     exhausted: bool,
 }
 
@@ -447,7 +447,7 @@ impl Machine {
                     otherwise,
                 } => {
                     let properties = |slot| {
-                        body.properties(
+                        body.fields(
                             body.value_inst(self.witnesses[slot])
                                 .expect("scanned instruction"),
                         )
@@ -522,14 +522,11 @@ impl Machine {
             else {
                 continue;
             };
-            let replacement = plan.materialize(|step, args| match *step {
-                crate::rewrite::Step::Constant(c) => Ok(graph.literal(ir, c)),
-                crate::rewrite::Step::Build {
-                    opcode,
-                    ty,
-                    properties,
-                    ..
-                } => graph.build(ir, opcode, args, ty, properties),
+            let replacement = plan.materialize(|step, args| match step {
+                crate::rewrite::Step::Constant(c) => Ok(graph.literal(ir, *c)),
+                crate::rewrite::Step::Build { ty, fields, .. } => {
+                    graph.build(ir, fields, args, *ty)
+                }
             });
             match replacement {
                 Ok(value) => {
@@ -600,11 +597,11 @@ impl Machine {
                 match relation.cursor.next(graph, body, query) {
                     Some(row) => {
                         let inst = body.value_inst(row.node).expect("relation result");
-                        let properties = body.properties(inst);
+                        let properties = body.fields(inst);
                         // Concrete SSA definitions must remain available to
                         // extraction, but equal query rows carry the same
                         // bindings and attributes. Enumerate them only once.
-                        if !relation.seen.insert((row.args.clone(), properties)) {
+                        if !relation.seen.insert((row.args.clone(), properties.clone())) {
                             continue;
                         }
                         relation.rows.push(row);
