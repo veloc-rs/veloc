@@ -8,10 +8,6 @@ use std::collections::VecDeque;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{Block, FuncBody, Inst, Value, function::EdgeRef};
 
-mod rewrite {
-    include!(concat!(env!("OUT_DIR"), "/rewrite.rs"));
-}
-
 pub struct SimplifyPass;
 
 impl FunctionPass for SimplifyPass {
@@ -58,14 +54,12 @@ impl FunctionPass for SimplifyPass {
                         let mut literal = None;
                         let mut agrees = true;
                         for &edge in &work.incoming[block] {
-                            let mut argument = None;
-                            let mut position = 0;
-                            func.dfg().inst(edge.inst).visit_successors(|successor| {
-                                if position == edge.index {
-                                    argument = successor.args.get(index).copied();
-                                }
-                                position += 1;
-                            });
+                            let argument = func
+                                .dfg()
+                                .inst(edge.inst)
+                                .successor(edge.index as usize)
+                                .and_then(|successor| successor.args.get(index))
+                                .copied();
                             let Some(argument) = argument else {
                                 agrees = false;
                                 break;
@@ -105,12 +99,12 @@ impl FunctionPass for SimplifyPass {
 }
 
 fn fold_instruction(func: &mut FuncBody, inst: Inst, work: &mut Worklist) -> bool {
-    if rewrite::rewrite(func, inst) {
+    if crate::rewrite::rewrite_inst(func, inst) {
         work.changed(func, inst);
         return true;
     }
     let dfg = func.dfg();
-    let Some(folds) = evaluate::reduce_inst(dfg, inst, |value| dfg.as_scalar_const(value)) else {
+    let Some(folds) = evaluate::fold_inst(dfg, inst, |value| dfg.as_scalar_const(value)) else {
         return false;
     };
     let args: SmallVec<[Value; 3]> = dfg.operands(inst).into();

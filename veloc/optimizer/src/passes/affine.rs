@@ -294,17 +294,17 @@ impl Symbolic<'_> {
             .iter()
             .map(|&v| Self::value(body, state, v))
             .collect::<Option<_>>()?;
-        if crate::evaluate::can_reduce(body.dfg(), inst) {
-            if let Some(values) = crate::evaluate::fold(body.dfg(), inst, |v| {
-                ScalarConst::from_bits(
-                    body.dfg().value_type(v),
-                    number(&Self::value(body, state, v)?)?,
-                )
-            }) {
-                if let [value] = &values[..] {
-                    return Some(constant(value.to_bits(), bits));
-                }
-            }
+        if let Some(folds) = crate::evaluate::fold_inst(body.dfg(), inst, |v| {
+            ScalarConst::from_bits(
+                body.dfg().value_type(v),
+                number(&Self::value(body, state, v)?)?,
+            )
+        }) && let [fold] = &folds[..]
+        {
+            return Some(match fold {
+                crate::evaluate::Fold::Operand(i) => args[*i].clone(),
+                crate::evaluate::Fold::Constant(value) => constant(value.to_bits(), bits),
+            });
         }
         let a = args.first()?;
         match view.opcode() {

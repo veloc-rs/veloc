@@ -425,7 +425,7 @@ impl Graph {
     /// order is preserved so Operand(i) also identifies the source input.
     fn reduce(&self, f: &Expressions, key: &Key<'_>) -> Option<SmallVec<[Fold; 2]>> {
         let args: SmallVec<[Value; 3]> = key.args.iter().map(|root| root.value()).collect();
-        crate::evaluate::reduce(key.fields, &args, &key.results, |value| {
+        crate::evaluate::fold(key.fields, &args, &key.results, |value| {
             f.as_scalar_const(value)
         })
     }

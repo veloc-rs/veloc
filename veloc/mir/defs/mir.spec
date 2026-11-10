@@ -649,18 +649,21 @@ op Jump(dest: successor) -> () {
     meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
     mnemonic = "jump";
     storage = Jump { dest };
+    control = jump(dest);
 }
 
 op Br(condition: Value<Type::BOOL>, then_dest: successor, else_dest: successor) -> () {
     meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
     mnemonic = "br";
     storage = Br { condition, then_dest, else_dest };
+    control = branch(condition, then_dest, else_dest);
 }
 
 op BrTable(index: Value<Type::I32>, cases: successors, default: successor) -> () {
     meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
     mnemonic = "br-table";
     storage = BrTable { index, table: table(cases, default) };
+    control = table(index, cases, default);
 }
 
 op Return(move values: sequence(Value)) -> () {

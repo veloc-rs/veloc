@@ -1,7 +1,9 @@
 //! Specialize small dispatch paths on constant incoming block arguments.
 //! Only closed, constant-fed parameter networks of branch tables seed the
 //! transformation. Ordinary induction variables do not trigger loop unrolling.
+mod bypass;
 mod ssa;
+pub use bypass::BypassPass;
 
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile, evaluate};
 use hashbrown::{HashMap, HashSet};
@@ -235,7 +237,7 @@ fn duplicate(
             .collect();
         let results = f.dfg().inst_results(inst).to_vec();
         let types: Vec<_> = results.iter().map(|&v| f.dfg().value_type(v)).collect();
-        if let Some(folds) = evaluate::reduce(f.dfg().inst_fields(inst), &args, &types, |v| {
+        if let Some(folds) = evaluate::fold(f.dfg().inst_fields(inst), &args, &types, |v| {
             f.dfg().as_scalar_const(v)
         }) {
             for (&old, fold) in results.iter().zip(folds) {
@@ -247,32 +249,23 @@ fn duplicate(
             }
             continue;
         }
-        let chosen = match f.dfg().inst(inst) {
-            InstView::Br { condition, .. } => f
+        let chosen = evaluate::successors(f.dfg().inst(inst), |value| {
+            f.dfg()
+                .as_scalar_const(values.get(&value).copied().unwrap_or(value))
+                .map_or(evaluate::Fact::Varying, evaluate::Fact::Constant)
+        });
+        if let evaluate::Successors::One(chosen) = chosen {
+            let edge = f
                 .dfg()
-                .as_scalar_const(values.get(&condition).copied().unwrap_or(condition))
-                .map(|c| usize::from(c.to_bits() == 0)),
-            InstView::BrTable { index, table } => f
-                .dfg()
-                .as_scalar_const(values.get(&index).copied().unwrap_or(index))
-                .map(|c| (c.to_bits() as usize).min(table.len() - 1)),
-            _ => None,
-        };
-        if let Some(chosen) = chosen {
-            let mut dest = None;
-            let mut index = 0;
-            f.dfg().inst(inst).visit_successors(|edge| {
-                if index == chosen {
-                    let args: Vec<_> = edge
-                        .args
-                        .iter()
-                        .map(|v| values.get(v).copied().unwrap_or(*v))
-                        .collect();
-                    dest = Some(SuccessorData::new(edge.block, &args));
-                }
-                index += 1;
-            });
-            let dest = dest.expect("selected successor");
+                .inst(inst)
+                .successor(chosen)
+                .expect("selected successor");
+            let args: Vec<_> = edge
+                .args
+                .iter()
+                .map(|v| values.get(v).copied().unwrap_or(*v))
+                .collect();
+            let dest = SuccessorData::new(edge.block, &args);
             f.edit().append_inst(block, |w| w.jump(dest.as_view()), &[]);
             branches += 1;
         } else {

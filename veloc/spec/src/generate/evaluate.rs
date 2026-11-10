@@ -27,6 +27,14 @@ struct Case {
 }
 
 impl Plan {
+    /// Opcodes with at least one representable scalar evaluation case.
+    pub(crate) fn supported_opcodes(&self) -> impl Iterator<Item = usize> + '_ {
+        self.operations
+            .iter()
+            .filter(|op| !op.cases.is_empty())
+            .map(|op| op.opcode)
+    }
+
     pub(crate) fn prepare(defs: &Definitions) -> Self {
         let mut operations = Vec::new();
         for (opcode, op) in defs.ops.iter().enumerate() {
@@ -69,11 +77,19 @@ impl Plan {
 pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
     let mut code = String::from(
         "// @generated from checked operation semantics.\n\
+         /// Constant-propagation lattice. Unknown means no information has arrived yet,\n\
+         /// not an IR undef value. Facts never serve as operand identities.\n\
+         #[derive(Clone, Copy, Default, PartialEq, Eq)]\n\
+         pub(crate) enum Fact {\n\
+             #[default]\n\
+             Unknown,\n\
+             Constant(ScalarConst),\n\
+             Varying,\n\
+         }\n\
          #[allow(unused_variables, unreachable_patterns)]\n\
          pub(crate) fn evaluate(fields: &veloc_mir::InstFields, args: &[ScalarConst], results: &[Type]) -> Option<smallvec::SmallVec<[ScalarConst; 2]>> {\n\
          match fields.opcode() {\n",
     );
-    let mut supported = Vec::new();
     for prepared in &plan.operations {
         let op = &defs.ops[prepared.opcode];
         let sem = op.semantics.as_ref().expect("prepared semantic operation");
@@ -114,7 +130,6 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
             arms.push_str("},\n");
         }
         if !arms.is_empty() {
-            supported.push(format!("Opcode::{} => true,", op.name));
             let inputs = sem.inputs as usize;
             let results = prepared.cases[0].instance.kinds.len() - inputs;
             let constraints = applicability(op);
@@ -144,12 +159,7 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
         }
     }
     code.push_str("_ => None,\n}\n}\n");
-    let supported = if supported.is_empty() {
-        "false".into()
-    } else {
-        format!("match opcode {{ {} _ => false }}", supported.join("\n"))
-    };
-    writeln!(code, "/// Whether this opcode has a generated scalar constant evaluator.\npub const fn can_fold(opcode: Opcode) -> bool {{ {supported} }}").unwrap();
+    code.push_str(&crate::model::control::generate(defs));
     code
 }
 

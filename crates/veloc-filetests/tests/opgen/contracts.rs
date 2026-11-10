@@ -458,3 +458,51 @@ storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; w
         assert!(!generated[veloc_spec::Emit::TextPrinter].is_empty());
     }
 }
+
+#[test]
+fn control_rules_reject_new_edges_and_invalid_selection_contracts() {
+    use veloc_spec::{Emit, Options, Rewrites};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../veloc/mir/defs");
+    let definitions = common::load(root.join("module.spec")).unwrap();
+    for (replacement, diagnostic) in [
+        (
+            "mir::Jump(c)",
+            "replacement successors must be captured root edges",
+        ),
+        (
+            "mir::Br(c, a, a)",
+            "branch replacements may only preserve or swap",
+        ),
+        (
+            "mir::Jump(successor(a))",
+            "replacement successors must be captured root edges",
+        ),
+    ] {
+        let text = format!("rule(root: mir::Br) {{ case root(c, a, b) => {replacement}; }}");
+        let rules = common::compiler::source(&text).unwrap();
+        let error = rules
+            .generate(
+                &[Emit::Rewrites],
+                Options {
+                    rewrites: Some(Rewrites {
+                        definitions: &definitions,
+                        dialect: "mir",
+                        rust: "veloc_mir",
+                    }),
+                    ..Default::default()
+                },
+            )
+            .err()
+            .expect("invalid replacement was accepted");
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
+    common::rejected(
+        &changed_record(
+            "op",
+            "Br",
+            "control = branch(condition, then_dest, else_dest);",
+            "control = branch(then_dest, condition, else_dest);",
+        ),
+        "control requires",
+    );
+}

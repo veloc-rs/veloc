@@ -69,7 +69,7 @@ pub type Shape = (u16, bool);
 pub const MAX_VECTOR_LANES: u16 = 1 << 15;
 
 mod r#type;
-pub use r#type::{ScalarType, Type, VectorType};
+pub use r#type::{ScalarType, Type, TypeSet, VectorType};
 
 /// Storage size in the IR's byte-addressed representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

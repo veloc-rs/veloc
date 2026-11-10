@@ -68,6 +68,7 @@ pub(crate) fn generate(
                 eligible: &eligible,
                 expressions: &mut expressions,
                 bindings: BTreeMap::new(),
+                edges: BTreeMap::new(),
                 next: 0,
                 code: String::new(),
             };
@@ -95,7 +96,8 @@ pub(crate) fn generate(
             };
             let root_op = compiler.operation(path, args.len(), case.offset)?;
             compiler.pattern(root_op, args, "inst")?;
-            if compiler.bindings.contains_key(&root.name) {
+            if compiler.bindings.contains_key(&root.name) || compiler.edges.contains_key(&root.name)
+            {
                 return Err(fail(case.offset, "pattern binding shadows the root"));
             }
             if let Some(guard) = fields.get("when") {
@@ -116,6 +118,15 @@ pub(crate) fn generate(
                     replacement.offset,
                     "replacement must preserve result arity",
                 ));
+            }
+            if root_op.control.is_some() || target.control.is_some() {
+                let body =
+                    compiler.control_replacement(root_op, target, args, replacement.offset)?;
+                groups
+                    .entry(root_op.name.clone())
+                    .or_default()
+                    .push_str(&body);
+                continue;
             }
             // Effectful roots can change operands, but cannot change their opcode.
             // Rule authors still own the equivalence of the old and new address.
@@ -210,15 +221,14 @@ pub(crate) fn generate(
         }
     }
     let mut code = format!(
-        "// @generated directed instruction rewrites.\n#[allow(unused_imports)] use {rust}::*;\n#[allow(unused_imports)] use {rust}::inst::*;\n#[allow(unused_variables)]\npub(super) fn rewrite(func: &mut FuncBody, inst: Inst) -> bool {{\nmatch func.dfg().inst(inst).opcode() {{\n"
+        "// @generated directed instruction rewrites.\n#[allow(unused_imports)] use {rust}::*;\n#[allow(unused_imports)] use {rust}::inst::*;\n"
     );
+    writeln!(code, "#[allow(unused_variables)]\npub(crate) fn rewrite_inst(func: &mut FuncBody, inst: Inst) -> bool {{ match func.dfg().inst(inst).opcode() {{").unwrap();
     for (op, body) in groups {
-        // Definition-owned Rust bindings are relative to the IR crate. Rebase
-        // before inserting the configured namespace itself into generated code.
         let body = body.replace("crate::", &format!("{rust}::"));
         writeln!(code, "Opcode::{op} => {{ {body} false }},").unwrap();
     }
-    code.push_str("_ => false,\n}\n}\n");
+    code.push_str("_ => false,\n} }\n");
     Ok(code)
 }
 
@@ -229,10 +239,108 @@ struct Compiler<'a, 'e> {
     eligible: &'a BTreeSet<String>,
     expressions: &'e mut crate::schema::Expressions<'a>,
     bindings: BTreeMap<String, (Node, String)>,
+    edges: BTreeMap<String, (usize, String)>,
     next: usize,
     code: String,
 }
 impl<'a> Compiler<'a, '_> {
+    fn capture_edge(
+        &mut self,
+        op: &Op,
+        param: &crate::model::Param,
+        arg: &Node,
+        prefix: &str,
+        index: usize,
+    ) -> Result<(), SourceError> {
+        let Kind::Name(name) = &arg.kind else {
+            return Err(self.fail(arg.offset, "successors must be captured whole"));
+        };
+        if prefix != "root" || !super::identifier(name) || self.bindings.contains_key(name) {
+            return Err(self.fail(
+                arg.offset,
+                "successor captures belong to the root and cannot shadow values",
+            ));
+        }
+        if name == "_" {
+            return Ok(());
+        }
+        let value = op.inputs[&param.name].emit(&|f| format!("{prefix}_{f}"), &|v| format!("{v}?"));
+        if let Some((_, previous)) = self.edges.get(name) {
+            // Equality includes both destination and the complete argument slice.
+            writeln!(self.code, "if {value} != {previous} {{ return None; }}").unwrap();
+        } else {
+            self.edges.insert(name.clone(), (index, value));
+        }
+        Ok(())
+    }
+
+    fn control_replacement(
+        &mut self,
+        root: &Op,
+        target: &Op,
+        args: &[Node],
+        at: usize,
+    ) -> Result<String, SourceError> {
+        use crate::model::control::Control;
+        if !matches!(root.control, Some(Control::Branch)) {
+            return Err(self.fail(at, "control rewrites require a conditional root"));
+        }
+        for op in [root, target] {
+            writeln!(self.code, "const {{ let opcode = Opcode::{}; assert!(opcode.spec().is_terminator() && opcode.spec().memory_effect().is_none() && !opcode.spec().may_trap() && !opcode.transfers_ownership(), \"control rewrites require non-trapping effect-free terminators\"); }}", op.name).unwrap();
+        }
+        let edge = |arg: &Node| -> Result<usize, SourceError> {
+            if let Kind::Name(name) = &arg.kind
+                && let Some((index, _)) = self.edges.get(name)
+            {
+                return Ok(*index);
+            }
+            Err(self.fail(
+                arg.offset,
+                "replacement successors must be captured root edges",
+            ))
+        };
+        let (result, pattern, edit): (String, String, String) = match target.control {
+            Some(Control::Jump) => {
+                let index = edge(&args[0])?;
+                (
+                    format!("Some({index}u32)"),
+                    "index".into(),
+                    "func.edit().fold_to_edge(function::EdgeRef { inst, index }); return true;"
+                        .into(),
+                )
+            }
+            Some(Control::Branch) if target.name == root.name => {
+                let yes = edge(&args[1])?;
+                let no = edge(&args[2])?;
+                if !matches!((yes, no), (0, 1) | (1, 0)) {
+                    return Err(self.fail(
+                        at,
+                        "branch replacements may only preserve or swap the original edges",
+                    ));
+                }
+                let condition = self.expression(&args[0], "Value")?;
+                writeln!(self.code, "let condition = {condition};\nif dfg.value_type(condition) != Type::BOOL {{ return None; }}").unwrap();
+                (
+                    format!("Some(condition)"),
+                    "condition".into(),
+                    format!(
+                        "if func.edit().rewrite_branch(inst, condition, [{yes}, {no}]) {{ return true; }}"
+                    ),
+                )
+            }
+            _ => {
+                return Err(self.fail(
+                    at,
+                    "control replacements must preserve the branch or select one original edge",
+                ));
+            }
+        };
+        Ok(format!(
+            "let replacement = (|| {{ let dfg = func.dfg(); {} {result} }})();\nif let Some({pattern}) = replacement {{ {edit} }}\n",
+            self.code
+        ))
+    }
+
     fn fail(&self, at: usize, message: &str) -> SourceError {
         self.source
             .locate(Error::at(self.source.text(), at, message))
@@ -242,6 +350,14 @@ impl<'a> Compiler<'a, '_> {
             .strip_prefix(&format!("{}::", self.dialect))
             .and_then(|name| self.defs.ops.iter().find(|op| op.name == name))
             .ok_or_else(|| self.fail(at, "unknown instruction operation"))?;
+        if op.control.is_some() {
+            if matches!(op.control, Some(crate::model::control::Control::Table))
+                || op.params.len() != arity
+            {
+                return Err(self.fail(at, "branch rewrites require fixed captured successors"));
+            }
+            return Ok(op);
+        }
         if !self.eligible.contains(&op.name)
             || !matches!(op.projection, crate::model::Projection::Packed(_))
             || op.params.len() != arity
@@ -298,7 +414,13 @@ impl<'a> Compiler<'a, '_> {
             op.format
         )
         .unwrap();
+        let mut edge_index = 0;
         for (param, arg) in op.params.iter().zip(args) {
+            if param.kind == ParamKind::Successor {
+                self.capture_edge(op, param, arg, &prefix, edge_index)?;
+                edge_index += 1;
+                continue;
+            }
             let ty = match &param.kind {
                 ParamKind::Value => "Value",
                 ParamKind::Property(ty) => ty,
@@ -313,6 +435,7 @@ impl<'a> Compiler<'a, '_> {
                 if super::identifier(name)
                     && !matches!(name.as_str(), "true" | "false" | "none")
                     && !self.bindings.contains_key(name)
+                    && !self.edges.contains_key(name)
                 {
                     self.bindings.insert(
                         name.clone(),

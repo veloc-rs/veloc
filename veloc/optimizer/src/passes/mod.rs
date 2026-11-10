@@ -2,10 +2,13 @@
 
 pub mod affine;
 pub mod bits;
+pub mod branch_patterns;
 pub mod cfg;
+pub mod control_flow;
 pub mod cse;
 pub mod dce;
 pub mod expression;
+pub mod if_conversion;
 pub mod inline;
 pub mod licm;
 pub mod load_cse;

@@ -151,23 +151,38 @@ fn emit_flat(
     for rule in rules.iter().filter(|r| r.is_flat()) {
         groups.entry(rule.opcode()).or_default().push(rule);
     }
-    let ops = groups
-        .keys()
-        .map(|n| format!("{opcode}::{n}"))
-        .collect::<Vec<_>>();
-    let supported = if ops.is_empty() {
-        "false".into()
-    } else {
-        format!("matches!(opcode, {})", ops.join(" | "))
-    };
+    // Merge local reductions and scalar evaluation capabilities at generation
+    // time. Actual folding checks the expression's types and operands.
     writeln!(
         code,
-        "pub(super) fn can_fold(opcode: {opcode}) -> bool {{ {supported} }}"
+        "/// Whether this opcode has a folding implementation. A particular expression may still fail to fold.\n\
+         pub fn can_fold(opcode: {opcode}) -> bool {{\n\
+         if !opcode.spec().memory_effect().is_none() || opcode.spec().is_terminator() || opcode.transfers_ownership() {{ return false; }}\n\
+         match opcode {{"
     )
     .unwrap();
+    for op in groups.keys() {
+        writeln!(code, "{opcode}::{op} => true,").unwrap();
+    }
+    for index in crate::generate::evaluate::Plan::prepare(defs).supported_opcodes() {
+        let op = &defs.ops[index].name;
+        if !groups.contains_key(op.as_str()) {
+            writeln!(code, "{opcode}::{op} => true,").unwrap();
+        }
+    }
+    code.push_str("_ => false,\n}\n}\n");
     writeln!(code, "#[allow(unused_variables)]\npub(super) fn fold<V: Copy + Eq>(fields: &veloc_mir::InstFields, ty: {types}, args: &[V], mut constant: impl FnMut(V) -> Option<ScalarConst>) -> Option<crate::evaluate::Fold> {{ match fields.opcode() {{").unwrap();
     for (op, rules) in groups {
         writeln!(code, "{opcode}::{op} => {{").unwrap();
+        let PatternKind::Operation { args, .. } = &rules[0].pattern[0].kind else {
+            unreachable!()
+        };
+        writeln!(
+            code,
+            "debug_assert_eq!(args.len(), {}, \"fold operand count\");",
+            args.len()
+        )
+        .unwrap();
         for rule in rules {
             let PatternKind::Operation {
                 args, attributes, ..
@@ -178,10 +193,10 @@ fn emit_flat(
             let orders = rule.orders(0);
             for order in orders {
                 let column = |s: usize| order[args.iter().position(|&a| a == s).unwrap()];
-                let mut checks = vec![
-                    crate::types::generate::accepts(&rule.pattern[0].ty.domain, "ty"),
-                    format!("args.len() == {}", args.len()),
-                ];
+                let mut checks = vec![crate::types::generate::accepts(
+                    &rule.pattern[0].ty.domain,
+                    "ty",
+                )];
                 if !attributes.is_empty() {
                     let fields = attributes
                         .iter()

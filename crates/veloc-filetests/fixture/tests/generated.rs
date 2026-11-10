@@ -829,8 +829,12 @@ fn generated_evaluators_execute_compositions_properties_and_traps() {
             }
         }
     }
-    assert!(!evaluator::can_fold(Opcode::VectorOnly));
-    assert!(!evaluator::can_fold(Opcode::Difference));
+    for op in [Opcode::VectorOnly, Opcode::Difference] {
+        assert!(
+            evaluator::evaluate(&veloc_mir::InstFields::from_opcode(op).unwrap(), &[], &[])
+                .is_none()
+        );
+    }
     assert!(!Opcode::Composed.spec().is_commutative());
     assert!(!Opcode::Composed.spec().is_associative());
     assert!(Opcode::Trapping.spec().may_trap());
@@ -1129,7 +1133,14 @@ fn type_constraints_drive_validation_and_generated_evaluation() {
         );
     }
     // Vector-admitted lanes must not leak into scalar constant evaluation.
-    assert!(!evaluator::can_fold(Opcode::FourLane));
+    assert!(
+        evaluator::evaluate(
+            &veloc_mir::InstFields::from_opcode(Opcode::FourLane).unwrap(),
+            &[],
+            &[]
+        )
+        .is_none()
+    );
     assert!(
         Opcode::Reinterpret
             .validate_types(&[veloc_mir::Type::I32X4], &[veloc_mir::Type::I64X2])

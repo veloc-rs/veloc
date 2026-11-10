@@ -2,6 +2,7 @@
 
 pub(crate) mod access;
 pub(crate) mod constraints;
+pub(crate) mod control;
 pub(crate) mod data;
 pub(crate) mod encoding;
 pub(crate) mod expr;
@@ -109,6 +110,7 @@ pub(crate) struct Op {
     pub identity: Option<BvConst>,
     pub absorbing: Option<BvConst>,
     pub semantics: Option<Semantic>,
+    pub control: Option<control::Control>,
 }
 
 pub(crate) enum Projection {
@@ -306,6 +308,7 @@ impl Definitions {
                     .ok_or_else(|| fail(format!("unknown format `{}`", op.format)))?;
                 let ty = &op.signature;
                 operation::validate_packing(source, op, format)?;
+                control::validate(source, op, format)?;
                 op.inputs = storage::compact::inputs(op, format);
                 match (format.arity, &ty.operands) {
                     (Some(arity), TypeList::Fixed(patterns)) if arity == patterns.len() => {}

@@ -105,7 +105,7 @@ impl<'a> Expressions<'a> {
     pub(super) fn import_inst(&mut self, original: veloc_mir::Inst) -> Option<Inst> {
         let dfg = self.body.dfg();
         let view = dfg.inst(original);
-        let supported = crate::evaluate::can_reduce(dfg, original)
+        let supported = crate::evaluate::can_fold(view.opcode())
             || (super::matching::supports(view.opcode()) && view.can_speculate())
             || matches!(
                 view,

@@ -1,7 +1,7 @@
 //! Edit installed edges through their metadata and shared operand storage.
-use super::{DataFlowGraph, OperandRange};
+use super::DataFlowGraph;
 use crate::function::EdgeRef;
-use crate::{Block, Inst, Opcode, Successor, Value};
+use crate::{Block, Inst, Opcode, Value};
 use core::ops::Range;
 
 impl DataFlowGraph {
@@ -22,39 +22,54 @@ impl DataFlowGraph {
     pub(crate) fn redirect_edge(&mut self, edge: EdgeRef, target: Block, args: &[Value]) -> bool {
         let (old_target, group) = self.edge_args(edge);
         let inst = &mut self.instructions[edge.inst];
-        let old_len = inst.operands.len;
+        let count = args.len().try_into().expect("too many successor arguments");
         inst.operands = self.operands.replace(edge.inst, inst.operands, group, args);
-        let mut index = 0;
-        inst.fields.edit_edges(old_len, |data, _| {
-            if index == edge.index {
-                data.block = target;
-                data.len = args.len().try_into().expect("too many successor arguments");
-            }
-            index += 1;
+        inst.fields.set_edge_target(edge.index as usize, target);
+        inst.fields
+            .set_stored_edge_arg_count(edge.index as usize, count);
+        debug_assert!({
+            let (actual_target, actual_args) = self.edge_args(edge);
+            actual_target == target && actual_args.end - actual_args.start == count
         });
         old_target != target
     }
 
     /// Filter every occurrence of the target, including repeated table cases.
     pub(crate) fn retain_edge_args(&mut self, inst: Inst, target: Block, keep: &[bool]) {
-        let inst = &mut self.instructions[inst];
-        let mut compact = self.operands.compact(inst.operands);
-        inst.fields.edit_edges(inst.operands.len, |edge, args| {
-            if edge.block == target {
-                assert_eq!(
-                    edge.len as usize,
-                    keep.len(),
-                    "successor argument count mismatch"
-                );
-                let mut len = 0;
-                compact.retain(args, |index| {
-                    len += u32::from(keep[index]);
-                    keep[index]
-                });
-                edge.len = len;
-            }
+        let stored = &mut self.instructions[inst];
+        let mut compact = self.operands.compact(stored.operands);
+        let mut selected = smallvec::SmallVec::<[usize; 2]>::new();
+        let mut index = 0;
+        let count = keep.iter().filter(|&&retain| retain).count() as u32;
+        stored
+            .fields
+            .visit_edges(stored.operands.len, |edge, args| {
+                if edge.block == target {
+                    assert_eq!(
+                        edge.len as usize,
+                        keep.len(),
+                        "successor argument count mismatch"
+                    );
+                    compact.retain(args, |index| keep[index]);
+                    selected.push(index);
+                }
+                index += 1;
+            });
+        stored.operands = compact.finish();
+        // All old ranges have been consumed; only now change stored lengths.
+        for index in selected {
+            stored.fields.set_stored_edge_arg_count(index, count);
+        }
+        debug_assert!({
+            let stored = &self.instructions[inst];
+            let mut valid = true;
+            stored.fields.visit_edges(stored.operands.len, |edge, _| {
+                if edge.block == target {
+                    valid &= edge.len == count;
+                }
+            });
+            valid
         });
-        inst.operands = compact.finish();
     }
 
     /// Keep one branch edge and its existing uses, without an owned snapshot.
@@ -70,14 +85,37 @@ impl DataFlowGraph {
         compact.retain(args.end..old.len, |_| false);
         let operands = compact.finish();
 
-        // Transfer ownership of the compacted range across opcode replacement.
-        // The writer releases the old fields, but must not release these uses.
-        self.instructions[edge.inst].operands = OperandRange::default();
-        self.replace_inst(edge.inst, |writer| {
-            writer.jump(Successor { block, args: &[] })
-        });
-        let inst = &mut self.instructions[edge.inst];
-        inst.fields.edit_edges(0, |data, _| data.len = operands.len);
-        inst.operands = operands;
+        self.instructions[edge.inst].replace_with_jump(block, operands);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SuccessorData;
+
+    #[test]
+    fn repeated_edges_keep_argument_ranges_and_uses_after_editing() {
+        let mut dfg = DataFlowGraph::new();
+        let edges = [
+            SuccessorData::new(Block(1), &[Value(1), Value(2)]),
+            SuccessorData::new(Block(2), &[Value(3)]),
+            SuccessorData::new(Block(1), &[Value(2), Value(1)]),
+        ];
+        let inst =
+            dfg.create_inst(|w| w.br_table(Value(0), edges.iter().map(SuccessorData::as_view)));
+        dfg.retain_edge_args(inst, Block(1), &[false, true]);
+        dfg.redirect_edge(EdgeRef { inst, index: 1 }, Block(2), &[Value(3), Value(4)]);
+        let view = dfg.inst(inst);
+        assert_eq!(view.successor(0).unwrap().args, &[Value(2)]);
+        assert_eq!(view.successor(1).unwrap().args, &[Value(3), Value(4)]);
+        assert_eq!(view.successor(2).unwrap().args, &[Value(1)]);
+        dfg.fold_to_edge(EdgeRef { inst, index: 2 });
+        assert_eq!(dfg.opcode(inst), Opcode::Jump);
+        assert_eq!(dfg.operands(inst), &[Value(1)]);
+        assert_eq!(dfg.uses(Value(1)).count(), 1);
+        for value in [Value(0), Value(2), Value(3), Value(4)] {
+            assert_eq!(dfg.uses(value).count(), 0);
+        }
     }
 }

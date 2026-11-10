@@ -402,21 +402,15 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
         .unwrap();
     }
     out.push_str("};\ndebug_assert!(reader.0.is_empty(), \"unconsumed operands\");\nview\n}\n");
-    edge_access(&mut out, layouts, records, false);
-    edge_access(&mut out, layouts, records, true);
+    edge_access(&mut out, layouts, records);
+    edge_setters(&mut out, layouts, records);
     out.push_str("}\n");
     out
 }
 
-/// Locate successor arguments from the same storage layout used by the reader.
-/// Edits report original offsets, so callers can compact operands in one pass.
-fn edge_access(out: &mut String, layouts: &[Layout], records: &[RecordDef], mutable: bool) {
-    let (method, borrow, argument, get) = if mutable {
-        ("edit_edges", "&mut ", "&mut storage::Edge", "as_mut")
-    } else {
-        ("visit_edges", "&", "storage::Edge", "as_ref")
-    };
-    writeln!(out, "pub(crate) fn {method}({borrow}self, operand_len: u32, mut visit: impl FnMut({argument}, core::ops::Range<u32>)) {{ match self {{").unwrap();
+/// Locate successor arguments without mutating the layout being traversed.
+fn edge_access(out: &mut String, layouts: &[Layout], records: &[RecordDef]) {
+    out.push_str("pub(crate) fn visit_edges(&self, operand_len: u32, mut visit: impl FnMut(storage::Edge, core::ops::Range<u32>)) { match self {\n");
     for layout in layouts.iter().filter(|layout| {
         layout
             .fields
@@ -436,7 +430,7 @@ fn edge_access(out: &mut String, layouts: &[Layout], records: &[RecordDef], muta
                 .map(|(i, f)| (f.name.clone(), format!("_f{i}")));
             writeln!(
                 out,
-                "let {} = fields.{get}();",
+                "let {} = fields.as_ref();",
                 construct(&format!("{}Fields", layout.name), fields)
             )
             .unwrap();
@@ -456,27 +450,16 @@ fn edge_access(out: &mut String, layouts: &[Layout], records: &[RecordDef], muta
                 }
                 Some(Access::Values) => writeln!(out, "offset += *_f{i};").unwrap(),
                 Some(Access::Edges) => {
-                    writeln!(out, "_f{i}.{method}(&mut offset, &mut visit);").unwrap();
+                    writeln!(out, "_f{i}.visit_edges(&mut offset, &mut visit);").unwrap();
                 }
                 Some(Access::Edge) => {
                     out.push_str("let start = offset;\n");
                     if hot && omitted(layout, records, i) {
-                        let mutability = if mutable { "mut " } else { "" };
-                        writeln!(out, "let {mutability}edge = storage::Edge {{ block: *_f{i}, len: operand_len - offset }}; offset = operand_len;").unwrap();
-                        if mutable {
-                            writeln!(out, "visit(&mut edge, start..offset); *_f{i} = edge.block;")
-                                .unwrap();
-                        } else {
-                            out.push_str("visit(edge, start..offset);\n");
-                        }
+                        writeln!(out, "let edge = storage::Edge {{ block: *_f{i}, len: operand_len - offset }}; offset = operand_len;").unwrap();
+                        out.push_str("visit(edge, start..offset);\n");
                     } else {
                         writeln!(out, "offset += _f{i}.len;").unwrap();
-                        let edge = if mutable {
-                            format!("_f{i}")
-                        } else {
-                            format!("*_f{i}")
-                        };
-                        writeln!(out, "visit({edge}, start..offset);").unwrap();
+                        writeln!(out, "visit(*_f{i}, start..offset);").unwrap();
                     }
                 }
                 None => {
@@ -500,6 +483,77 @@ fn edge_access(out: &mut String, layouts: &[Layout], records: &[RecordDef], muta
         out.push_str("debug_assert_eq!(offset, operand_len);\n},\n");
     }
     out.push_str("_ => {} } }\n");
+}
+
+/// Metadata setters deliberately do not expose mutable edges or argument ranges.
+/// The DFG must finish the corresponding operand edit before checking the layout.
+fn edge_setters(out: &mut String, layouts: &[Layout], records: &[RecordDef]) {
+    for (method, ty, member) in [
+        ("set_edge_target", "crate::Block", "block"),
+        ("set_stored_edge_arg_count", "u32", "len"),
+    ] {
+        if member == "len" {
+            out.push_str(
+                "/// Update an explicit count; omitted trailing counts follow the operand range.\n",
+            );
+        }
+        writeln!(out, "#[allow(unused_variables, unused_mut)]\npub(crate) fn {method}(&mut self, mut index: usize, value: {ty}) {{ match self {{").unwrap();
+        for layout in layouts.iter().filter(|layout| {
+            layout
+                .fields
+                .iter()
+                .any(|f| matches!(f.access(), Some(Access::Edge | Access::Edges)))
+        }) {
+            let hot = inline(layout, records);
+            if hot {
+                writeln!(out, "{} => {{", pattern(layout, records, true, "Self")).unwrap();
+            } else {
+                writeln!(out, "Self::{}(fields) => {{", layout.name).unwrap();
+                let fields = layout
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| stored_type(f, records).is_some())
+                    .map(|(i, f)| (f.name.clone(), format!("_f{i}")));
+                writeln!(
+                    out,
+                    "let {} = fields.as_mut();",
+                    construct(&format!("{}Fields", layout.name), fields)
+                )
+                .unwrap();
+            }
+            for (i, field) in layout.fields.iter().enumerate() {
+                let has_more = layout.fields[i + 1..]
+                    .iter()
+                    .any(|f| matches!(f.access(), Some(Access::Edge | Access::Edges)));
+                match field.access() {
+                    Some(Access::Edge) => {
+                        out.push_str("if index == 0 {\n");
+                        if hot && omitted(layout, records, i) {
+                            if member == "block" {
+                                writeln!(out, "*_f{i} = value;").unwrap();
+                            }
+                        } else {
+                            writeln!(out, "_f{i}.{member} = value;").unwrap();
+                        }
+                        out.push_str("return;\n}\n");
+                        if has_more {
+                            out.push_str("index -= 1;\n");
+                        }
+                    }
+                    Some(Access::Edges) => {
+                        writeln!(out, "if index < _f{i}.edge_count() {{ _f{i}.{method}(index, value); return; }}").unwrap();
+                        if has_more {
+                            writeln!(out, "index -= _f{i}.edge_count();").unwrap();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out.push_str("},\n");
+        }
+        out.push_str("_ => {},\n}\npanic!(\"successor position out of bounds\");\n}\n");
+    }
 }
 
 /// Normalize packed field adapters into the common logical access plan.

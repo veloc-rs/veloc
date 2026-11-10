@@ -289,6 +289,31 @@ impl<'a> FuncEditor<'a> {
             .set_operand(edge.inst, args.start + index as u32, value);
     }
 
+    /// Rebind a conditional branch while preserving or swapping its original edges.
+    pub fn rewrite_branch(&mut self, inst: Inst, condition: Value, order: [usize; 2]) -> bool {
+        assert!(
+            matches!(order, [0, 1] | [1, 0]),
+            "branch edge order must be a permutation"
+        );
+        debug_assert_eq!(self.body.dfg.value_type(condition), crate::Type::BOOL);
+        let crate::InstView::Br {
+            condition: old,
+            then_dest,
+            else_dest,
+        } = self.body.dfg.inst(inst)
+        else {
+            panic!("conditional branch required");
+        };
+        let edges = [then_dest, else_dest];
+        if old == condition && edges[order[0]] == then_dest && edges[order[1]] == else_dest {
+            return false;
+        }
+        let yes = SuccessorData::new(edges[order[0]].block, edges[order[0]].args);
+        let no = SuccessorData::new(edges[order[1]].block, edges[order[1]].args);
+        self.replace_inst(inst, |w| w.br(condition, yes.as_view(), no.as_view()));
+        true
+    }
+
     /// Replace a branch with a jump along the selected edge, retaining its args.
     pub fn fold_to_edge(&mut self, edge: EdgeRef) {
         let block = self

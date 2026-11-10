@@ -52,7 +52,20 @@ impl InstWriter<'_> {
 
 include!(concat!(env!("OUT_DIR"), "/instructions.rs"));
 
-impl InstView<'_> {
+impl<'a> InstView<'a> {
+    /// Return a successor in visitation order, preserving duplicate targets.
+    /// Stops at the requested edge; returns None when the index is out of bounds.
+    pub fn successor(&self, mut index: usize) -> Option<Successor<'a>> {
+        self.try_visit_successors(|successor| {
+            if index == 0 {
+                return Err(successor);
+            }
+            index -= 1;
+            Ok(())
+        })
+        .err()
+    }
+
     pub(crate) fn operands_owned(&self) -> Arguments {
         let mut values = Arguments::new();
         self.visit_operands(|value| values.push(value));
@@ -145,6 +158,12 @@ mod tests {
             [Block(1), Block(2), Block(1), Block(3)]
         );
         assert_eq!(table.iter().nth(1).unwrap().args, &[Value(2), Value(3)]);
+        let view = dfg.inst(inst);
+        for (index, successor) in table.iter().enumerate() {
+            assert_eq!(view.successor(index), Some(successor));
+        }
+        assert_eq!(view.successor(4), None);
+        assert_eq!(view.successor(usize::MAX), None);
         let (default, cases) = table.split_last().unwrap();
         assert_eq!(default.block, Block(3));
         assert_eq!(cases.len(), 3);
@@ -152,5 +171,16 @@ mod tests {
             dfg.operands(inst),
             &[Value(0), Value(1), Value(2), Value(3), Value(1)]
         );
+    }
+
+    #[test]
+    fn indexed_successors_handle_single_and_absent_edges() {
+        let mut dfg = DataFlowGraph::new();
+        let edge = SuccessorData::new(Block(1), &[Value(0)]);
+        let jump = dfg.create_inst(|writer| writer.jump(edge.as_view()));
+        assert_eq!(dfg.inst(jump).successor(0), Some(edge.as_view()));
+        assert_eq!(dfg.inst(jump).successor(1), None);
+        let nop = dfg.create_inst(|writer| writer.nop());
+        assert_eq!(dfg.inst(nop).successor(0), None);
     }
 }

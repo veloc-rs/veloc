@@ -11,6 +11,15 @@ pub(crate) struct StoredInst {
     pub fields: InstFields,
 }
 
+impl StoredInst {
+    /// Install a jump over operands already retained by the DFG. The old fields
+    /// are dropped normally, while the retained operand uses remain attached.
+    pub(crate) fn replace_with_jump(&mut self, block: Block, operands: crate::dfg::OperandRange) {
+        self.fields = InstFields::Jump { dest: block };
+        self.operands = operands;
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Edge {
     pub block: Block,
@@ -36,18 +45,18 @@ impl Edges {
         }
     }
 
-    pub fn edit_edges(
-        &mut self,
-        offset: &mut u32,
-        edit: &mut impl FnMut(&mut Edge, core::ops::Range<u32>),
-    ) {
-        self.len = 0;
-        for edge in &mut self.entries {
-            let start = *offset;
-            *offset += edge.len;
-            edit(edge, start..*offset);
-            self.len += edge.len as usize;
-        }
+    pub(crate) fn edge_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn set_edge_target(&mut self, index: usize, block: Block) {
+        self.entries[index].block = block;
+    }
+
+    pub(crate) fn set_stored_edge_arg_count(&mut self, index: usize, len: u32) {
+        let edge = &mut self.entries[index];
+        self.len = self.len - edge.len as usize + len as usize;
+        edge.len = len;
     }
 
     pub fn store<'a>(

@@ -1,21 +1,15 @@
 //! Sparse conditional constant propagation. Values and executable edges reach
 //! a joint fixed point before any IR is edited; unreachable predecessors never
 //! contribute to a block parameter. Work follows SSA uses, not whole-CFG rounds.
-use crate::evaluate::Fact;
+use crate::evaluate::{Fact, Successors};
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile, evaluate};
 use cranelift_entity::SecondaryMap;
 use std::collections::VecDeque;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::function::EdgeRef;
-use veloc_mir::{Block, FuncBody, Inst, InstView, Value, ValueDef};
+use veloc_mir::{Block, FuncBody, Inst, Value, ValueDef};
 
 pub struct SccpPass;
-
-enum Successors {
-    Pending,
-    All,
-    One(usize),
-}
 
 #[derive(Default)]
 struct Solver {
@@ -67,20 +61,9 @@ impl Solver {
         }
     }
     fn successors(&self, f: &FuncBody, inst: Inst) -> Successors {
-        let (selector, count) = match f.dfg().inst(inst) {
-            InstView::Br { condition, .. } => (condition, None),
-            InstView::BrTable { index, table } => (index, Some(table.len())),
-            _ => return Successors::All,
-        };
-        match self.fact(f, selector) {
-            Fact::Unknown => Successors::Pending,
-            Fact::Varying => Successors::All,
-            Fact::Constant(c) => Successors::One(match count {
-                Some(count) => (c.to_bits() as usize).min(count - 1),
-                None => usize::from(c.to_bits() == 0),
-            }),
-        }
+        evaluate::successors(f.dfg().inst(inst), |value| self.fact(f, value))
     }
+
     fn transfer(&mut self, f: &FuncBody, inst: Inst) {
         let dfg = f.dfg();
         let view = dfg.inst(inst);
@@ -105,10 +88,8 @@ impl Solver {
             return;
         }
         self.evaluations += 1;
-        let args = dfg.operands(inst);
         let evaluated = evaluate::evaluate_inst(dfg, inst, |v| self.fact(f, v));
-        for (&value, result) in results.iter().zip(evaluated) {
-            let fact = result.fact(|i| self.fact(f, args[i]));
+        for (&value, fact) in results.iter().zip(evaluated) {
             self.update(f, value, fact);
         }
     }

@@ -16,6 +16,38 @@ const LANES_LOG2_MAX: u16 = crate::MAX_VECTOR_LANES.trailing_zeros() as u16;
 #[repr(transparent)]
 pub struct Type(u64);
 
+/// Exact scalar/vector membership, indexed by the private scalar encoding.
+/// Each mask uses bits 0..16 for fixed lane exponents and 16..32 for scalable
+/// lane exponents. Bit zero includes scalars; invalid types never match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypeSet([u32; 16]);
+
+impl TypeSet {
+    /// Build a constant set from logical elements and allowed shape masks.
+    pub const fn new(entries: &[(Scalar, u32)]) -> Self {
+        let mut masks = [0; 16];
+        let mut i = 0;
+        while i < entries.len() {
+            let (element, shapes) = entries[i];
+            let Some(scalar) = ScalarType::from_element(element) else {
+                panic!("unsupported type-set element");
+            };
+            masks[scalar.code() as usize] |= shapes;
+            i += 1;
+        }
+        Self(masks)
+    }
+
+    #[inline]
+    pub const fn accepts(&self, ty: Type) -> bool {
+        if !ty.is_compact() || !ty.is_valid() {
+            return false;
+        }
+        let shape = ty.lanes_log2() as u32 + if ty.is_scalable() { 16 } else { 0 };
+        self.0[ty.element_code() as usize] & (1u32 << shape) != 0
+    }
+}
+
 /// A scalar-only view, obtained through checked conversion from Type.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -545,5 +577,49 @@ const impl TypeInfo for Type {
     #[inline]
     fn is_compact(self) -> bool {
         self.0 <= u16::MAX as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_sets_match_exact_types_across_all_compact_encodings() {
+        const SET: TypeSet = TypeSet::new(&[
+            (Scalar::Int(32), 1 | (1 << 2) | (1 << 19)),
+            (Scalar::Float(64), 1 << 1),
+            (Scalar::Bool, 1 << 31),
+            (Scalar::Int(32), 1 << 15),
+        ]);
+        let members = [
+            Type::I32,
+            ScalarType::I32.vector(4, false).unwrap().as_type(),
+            ScalarType::I32.vector(8, true).unwrap().as_type(),
+            ScalarType::I32.vector(32768, false).unwrap().as_type(),
+            ScalarType::F64.vector(2, false).unwrap().as_type(),
+            ScalarType::BOOL.vector(32768, true).unwrap().as_type(),
+        ];
+        for raw in 0..=u16::MAX {
+            let ty = Type(raw as u64);
+            assert_eq!(SET.accepts(ty), members.contains(&ty), "raw {raw:#06x}");
+        }
+    }
+
+    #[test]
+    fn type_sets_reject_invalid_and_callable_types_even_with_all_shapes() {
+        const SET: TypeSet = TypeSet::new(&[(Scalar::Ptr, u32::MAX)]);
+        assert!(SET.accepts(Type::PTR));
+        assert!(!SET.accepts(Type::INVALID));
+        assert!(!SET.accepts(Type(Type::PTR.0 | SCALABLE_MASK as u64)));
+        assert!(!SET.accepts(Type(Type::PTR.0 | (1 << LANES_LOG2_SHIFT))));
+        for kind in [
+            CallableKind::Local,
+            CallableKind::Owned,
+            CallableKind::Shared,
+        ] {
+            assert!(!SET.accepts(Type::callable(SigId(u32::MAX), kind)));
+        }
+        assert!(!TypeSet::new(&[]).accepts(Type::I32));
     }
 }

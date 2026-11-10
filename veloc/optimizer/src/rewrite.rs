@@ -1,5 +1,6 @@
-//! Checked replacement plans for equality search. Construction folds direct
-//! reductions before the graph allocates candidates or publishes equalities.
+//! Directed instruction rewrites and checked replacement plans for equality search.
+//! Construction folds direct reductions before the graph allocates candidates.
+use crate::evaluate::{Fact, Successors};
 use crate::passes::expression::{ExprValue as Value, Expressions};
 use smallvec::SmallVec;
 use veloc_mir::{InstFields, ScalarConst, Type, TypeInfo};
@@ -81,7 +82,7 @@ impl PlanBuilder {
     ) -> Option<Input> {
         let types: SmallVec<[Type; 3]> = args.iter().map(|&v| self.ty(cx, v)).collect();
         crate::evaluate::validate_fields(&fields, &types, &[ty])?;
-        if let Some(folds) = crate::evaluate::reduce(&fields, args, &[ty], |input| match input {
+        if let Some(folds) = crate::evaluate::fold(&fields, args, &[ty], |input| match input {
             Input::Value(value) => cx.constant(value),
             Input::Step(i) => match self.steps[i] {
                 Step::Constant(c) => Some(c),
@@ -180,4 +181,23 @@ impl Plan {
         }
         Ok(value(self.result, &values))
     }
+}
+
+mod directed {
+    include!(concat!(env!("OUT_DIR"), "/rewrite.rs"));
+}
+
+pub(crate) fn rewrite_inst(func: &mut veloc_mir::FuncBody, inst: veloc_mir::Inst) -> bool {
+    if let Successors::One(index) = crate::evaluate::successors(func.dfg().inst(inst), |value| {
+        func.dfg()
+            .as_scalar_const(value)
+            .map_or(Fact::Varying, Fact::Constant)
+    }) {
+        func.edit().fold_to_edge(veloc_mir::function::EdgeRef {
+            inst,
+            index: index.try_into().expect("too many successors"),
+        });
+        return true;
+    }
+    directed::rewrite_inst(func, inst)
 }

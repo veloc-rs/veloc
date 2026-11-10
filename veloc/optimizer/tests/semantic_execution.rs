@@ -30,13 +30,21 @@ fn evaluate(
         },
         results,
     );
-    veloc_optimizer::evaluate::fold(body.dfg(), inst, |value| {
+    veloc_optimizer::evaluate::fold_inst(body.dfg(), inst, |value| {
         inputs
             .iter()
             .position(|&input| input == value)
             .map(|index| args[index])
     })
-    .map(|values| values.into_vec())
+    .map(|folds| {
+        folds
+            .into_iter()
+            .map(|fold| match fold {
+                veloc_optimizer::evaluate::Fold::Operand(i) => args[i],
+                veloc_optimizer::evaluate::Fold::Constant(c) => c,
+            })
+            .collect()
+    })
 }
 
 fn program(op: Opcode) -> veloc_semantics::Program<'static> {
@@ -59,9 +67,6 @@ fn offline_table_matches_runtime_metadata_without_duplicate_opcodes() {
         );
         spec.program.validate().unwrap();
     }
-    assert!(Opcode::ALL.iter().all(
-        |op| !veloc_optimizer::evaluate::can_fold(*op) || specs.iter().any(|s| s.opcode == *op)
-    ));
     assert!(!specs.iter().any(|s| s.opcode == Opcode::FAdd));
 }
 
@@ -333,17 +338,16 @@ fn generated_evaluators_match_graphs_for_all_scalar_signatures() {
     ];
     let mut seed = 0x9183_acf2_ee74_b01du64;
     let mut checked = 0;
-    for &op in Opcode::ALL {
-        if !veloc_optimizer::evaluate::can_fold(op) {
-            continue;
-        }
-        let program = program(op);
+    for spec in offline::SPECS {
+        let op = spec.opcode;
+        let program = spec.program;
         assert!(program.properties <= 1, "extend predicate product coverage");
         for signature in tuples(program.inputs as usize + program.outputs.len()) {
             let (inputs, outputs) = signature.split_at(program.inputs as usize);
             if op.validate_types(inputs, outputs).is_err() {
                 continue;
             }
+            assert!(veloc_optimizer::evaluate::can_fold(op));
             let properties = if program.properties == 0 {
                 vec![vec![]]
             } else {

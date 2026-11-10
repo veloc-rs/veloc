@@ -114,11 +114,13 @@ impl Sets {
                 writeln!(out, "pub const {name}: Self = Self({id});").unwrap();
             }
         }
-        out.push_str("pub fn accepts(self, ty: crate::Type) -> bool {\nlet Some(code) = ty.element() else { return false; };\nlet shape = ty.lane_count().trailing_zeros() + if ty.is_scalable() { 16 } else { 0 };\nlet shapes: u32 = match self.0 {\n");
+        out.push_str("pub fn accepts(self, ty: crate::Type) -> bool {\nlet set = match self.0 {\n");
         for (set, id) in &self.sets {
-            writeln!(out, "{id} => {},", shape_match(set, "code")).unwrap();
+            writeln!(out, "{id} => &{},", runtime_set(set)).unwrap();
         }
-        out.push_str("_ => unreachable!(\"invalid generated type set\"),\n};\nshapes & (1 << shape) != 0\n} }\n");
+        out.push_str(
+            "_ => unreachable!(\"invalid generated type set\"),\n};\nset.accepts(ty)\n} }\n",
+        );
         out
     }
 }
@@ -161,28 +163,16 @@ fn describe(set: &TypeSet, types: &Types) -> String {
     parts.join(" | ")
 }
 
-/// Emit type-set membership directly from element and shape masks.
+/// All generated consumers share the runtime type-set matcher.
 pub(crate) fn accepts(set: &TypeSet, value: &str) -> String {
-    let masks = shape_match(set, "code");
-    format!(
-        "{{ let ty = {value}; if let Some(code) = ty.element() {{ let shape = ty.lane_count().trailing_zeros() + if ty.is_scalable() {{ 16 }} else {{ 0 }}; let shapes: u32 = {masks}; shapes & (1u32 << shape) != 0 }} else {{ false }} }}"
-    )
+    format!("{}.accepts({value})", runtime_set(set))
 }
 
-fn shape_match(set: &TypeSet, code: &str) -> String {
-    let mut out = format!("match {code} {{\n");
-    let mut masks = BTreeMap::<u32, Vec<crate::types::Primitive>>::new();
+fn runtime_set(set: &TypeSet) -> String {
+    let mut out = String::from("const { veloc_types::TypeSet::new(&[\n");
     for (&kind, &shapes) in &set.0 {
-        masks.entry(shapes).or_default().push(kind);
+        writeln!(out, "(veloc_types::Scalar::{kind:?}, {shapes:#010x}),").unwrap();
     }
-    for (shapes, kinds) in masks {
-        let pattern = kinds
-            .iter()
-            .map(|kind| format!("veloc_types::Scalar::{kind:?}"))
-            .collect::<Vec<_>>()
-            .join(" | ");
-        writeln!(out, "{pattern} => {shapes:#010x},").unwrap();
-    }
-    out.push_str("_ => 0, }");
+    out.push_str("]) }");
     out
 }

@@ -140,7 +140,8 @@ Equivalence and local-fold outputs share one parsing and checking step per build
 supplies the operation definitions, dialect and Rust namespace of the IR.
 The current host uses packed instruction views and `FuncBody::edit`; operands
 and constructors are resolved through the same logical storage mapping as
-expression attributes. No opcode-specific transformations live in the emitter.
+expression attributes. Ordinary operand rewrites use the checked storage mapping; control rewrites
+use the restricted successor operations described below.
 
 ```text
 rule(root: mir::Load) {
@@ -168,6 +169,49 @@ interpreter. A successful plan is materialized once. Identical replacements are
 ignored; the caller owns worklist updates. Directed rules must converge when
 reapplied; they are not automatically sent to equality saturation. In contrast,
 expression equivalences retain alternatives for cost-based extraction.
+
+### Branch selection and local control rewrites
+
+MIR instructions declare successor-selection semantics alongside their storage:
+
+```text
+control = jump(dest);
+control = branch(condition, then_dest, else_dest);
+control = table(index, cases, default);
+```
+
+These forms require the corresponding parameter/storage order, no results,
+and a `bool` or `i32` selector respectively. The generated `successors` query accepts `Fact` and returns
+`Successors::{Pending, All, One(index)}`. For a constant selector, `One` names
+an original edge index: false selects the second branch edge; a table index is
+unsigned and selects the default when outside the case range. Unconditional
+jumps need no reduction. SCCP supplies abstract facts and keeps `Unknown`
+selectors pending; local CFG cleanup and threading supply `Constant` for known
+constants and `Varying` otherwise.
+Selection never edits IR during analysis.
+
+Directed rules may capture complete root successors:
+
+```text
+rule(root: mir::Br) {
+    case root(mir::Select(c, yes, no), a, b)
+        if constant_bits(yes) == 0 && constant_bits(no) == 1
+        => mir::Br(c, b, a);
+    case root(_, a, a) => mir::Jump(a);
+}
+```
+
+Repeated successor captures compare the destination **and all arguments**.
+Replacements may select a captured edge or preserve/swap both original edges;
+constructing new successors, editing their arguments, and matching across blocks
+are rejected. All directed rules share the `rewrite_inst` entry point; branch
+replacements use `FuncEditor::fold_to_edge` or `rewrite_branch` for the complete edit.
+This entry point also folds branches selected by literal constants, reusing the
+same read-only selection query as SCCP and threading. CFG cleanup calls it directly.
+Callers choose which instructions to rewrite: Simplify skips terminators, while
+branch patterns process only terminators. Expression e-graphs
+do not acquire CFG rewriting. Cross-block threading and speculative diamond
+conversion remain separate passes.
 
 ### Shared expression evaluation
 
