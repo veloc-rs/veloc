@@ -4,7 +4,7 @@
 use crate::{
     Definitions, Error,
     schema::Operation,
-    syntax::{DeclKind, Kind, Node},
+    syntax::{Kind, Node},
     types::TypeSet,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -95,6 +95,7 @@ pub(super) struct CheckedRule {
     pub replacement: Recipe,
     pub guard: Option<Predicate>,
     pub name: String,
+    local_types: bool,
 }
 pub(super) enum Filter {
     IsConstant(usize),
@@ -171,10 +172,12 @@ impl CheckedRule {
     /// The fold interface can inspect only the root and return an operand or
     /// constant. Guards qualify when all their queries are available locally.
     pub fn can_fold_locally(&self) -> bool {
-        self.pattern
-            .iter()
-            .skip(1)
-            .all(|p| !matches!(p.kind, PatternKind::Operation { .. }))
+        self.local_types
+            && self
+                .pattern
+                .iter()
+                .skip(1)
+                .all(|p| !matches!(p.kind, PatternKind::Operation { .. }))
             && !matches!(self.replacement, Recipe::Build { .. })
             && match &self.replacement {
                 Recipe::Value(slot) => self.pattern[*slot].ty.source == self.pattern[0].ty.source,
@@ -191,78 +194,63 @@ impl CheckedRule {
     }
 }
 
-pub(super) fn compile(
+/// Unsupported host capabilities are distinct from malformed rules. Only the
+/// former continue through the instruction adapter; type errors stay errors.
+enum CheckError {
+    Invalid(Error),
+    Instruction,
+}
+impl From<Error> for CheckError {
+    fn from(error: Error) -> Self {
+        Self::Invalid(error)
+    }
+}
+type CheckResult<T> = Result<T, CheckError>;
+
+pub(super) fn compile<'a>(
     source: &crate::Source,
     defs: &Definitions,
     dialect: &str,
-    cases: &[super::optimizer::Case<'_>],
-) -> Result<Vec<CheckedRule>, Error> {
-    let aliases: BTreeMap<_, _> = source
+    cases: &'a [super::optimizer::Case<'a>],
+) -> Result<(Vec<CheckedRule>, Vec<&'a super::optimizer::Case<'a>>), Error> {
+    let operations: BTreeMap<_, _> = defs.operations().map(|op| (op.name.clone(), op)).collect();
+    let functions = source
         .declarations()
         .iter()
-        .filter_map(|d| match &d.kind {
-            DeclKind::TypeSet(n) => Some((d.name.clone(), n.clone())),
-            _ => None,
+        .filter_map(|decl| {
+            matches!(&decl.kind, crate::syntax::DeclKind::Function { .. })
+                .then_some(decl.name.clone())
         })
         .collect();
-    let operations: BTreeMap<_, _> = defs.operations().map(|op| (op.name.clone(), op)).collect();
     let mut rules = Vec::new();
+    let mut instructions = Vec::new();
     for case in cases {
-        let Some(result) = case.result else {
-            continue;
-        };
-        let fail = |message| Error::at(source.text(), case.offset, message);
-        let mut generics = BTreeMap::new();
-        if let Some(params) = case.generics {
-            for (name, bound) in params {
-                let domain = defs.types.set(
-                    source.text(),
-                    &expand_domain(source.text(), bound, &aliases, &mut BTreeSet::new())?,
-                )?;
-                if domain.is_empty() || name == case.root {
-                    return Err(fail("invalid or shadowed case type parameter"));
-                }
-                generics.insert(name.clone(), domain);
-            }
+        let mut checker = Checker::new(
+            source.text(),
+            defs,
+            &operations,
+            &functions,
+            dialect,
+            case.generics.clone(),
+        );
+        match checker.case(case) {
+            Ok(rule) => rules.push(rule),
+            Err(CheckError::Instruction) => instructions.push(case),
+            Err(CheckError::Invalid(error)) => return Err(error),
         }
-        let mut checker = Checker::new(source.text(), defs, &operations, dialect, generics);
-        let ty = checker.bind_type(result, 0)?;
-        let lhs = Node {
-            offset: case.offset,
-            kind: Kind::Call(case.operation.into(), case.args.to_vec()),
-        };
-        let rule = checker.rule(
-            &lhs,
-            ty,
-            case.replacement,
-            case.guard,
-            format!("{} case at byte {}", case.operation, case.offset),
-        )?;
-        if checker.attributes.contains_key(case.root)
-            || checker
-                .generics
-                .keys()
-                .any(|n| checker.attributes.contains_key(n))
-            || checker.variables.contains_key(case.root)
-            || checker
-                .generics
-                .keys()
-                .any(|n| checker.variables.contains_key(n))
-        {
-            return Err(fail("pattern binding shadows root or type parameter"));
-        }
-        rules.push(rule);
     }
-    Ok(rules)
+    Ok((rules, instructions))
 }
 
 struct Checker<'a> {
     source: &'a str,
     defs: &'a Definitions,
     operations: &'a BTreeMap<String, Operation>,
+    functions: &'a BTreeSet<String>,
     dialect: &'a str,
     generics: BTreeMap<String, TypeSet>,
     bound_types: BTreeMap<String, TypeRef>,
+    type_links: BTreeMap<usize, TypeRef>,
     variables: BTreeMap<String, usize>,
     attributes: BTreeMap<String, Attribute>,
     pattern: Vec<Pattern>,
@@ -272,6 +260,7 @@ impl<'a> Checker<'a> {
         source: &'a str,
         defs: &'a Definitions,
         operations: &'a BTreeMap<String, Operation>,
+        functions: &'a BTreeSet<String>,
         dialect: &'a str,
         generics: BTreeMap<String, TypeSet>,
     ) -> Self {
@@ -279,43 +268,73 @@ impl<'a> Checker<'a> {
             source,
             defs,
             operations,
+            functions,
             dialect,
             generics,
             bound_types: BTreeMap::new(),
+            type_links: BTreeMap::new(),
             variables: BTreeMap::new(),
             attributes: BTreeMap::new(),
             pattern: Vec::new(),
         }
     }
-    fn fail(&self, at: usize, message: &str) -> Error {
-        Error::at(self.source, at, message)
+    fn case(&mut self, case: &super::optimizer::Case<'_>) -> CheckResult<CheckedRule> {
+        let op = self.operation(case.operation, case.args.len(), case.offset)?;
+        let mut ty = self.type_ref(op.expression.as_ref().unwrap().results[0].domain.clone(), 0);
+        for results in &case.results {
+            let [result] = *results else {
+                return Err(self.fail(case.offset, "value rules require one result type"));
+            };
+            if matches!(&result.kind, Kind::Name(name) if name == "_") {
+                continue;
+            }
+            let annotated = self.bind_type(result, 0)?;
+            ty = self.unify(ty, annotated, result.offset)?;
+        }
+        let lhs = Node {
+            offset: case.offset,
+            kind: Kind::Call(case.operation.into(), case.args.to_vec()),
+        };
+        let rule = self.rule(
+            &lhs,
+            ty,
+            case.replacement,
+            case.guard,
+            format!("{} case at byte {}", case.operation, case.offset),
+        )?;
+        if self
+            .generics
+            .keys()
+            .any(|name| self.attributes.contains_key(name) || self.variables.contains_key(name))
+        {
+            return Err(self.fail(case.offset, "pattern binding shadows type parameter"));
+        }
+        Ok(rule)
     }
-    fn operation(&self, path: &str, arity: usize, at: usize) -> Result<&Operation, Error> {
-        let name = path
-            .strip_prefix(&format!("{}::", self.dialect))
-            .ok_or_else(|| self.fail(at, "unknown expression dialect"))?;
-        let op = self
-            .operations
-            .get(name)
-            .ok_or_else(|| self.fail(at, "unknown expression operation"))?;
-        let sig = op
+    fn fail(&self, at: usize, message: &str) -> CheckError {
+        Error::at(self.source, at, message).into()
+    }
+    fn operation(&self, path: &str, arity: usize, at: usize) -> CheckResult<&Operation> {
+        let model =
+            super::optimizer::operation(self.source, self.defs, self.dialect, path, arity, at)?;
+        let op = &self.operations[&model.name];
+        if !op
             .expression
             .as_ref()
-            .ok_or_else(|| self.fail(at, "expression requires fixed values and attributes"))?;
-        let model = self.defs.ops.iter().find(|o| o.name == name).unwrap();
-        if op.declaration.params.len() != arity
-            || sig.results.len() != 1
+            .is_some_and(|sig| sig.results.len() == 1)
+            || !model.meta.memory_free
             || model.traits.contains("MAY_TRAP")
+            || model.declaration.params.iter().any(|param| param.moves)
             || model
                 .constraints
                 .iter()
                 .any(|c| c.condition.context_type().is_some())
         {
-            return Err(self.fail(at, "expression requires a non-trapping single-result operation with context-free constraints"));
+            return Err(CheckError::Instruction);
         }
         Ok(op)
     }
-    fn bind_type(&mut self, node: &Node, slot: usize) -> Result<TypeRef, Error> {
+    fn bind_type(&mut self, node: &Node, slot: usize) -> CheckResult<TypeRef> {
         let Kind::Name(name) = &node.kind else {
             return Err(self.fail(node.offset, "expected a type parameter or exact type"));
         };
@@ -332,7 +351,7 @@ impl<'a> Checker<'a> {
         }
         self.exact(node)
     }
-    fn exact(&self, node: &Node) -> Result<TypeRef, Error> {
+    fn exact(&self, node: &Node) -> CheckResult<TypeRef> {
         if let Kind::Name(name) = &node.kind
             && let Some(domain) = self.defs.type_domain(name).filter(|s| s.is_singleton())
         {
@@ -343,7 +362,7 @@ impl<'a> Checker<'a> {
         }
         Err(self.fail(node.offset, "unknown or unbound result type"))
     }
-    fn output_type(&self, node: &Node) -> Result<TypeRef, Error> {
+    fn output_type(&self, node: &Node) -> CheckResult<TypeRef> {
         if let Kind::Call(name, args) = &node.kind
             && name == "type_of"
             && let [
@@ -363,6 +382,58 @@ impl<'a> Checker<'a> {
         }
         self.exact(node)
     }
+    fn type_ref(&self, domain: TypeSet, slot: usize) -> TypeRef {
+        let source = self
+            .defs
+            .types
+            .exact
+            .iter()
+            .find(|(name, set)| name.starts_with("Type::") && set.is_singleton() && **set == domain)
+            .map(|(name, _)| TypeSource::Exact(name.clone()))
+            .unwrap_or(TypeSource::Value(slot));
+        TypeRef { domain, source }
+    }
+
+    fn resolve(&self, mut ty: TypeRef) -> TypeRef {
+        while let TypeSource::Value(slot) = ty.source {
+            let Some(link) = self.type_links.get(&slot) else {
+                break;
+            };
+            ty.domain.intersect(&link.domain);
+            if ty.source == link.source {
+                break;
+            }
+            ty.source = link.source.clone();
+        }
+        ty
+    }
+
+    /// Matching constrains existing types. Merge aliases so annotations and
+    /// signature relationships are checked even when a type binds in a child.
+    fn unify(&mut self, a: TypeRef, b: TypeRef, at: usize) -> CheckResult<TypeRef> {
+        let a = self.resolve(a);
+        let b = self.resolve(b);
+        let mut domain = a.domain.clone();
+        domain.intersect(&b.domain);
+        if domain.is_empty() {
+            return Err(self.fail(at, "incompatible pattern types"));
+        }
+        let source = match (&a.source, &b.source) {
+            (TypeSource::Exact(_), _) => a.source.clone(),
+            (_, TypeSource::Exact(_)) => b.source.clone(),
+            (TypeSource::Value(a), TypeSource::Value(b)) => {
+                self.type_ref(domain.clone(), (*a).min(*b)).source
+            }
+        };
+        let ty = TypeRef { domain, source };
+        for source in [a.source, b.source] {
+            if let TypeSource::Value(slot) = source {
+                self.type_links.insert(slot, ty.clone());
+            }
+        }
+        Ok(ty)
+    }
+
     fn input_type(
         &self,
         input: &crate::schema::Term,
@@ -373,19 +444,9 @@ impl<'a> Checker<'a> {
         if result.variable.is_some() && input.variable == result.variable {
             return ty.clone();
         }
-        let source = self
-            .defs
-            .types
-            .exact
-            .iter()
-            .find(|(n, d)| n.starts_with("Type::") && d.is_singleton() && **d == input.domain)
-            .map(|(n, _)| TypeSource::Exact(n.clone()))
-            .unwrap_or(TypeSource::Value(slot));
-        TypeRef {
-            domain: input.domain.clone(),
-            source,
-        }
+        self.type_ref(input.domain.clone(), slot)
     }
+
     fn rule(
         &mut self,
         lhs: &Node,
@@ -393,13 +454,22 @@ impl<'a> Checker<'a> {
         rhs: &Node,
         guard: Option<&Node>,
         name: String,
-    ) -> Result<CheckedRule, Error> {
+    ) -> CheckResult<CheckedRule> {
         self.pattern.push(Pattern {
             ty: ty.clone(),
             kind: PatternKind::Value(0),
         });
         self.match_node(lhs, ty.clone(), 0)?;
-        let replacement = self.recipe(rhs, Some(ty))?;
+        // Finish matching before resolving recipe types: an input annotation can
+        // constrain the root result through the operation's signature.
+        for slot in 0..self.pattern.len() {
+            self.pattern[slot].ty = self.resolve(self.pattern[slot].ty.clone());
+        }
+        for (name, ty) in std::mem::take(&mut self.bound_types) {
+            self.bound_types.insert(name, self.resolve(ty));
+        }
+        let replacement = self.recipe(rhs, Some(self.pattern[0].ty.clone()))?;
+        let local_types = self.local_types();
         let guard = guard
             .map(|node| {
                 let (guard, ty) = self.guard(node)?;
@@ -414,20 +484,27 @@ impl<'a> Checker<'a> {
             replacement,
             guard,
             name,
+            local_types,
         })
     }
-    fn match_node(&mut self, node: &Node, expected: TypeRef, slot: usize) -> Result<(), Error> {
-        let mut ty = match &node.kind {
-            Kind::TypedCall(_, ts, _) => {
-                let [t] = ts.as_slice() else {
-                    return Err(self.fail(node.offset, "expected one explicit result type"));
-                };
-                self.bind_type(t, slot)?
+    fn match_node(&mut self, node: &Node, expected: TypeRef, slot: usize) -> CheckResult<()> {
+        let (node, annotation) = super::optimizer::annotation(node);
+        if let Some(types) = annotation {
+            let [t] = types else {
+                return Err(self.fail(node.offset, "expected one value type"));
+            };
+            if matches!(&t.kind, Kind::Name(name) if name == "_") {
+                return self.match_node(node, expected, slot);
             }
-            _ => expected,
-        };
+            let annotated = self.bind_type(t, slot)?;
+            let ty = self.unify(expected, annotated, node.offset)?;
+            return self.match_node(node, ty, slot);
+        }
+        let mut ty = self.resolve(expected);
         let kind = if let Some(bits) = literal(node) {
-            check_literal(self.source, node, &mut ty.domain)?;
+            let mut literal_ty = ty.clone();
+            check_literal(self.source, node, &mut literal_ty.domain)?;
+            ty = self.unify(ty, literal_ty, node.offset)?;
             PatternKind::Constant(bits)
         } else {
             match &node.kind {
@@ -436,26 +513,20 @@ impl<'a> Checker<'a> {
                         return Err(self.fail(node.offset, "value shadows an attribute binding"));
                     }
                     if let Some(&previous) = self.variables.get(name) {
-                        let mut common = self.pattern[previous].ty.domain.clone();
-                        common.intersect(&ty.domain);
-                        if common.is_empty() {
-                            return Err(
-                                self.fail(node.offset, "repeated value has incompatible types")
-                            );
-                        }
+                        ty = self.unify(ty, self.pattern[previous].ty.clone(), node.offset)?;
                     }
                     PatternKind::Value(*self.variables.entry(name.clone()).or_insert(slot))
                 }
-                Kind::Call(path, args) | Kind::TypedCall(path, _, args) => {
+                Kind::Call(path, args) => {
                     let op = self.operation(path, args.len(), node.offset)?;
                     let sig = op.expression.as_ref().unwrap().clone();
                     let params = op.declaration.params.clone();
                     let opcode = op.name.clone();
-                    if !ty.domain.subset_of(&sig.results[0].domain) {
-                        return Err(
-                            self.fail(node.offset, "pattern result type exceeds operation domain")
-                        );
-                    }
+                    ty = self.unify(
+                        ty,
+                        self.type_ref(sig.results[0].domain.clone(), slot),
+                        node.offset,
+                    )?;
                     let commutative = self
                         .defs
                         .ops
@@ -515,10 +586,95 @@ impl<'a> Checker<'a> {
                 _ => return Err(self.fail(node.offset, "expected a value, literal or operation")),
             }
         };
-        self.pattern[slot] = Pattern { ty, kind };
+        self.pattern[slot] = Pattern {
+            ty: self.resolve(ty),
+            kind,
+        };
         Ok(())
     }
-    fn recipe(&self, node: &Node, expected: Option<TypeRef>) -> Result<Recipe, Error> {
+    // The folding host cannot query arbitrary operand types. Restrictions that
+    // are not implied by the root signature belong to the graph matcher.
+    fn local_types(&self) -> bool {
+        let PatternKind::Operation { opcode, args, .. } = &self.pattern[0].kind else {
+            unreachable!()
+        };
+        let sig = self.operations[opcode].expression.as_ref().unwrap();
+        let root = &self.pattern[0].ty;
+        let mut inputs = BTreeMap::new();
+        for (&slot, input) in args.iter().zip(&sig.inputs) {
+            let expected = input
+                .variable
+                .and_then(|v| inputs.get(&v))
+                .cloned()
+                .unwrap_or_else(|| self.input_type(input, &sig.results[0], root, slot));
+            if let Some(var) = input.variable {
+                inputs.insert(var, expected.clone());
+            }
+            let actual = &self.pattern[slot].ty;
+            if actual.domain != expected.domain || actual.source != expected.source {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Construction may use a known operand type only when the signature ties
+    /// that operand to the result. A widening conversion alone gives no width.
+    fn infer_result(&self, node: &Node) -> CheckResult<Option<TypeRef>> {
+        let (node, types) = super::optimizer::annotation(node);
+        if let Some(types) = types {
+            let [ty] = types else {
+                return Err(self.fail(node.offset, "expected one result type"));
+            };
+            return self.output_type(ty).map(Some);
+        }
+        match &node.kind {
+            Kind::Name(name) => Ok(self
+                .variables
+                .get(name)
+                .map(|&slot| self.pattern[slot].ty.clone())),
+            Kind::Call(path, args) => {
+                let op = self.operation(path, args.len(), node.offset)?;
+                let sig = op.expression.as_ref().unwrap();
+                let result = &sig.results[0];
+                if result.domain.is_singleton() {
+                    return Ok(Some(self.type_ref(result.domain.clone(), 0)));
+                }
+                let mut inputs = sig.inputs.iter();
+                for (arg, param) in args.iter().zip(&op.declaration.params) {
+                    if matches!(&param.ty.kind, Kind::Call(name, _) if name == "Value") {
+                        let input = inputs.next().unwrap();
+                        if result.variable.is_some() && input.variable == result.variable {
+                            if let Some(ty) = self.infer_result(arg)? {
+                                return Ok(Some(ty));
+                            }
+                        }
+                    }
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn recipe(&self, node: &Node, expected: Option<TypeRef>) -> CheckResult<Recipe> {
+        let (node, annotation) = super::optimizer::annotation(node);
+        let expected = if let Some(types) = annotation {
+            let [ty] = types else {
+                return Err(self.fail(node.offset, "expected one result type"));
+            };
+            let annotated = self.output_type(ty)?;
+            if let Some(expected) = &expected {
+                let mut common = annotated.domain.clone();
+                common.intersect(&expected.domain);
+                if common.is_empty() {
+                    return Err(self.fail(ty.offset, "incompatible replacement type annotation"));
+                }
+            }
+            Some(annotated)
+        } else {
+            expected
+        };
         if let Some(bits) = literal(node) {
             let mut ty = expected
                 .ok_or_else(|| self.fail(node.offset, "literal needs an unambiguous type"))?;
@@ -531,6 +687,16 @@ impl<'a> Checker<'a> {
                     .variables
                     .get(name)
                     .ok_or_else(|| self.fail(node.offset, "unmatched replacement value"))?;
+                if annotation.is_some()
+                    && expected
+                        .as_ref()
+                        .is_some_and(|ty| ty.source != self.pattern[slot].ty.source)
+                {
+                    return Err(self.fail(
+                        node.offset,
+                        "replacement annotation must match the captured value type",
+                    ));
+                }
                 if let Some(expected) = expected {
                     let mut common = self.pattern[slot].ty.domain.clone();
                     common.intersect(&expected.domain);
@@ -542,17 +708,17 @@ impl<'a> Checker<'a> {
                 }
                 Ok(Recipe::Value(slot))
             }
-            Kind::Call(path, args) | Kind::TypedCall(path, _, args) => {
-                let mut ty = if let Kind::TypedCall(_, ts, _) = &node.kind {
-                    let [t] = ts.as_slice() else {
-                        return Err(self.fail(node.offset, "expected one result type"));
-                    };
-                    self.output_type(t)?
-                } else {
-                    expected.ok_or_else(|| {
-                        self.fail(node.offset, "construction requires an explicit result type")
-                    })?
-                };
+            Kind::Call(path, args) => {
+                let mut ty = match expected {
+                    Some(ty) => Some(ty),
+                    None => self.infer_result(node)?,
+                }
+                .ok_or_else(|| {
+                    self.fail(
+                        node.offset,
+                        "cannot infer construction result type; add -> Type",
+                    )
+                })?;
                 let op = self.operation(path, args.len(), node.offset)?;
                 let sig = op.expression.as_ref().unwrap();
                 ty.domain.intersect(&sig.results[0].domain);
@@ -566,6 +732,20 @@ impl<'a> Checker<'a> {
                 let mut values = Vec::new();
                 let mut inputs = sig.inputs.iter();
                 let mut input_types = BTreeMap::new();
+                // A later operand can establish the type of an earlier one,
+                // e.g. Icmp(kind, ExtendU(x), y) uses y's type for the extension.
+                for (arg, param) in args.iter().zip(&op.declaration.params) {
+                    if matches!(&param.ty.kind, Kind::Call(name, _) if name == "Value") {
+                        let input = inputs.next().unwrap();
+                        if let Some(variable) = input.variable
+                            && !input_types.contains_key(&variable)
+                            && let Some(known) = self.infer_result(arg)?
+                        {
+                            input_types.insert(variable, known);
+                        }
+                    }
+                }
+                let mut inputs = sig.inputs.iter();
                 for (arg, param) in args.iter().zip(&op.declaration.params) {
                     if matches!(&param.ty.kind, Kind::Call(name, _) if name == "Value") {
                         let input = inputs.next().unwrap();
@@ -658,7 +838,7 @@ impl<'a> Checker<'a> {
             _ => false,
         }
     }
-    fn attribute(&self, node: &Node, ty: &str) -> Result<AttributeValue, Error> {
+    fn attribute(&self, node: &Node, ty: &str) -> CheckResult<AttributeValue> {
         if let Kind::Name(name) = &node.kind
             && let Some(attribute) = self.attributes.get(name)
         {
@@ -666,6 +846,9 @@ impl<'a> Checker<'a> {
                 return Err(self.fail(node.offset, "attribute type mismatch"));
             }
             return Ok(attribute.value.clone());
+        }
+        if self.needs_instruction(node) {
+            return Err(CheckError::Instruction);
         }
         let code = self.defs.expressions.clone().expression(
             self.source,
@@ -682,13 +865,40 @@ impl<'a> Checker<'a> {
         )?;
         Ok(AttributeValue::Literal(code))
     }
+    // Graph attributes are literals or captures. Computing new attributes from
+    // captures, constant facts or user helpers needs the instruction host.
+    fn needs_instruction(&self, node: &Node) -> bool {
+        match &node.kind {
+            Kind::Name(name) => {
+                self.variables.contains_key(name)
+                    || self.attributes.contains_key(name)
+                    || self.bound_types.contains_key(name)
+            }
+            Kind::Call(name, args) => {
+                name == "constant_bits"
+                    || self.functions.contains(name)
+                    || args.iter().any(|arg| self.needs_instruction(arg))
+            }
+            Kind::Member(value, _)
+            | Kind::Unary(_, value)
+            | Kind::Try(value)
+            | Kind::Ref(value) => self.needs_instruction(value),
+            Kind::Binary(_, a, b) => self.needs_instruction(a) || self.needs_instruction(b),
+            Kind::Object(_, fields) | Kind::Record(fields) => {
+                fields.values().any(|value| self.needs_instruction(value))
+            }
+            Kind::Number(_) | Kind::Integer(_) | Kind::Text(_) => false,
+            _ => true,
+        }
+    }
+
     fn match_attribute(
         &mut self,
         node: &Node,
         ty: &str,
         slot: usize,
         index: usize,
-    ) -> Result<AttributeValue, Error> {
+    ) -> CheckResult<AttributeValue> {
         if let Kind::Name(name) = &node.kind
             && super::identifier(name)
             && !matches!(name.as_str(), "true" | "false")
@@ -719,7 +929,7 @@ fn literal(node: &Node) -> Option<u64> {
         _ => None,
     }
 }
-fn check_literal(source: &str, node: &Node, domain: &mut TypeSet) -> Result<(), Error> {
+fn check_literal(source: &str, node: &Node, domain: &mut TypeSet) -> CheckResult<()> {
     domain.0.retain(|kind, shapes| {
         *shapes &= 1;
         matches!(
@@ -732,34 +942,9 @@ fn check_literal(source: &str, node: &Node, domain: &mut TypeSet) -> Result<(), 
             source,
             node.offset,
             "literal requires a scalar integer or boolean",
-        ))
+        )
+        .into())
     } else {
         Ok(())
     }
-}
-
-fn expand_domain(
-    source: &str,
-    node: &Node,
-    aliases: &BTreeMap<String, Node>,
-    active: &mut BTreeSet<String>,
-) -> Result<Node, Error> {
-    if let Kind::Name(name) = &node.kind
-        && let Some(alias) = aliases.get(name)
-    {
-        if !active.insert(name.clone()) {
-            return Err(Error::at(source, node.offset, "cyclic type-set alias"));
-        }
-        let result = expand_domain(source, alias, aliases, active);
-        active.remove(name);
-        return result;
-    }
-    let mut result = node.clone();
-    if let Kind::Union(parts) | Kind::Intersection(parts) | Kind::Call(_, parts) = &mut result.kind
-    {
-        for part in parts {
-            *part = expand_domain(source, part, aliases, active)?;
-        }
-    }
-    Ok(result)
 }

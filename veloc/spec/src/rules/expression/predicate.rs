@@ -216,7 +216,7 @@ pub(super) enum GuardType {
 }
 
 impl Checker<'_> {
-    pub(super) fn guard(&self, node: &Node) -> Result<(Predicate, GuardType), Error> {
+    pub(super) fn guard(&self, node: &Node) -> CheckResult<(Predicate, GuardType)> {
         use GuardType as T;
         use Predicate as P;
         if let Some(n) = literal(node) {
@@ -231,6 +231,21 @@ impl Checker<'_> {
                     return Ok((P::Attribute(a.value.clone()), T::Attribute(a.ty.clone())));
                 }
                 Ok((P::Type(self.output_type(node)?), T::Type))
+            }
+            Kind::Call(name, _)
+                if !matches!(
+                    name.as_str(),
+                    "pointer_bits"
+                        | "unsigned"
+                        | "signed"
+                        | "shift_amount"
+                        | "low_mask"
+                        | "type_of"
+                        | "bits"
+                        | "is_const"
+                ) =>
+            {
+                Err(CheckError::Instruction)
             }
             Kind::Call(name, args) if name == "pointer_bits" && args.is_empty() => {
                 Ok((P::PointerBits, T::Number))

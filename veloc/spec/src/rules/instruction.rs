@@ -15,7 +15,7 @@ pub(super) fn generate(
     defs: &Definitions,
     dialect: &str,
     rust: &str,
-    cases: &[super::optimizer::Case<'_>],
+    cases: &[&super::optimizer::Case<'_>],
 ) -> Result<String, SourceError> {
     let fail = |at, message| source.locate(Error::at(source.text(), at, message));
     let mut expressions = source.expressions()?;
@@ -27,13 +27,15 @@ pub(super) fn generate(
     let mut groups = BTreeMap::<String, Vec<String>>::new();
     let mut functions = String::new();
     let mut next_rule = 0;
-    for case in cases.iter().filter(|case| case.result.is_none()) {
+    for case in cases {
         let mut compiler = Compiler {
             source,
             defs,
             dialect,
             eligible: &eligible,
             expressions: &mut expressions,
+            generics: &case.generics,
+            bound_types: BTreeMap::new(),
             bindings: BTreeMap::new(),
             edges: BTreeMap::new(),
             next: 0,
@@ -41,15 +43,16 @@ pub(super) fn generate(
         };
         let args = case.args;
         let root_op = compiler.operation(case.operation, args.len(), case.offset)?;
-        compiler.pattern(root_op, args, "inst")?;
-        if compiler.bindings.contains_key(case.root) || compiler.edges.contains_key(case.root) {
-            return Err(fail(case.offset, "pattern binding shadows the root"));
+        let result_count = root_op.signature.results.patterns().unwrap().len();
+        for results in &case.results {
+            compiler.result_types(Some(results), result_count, true, case.offset)?;
         }
+        compiler.pattern(root_op, args, "inst")?;
         if let Some(guard) = case.guard {
             let guard = compiler.expression(guard, "bool")?;
             writeln!(compiler.code, "if !({guard}) {{ return None; }}").unwrap();
         }
-        let replacement = case.replacement;
+        let (replacement, results) = super::optimizer::annotation(case.replacement);
         let Kind::Call(path, args) = &replacement.kind else {
             return Err(fail(
                 replacement.offset,
@@ -57,7 +60,7 @@ pub(super) fn generate(
             ));
         };
         let target = compiler.operation(path, args.len(), replacement.offset)?;
-        let result_count = root_op.signature.results.patterns().unwrap().len();
+        compiler.result_types(results, result_count, false, replacement.offset)?;
         if target.signature.results.patterns().unwrap().len() != result_count {
             return Err(fail(
                 replacement.offset,
@@ -181,7 +184,7 @@ pub(super) fn generate(
 
 /// Match and validate without borrowing the function into the returned edit.
 fn emit_rule(out: &mut String, name: &str, body: &str) {
-    writeln!(out, "#[allow(unused_variables)]\nfn {name}(func: &FuncBody, inst: Inst) -> Option<InstRewrite> {{\nlet dfg = func.dfg();\n{body}\n}}\n").unwrap();
+    writeln!(out, "#[allow(unused_variables, unused_parens)]\nfn {name}(func: &FuncBody, inst: Inst) -> Option<InstRewrite> {{\nlet dfg = func.dfg();\n{body}\n}}\n").unwrap();
 }
 
 struct Compiler<'a, 'e> {
@@ -190,12 +193,77 @@ struct Compiler<'a, 'e> {
     dialect: &'a str,
     eligible: &'a BTreeSet<String>,
     expressions: &'e mut crate::schema::Expressions<'a>,
+    generics: &'e BTreeMap<String, crate::types::TypeSet>,
+    bound_types: BTreeMap<String, String>,
     bindings: BTreeMap<String, (Node, String)>,
     edges: BTreeMap<String, (usize, String)>,
     next: usize,
     code: String,
 }
 impl<'a> Compiler<'a, '_> {
+    fn check_type(&mut self, node: &Node, actual: &str, bind: bool) -> Result<(), SourceError> {
+        let expected = match &node.kind {
+            Kind::Name(name) if name == "_" => return Ok(()),
+            Kind::Name(name) if self.bound_types.contains_key(name) => {
+                self.bound_types[name].clone()
+            }
+            Kind::Name(name) if bind && self.generics.contains_key(name) => {
+                let ty = format!("type_{name}");
+                let accepts = crate::types::generate::accepts(&self.generics[name], &ty);
+                writeln!(
+                    self.code,
+                    "let {ty} = {actual};\nif !({accepts}) {{ return None; }}"
+                )
+                .unwrap();
+                self.bound_types.insert(name.clone(), ty.clone());
+                self.bindings.insert(
+                    name.clone(),
+                    (
+                        Node {
+                            offset: node.offset,
+                            kind: Kind::Name("Type".into()),
+                        },
+                        ty,
+                    ),
+                );
+                return Ok(());
+            }
+            Kind::Name(name)
+                if self
+                    .defs
+                    .type_domain(name)
+                    .is_some_and(|d| d.is_singleton()) =>
+            {
+                name.clone()
+            }
+            _ => return Err(self.fail(node.offset, "expected an exact or bound result type")),
+        };
+        writeln!(self.code, "if {actual} != {expected} {{ return None; }}").unwrap();
+        Ok(())
+    }
+
+    fn result_types(
+        &mut self,
+        types: Option<&[Node]>,
+        count: usize,
+        bind: bool,
+        at: usize,
+    ) -> Result<(), SourceError> {
+        if let Some(types) = types {
+            if types.len() != count {
+                return Err(self.fail(at, "result annotation must match instruction result arity"));
+            }
+            for (i, ty) in types.iter().enumerate() {
+                self.check_type(
+                    ty,
+                    &format!("dfg.value_type(dfg.inst_results(inst)[{i}])"),
+                    bind,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     fn capture_edge(
         &mut self,
         op: &Op,
@@ -296,21 +364,23 @@ impl<'a> Compiler<'a, '_> {
             .locate(Error::at(self.source.text(), at, message))
     }
     fn operation(&self, path: &str, arity: usize, at: usize) -> Result<&'a Op, SourceError> {
-        let op = path
-            .strip_prefix(&format!("{}::", self.dialect))
-            .and_then(|name| self.defs.ops.iter().find(|op| op.name == name))
-            .ok_or_else(|| self.fail(at, "unknown instruction operation"))?;
+        let op = super::optimizer::operation(
+            self.source.text(),
+            self.defs,
+            self.dialect,
+            path,
+            arity,
+            at,
+        )
+        .map_err(|error| self.source.locate(error))?;
         if op.control.is_some() {
-            if matches!(op.control, Some(crate::model::control::Control::Table))
-                || op.params.len() != arity
-            {
+            if matches!(op.control, Some(crate::model::control::Control::Table)) {
                 return Err(self.fail(at, "branch rewrites require fixed captured successors"));
             }
             return Ok(op);
         }
         if !self.eligible.contains(&op.name)
             || !matches!(op.projection, crate::model::Projection::Packed(_))
-            || op.params.len() != arity
             || op.signature.results.patterns().is_none()
             || op
                 .params
@@ -376,7 +446,22 @@ impl<'a> Compiler<'a, '_> {
             };
             let value =
                 op.inputs[&param.name].emit(&|f| format!("{prefix}_{f}"), &|v| format!("{v}?"));
+            let mut arg = arg;
+            while let Kind::Typed(inner, types) = &arg.kind {
+                arg = inner;
+                let types = types.as_slice();
+                let [annotation] = types else {
+                    return Err(self.fail(arg.offset, "operand pattern requires one type"));
+                };
+                if param.kind != ParamKind::Value {
+                    return Err(self.fail(arg.offset, "type annotations require an SSA operand"));
+                }
+                self.check_type(annotation, &format!("dfg.value_type({value})"), true)?;
+            }
             if let Kind::Name(name) = &arg.kind {
+                if self.generics.contains_key(name) {
+                    return Err(self.fail(arg.offset, "value shadows a type parameter"));
+                }
                 if name == "_" {
                     continue;
                 }
@@ -401,7 +486,7 @@ impl<'a> Compiler<'a, '_> {
                 }
             }
             if let Kind::Call(path, nested) = &arg.kind
-                && path.starts_with(&format!("{}::", self.dialect))
+                && super::optimizer::lookup(self.defs, self.dialect, path).is_some()
                 && param.kind == ParamKind::Value
             {
                 let child = self.operation(path, nested.len(), arg.offset)?;
@@ -423,6 +508,18 @@ impl<'a> Compiler<'a, '_> {
         Ok(())
     }
     fn expression(&mut self, node: &Node, ty: &str) -> Result<String, SourceError> {
+        let (node, annotation) = super::optimizer::annotation(node);
+        if let Some(types) = annotation {
+            let [annotation] = types else {
+                return Err(self.fail(node.offset, "replacement operand requires one type"));
+            };
+            if ty != "Value" {
+                return Err(self.fail(node.offset, "type annotations require an SSA operand"));
+            }
+            let value = self.expression(node, ty)?;
+            self.check_type(annotation, &format!("dfg.value_type({value})"), false)?;
+            return Ok(value);
+        }
         let mut node = node.clone();
         self.constants(&mut node)?;
         self.expressions.rust(&node, ty, &self.bindings, "")

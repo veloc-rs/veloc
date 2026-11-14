@@ -12,6 +12,9 @@ pub(crate) struct Metadata {
     pub fields: BTreeMap<String, Expr>,
     pub checks: Vec<(Expr, String)>,
     pub value_only: Option<Expr>,
+    /// Definition-owned semantics or the declared no-memory-effect constant.
+    /// Opaque foreign expressions keep their runtime checks and use an adapter.
+    pub memory_free: bool,
 }
 
 impl Metadata {
@@ -211,6 +214,13 @@ impl Pending {
                 ));
             }
         }
+        let memory_free = self.memory.as_ref().is_some_and(|field| {
+            semantic
+                || matches!(
+                    (&fields[&field.name].kind, &contract.expect("analysis binding").pure.kind),
+                    (Kind::Name(actual), Kind::Name(pure)) if actual == pure
+                )
+        });
         let value_only = if let (Some(traits), Some(memory), Some(contract)) =
             (&self.traits, &self.memory, contract)
         {
@@ -271,6 +281,7 @@ impl Pending {
             fields: values,
             checks,
             value_only,
+            memory_free,
         })
     }
 }

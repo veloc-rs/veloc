@@ -49,17 +49,33 @@ there is no SMT invocation or new proof claim here.
 `Options::optimizations` binds one rule module to its operation definitions,
 dialect and IR Rust namespace. The shared frontend checks rule groups and
 normalizes their cases once, independent of which artifacts are requested.
-`root<T>(...)` describes an equality between values of type `T`;
-`root(...)` describes an instruction replacement that retains the original
-SSA results. Both forms may appear in one file or rule group. They share
-operation contracts and storage mappings, with separate checks for value
-construction and instruction edits.
+Instruction names use the dialect supplied by `Options::optimizations`; for
+example, `rule Icmp` and `ISub(x, y)` resolve within that dialect. A matching
+explicit qualifier remains accepted, while a different dialect is rejected.
+Attribute/type namespaces such as `IntCC::Eq` and `Type::BOOL` remain explicit.
+Every optimizer group uses `rule Op`: match the inputs and, when the
+conditions hold, replace them according to the right-hand side. Rule authors
+preserve program behavior, including effects and traps. The frontend shares
+operation lookup, logical operand arity, type scopes and storage contracts;
+host-specific lowering checks which execution capabilities the complete case
+requires. Optional type annotations constrain matches, not execution policy.
 
 The optimizer imports `defs/rules.spec`, which groups rules by instruction
 family: arithmetic, bitwise, compare, convert, memory and control. Files do not
 choose a compiler or execution host. One build call produces `fold.rs`,
-`equal.rs` and `rewrite.rs`; local-fold capability determines which value rules
-feed folding and which feed equality search. Instruction cases feed rewrites.
+`equal.rs` and `rewrite.rs`. A case expressible as a non-trapping, single-result
+expression first goes through the expression checker. Direct operand/constant
+reductions with only local queries feed folding; other checked expressions feed
+equality search. Cases needing instruction capabilities, such as effects,
+successors, multiple results or computed attributes and helper calls, feed
+instruction edits. Selection is per case, not per opcode: `PtrOffset` can have
+both a zero-offset fold and a computed-offset instruction edit.
+
+A capability mismatch selects the instruction adapter; malformed operations,
+incompatible types and invalid supported predicates remain errors. The adapter
+must validate the entire case before emitting any edit. An unsupported case is
+reported rather than silently ignored. Named `rewrite name(...)` declarations
+in target legalization remain callable templates, separate from optimizer rules.
 
 ```sh
 cargo run -p veloc-spec --features cli -- veloc/optimizer/defs/rules.spec \
@@ -69,50 +85,81 @@ cargo run -p veloc-spec --features cli -- veloc/optimizer/defs/rules.spec \
 
 ### Expression equivalences
 
-Anonymous `rule` groups describe semantic equalities. One checker produces a
+For cases supported by the expression host, the checker produces a
 `CheckedRule` containing typed pattern slots, guards and a replacement recipe.
 Allocation-free instruction reductions and e-class queries are projections of
 this same model. The checker identifies direct operand/constant reductions;
-all other rules are handled by equality search.
+the remaining checked expressions are handled by equality search.
 
 ```text
-rule(root: mir::IAdd) {
-    where T: ScalarInteger {
-        case root<T>(mir::ISub(x, y), y) => x;
-        case root<T>(x, mir::IXor(x, -1)) => -1;
-        case root<T>(mir::IMul(x, y), mir::IMul(x, z))
-            => mir::IMul(x, mir::IAdd(y, z));
+rule IAdd {
+    where T: ScalarInteger, (T, T) -> T {
+        case (ISub(x, y), y) => x;
+        case (x, IXor(x, -1)) => -1;
+        case (IMul(x, y), IMul(x, z))
+            => IMul(x, IAdd(y, z));
     }
 }
 ```
 
-Group cases by root opcode; the group declares only the operation, not its
-result type. `root<T>(...)` matches the declared root with result type `T`;
-the replacement must preserve that type. The pattern name must match the
-group's parameter name. Fixed result types use the same case syntax, such as
-`root<Type::BOOL>(...)`.
+The group declares the operation; each `case (...)` matches its logical inputs,
+including attributes. There is no root alias. A `where` header first declares
+type variables, then optionally gives a shared `(inputs) -> results` signature,
+separated by a comma. For example, `where T: ScalarInteger, (T, T) -> T`
+declares `T` and constrains both root inputs and the result to that same actual
+type. Declarations stay outside the signature; signature positions only use
+those variables or exact types. They do not bind case values such as `x`.
+For a nested operand pattern, the positional type applies to that expression's
+result, not its leaves. Exact types are also accepted, and `_` leaves a position
+unconstrained. Input positions include attributes and successors, which must
+use `_` because they are not SSA values. Input and result arities must match
+the operation; multiple results use `-> (T, Type::BOOL)`, zero results `-> ()`.
+
+Case-local annotations express additional type relationships. `x: T` annotates an SSA value;
+`Op(...) -> T` annotates an operation result, and `case (...) -> T`
+annotates the matched root result. The same type variable requires the same
+actual type at every occurrence. A fixed type uses the same notation, such as
+`x: Type::BOOL`. Type annotations constrain matches; they are not conversions.
+
+On the **pattern side**, an omitted type comes from the existing matched node.
+Its operation signature still constrains it, but no particular width is chosen.
+For example, `case (ExtendU(x: T)) -> T => x` accepts any legal intermediate
+extension type, without binding its width. Input annotations propagate through
+signature relationships: `IAdd` ties its inputs and result together, whereas
+`ExtendU` has independent input and result types.
+
+On the **replacement side**, an omitted result type must be uniquely determined
+by its context, a fixed result signature, or an operand tied to the result by
+the signature. Types can flow from later operands as well as earlier ones.
+An unconstrained widening operation requires an explicit `-> T`; the compiler
+does not guess its width. An annotation can use a bound type or `type_of(x)`.
+Unbound types and incompatible pattern annotations are errors.
 
 Type variables and their constraints are declared only in `where` blocks,
 whether shared by all cases or just a subset. `rule<T: ...>` and
 `case<T: ...>` declarations are rejected:
 
 ```text
-rule(root: mir::Select) {
-    where T: ScalarInteger {
-        case root<T>(condition, 1, 0) => mir::ExtendU<T>(condition);
-        case root<T>(condition, mir::Wrap<T>(x), mir::Wrap<T>(y))
+rule Select {
+    where T: ScalarInteger, (Type::BOOL, T, T) -> T {
+        case (condition, 1, 0) => ExtendU(condition);
+        case (condition, Wrap(x), Wrap(y))
             if type_of(x) == type_of(y)
-            => mir::Wrap<T>(mir::Select<type_of(x)>(condition, x, y));
+            => Wrap(Select(condition, x, y));
     }
-    case root<Type::BOOL>(condition, true, false) => condition;
+    case (condition, true, false) -> Type::BOOL => condition;
 }
 ```
 
-`where` blocks may nest and declare multiple parameters separated by commas,
-such as `where T: Integer, W: Integer { ... }`. Inner declarations cannot
-shadow outer parameters or the root name. Parameters do not escape into
-following sibling cases. Parsing flattens blocks into case declarations in
-source order; they add no runtime matching state.
+`where` blocks may nest. Their signatures and case-local annotations all apply;
+an inner annotation never overrides an outer constraint. Multiple variables
+share one header, such as `where T: Integer, S: Any, (_) -> T`; `S` may bind only
+inside a nested pattern. A parameter-only block, `where S: Any { ... }`, and a
+signature-only block using exact or inherited types are also supported.
+Inner declarations cannot shadow outer type
+parameters, and value/attribute bindings cannot shadow them either. Parameters
+do not escape into following sibling cases. Parsing expands shared signatures
+into case annotations in source order; they add no runtime matching state.
 
 Simplify and SCCP inspect only the current operation, operand identities and
 constant facts for expression reductions. They do not follow operand definitions
@@ -124,12 +171,12 @@ Simplify also applies the directed instruction rewrites described below.
 Attributes use their logical positions in the operation declaration:
 
 ```text
-rule(root: mir::Icmp) {
-    case root<Type::BOOL>(IntCC::Eq, x, x) => true;
-    where T: ScalarInteger {
-        case root<Type::BOOL>(kind, mir::ISub<T>(x, y), 0)
+rule Icmp {
+    case (IntCC::Eq, x, x) => true;
+    where T: ScalarInteger, (_, T, T) -> Type::BOOL {
+        case (kind, ISub(x, y), 0)
             if kind == IntCC::Eq || kind == IntCC::Ne
-            => mir::Icmp<Type::BOOL>(kind, x, y);
+            => Icmp(kind, x, y);
     }
 }
 ```
@@ -159,16 +206,20 @@ Equivalence and local-fold outputs consume the same checked value rules.
 
 ### Directed instruction rewrites
 
-`Emit::Rewrites` emits instruction cases from the same optimizer rule module.
+`Emit::Rewrites` emits cases selected for instruction edits from the same rule module.
 The host matches packed instruction views and returns an owned
 `InstRewrite`; the caller applies it through `FuncBody::edit`. Instruction fields
 and operands use the same checked storage mapping as expression construction.
 Control rewrites use the restricted successor operations described below.
 
 ```text
-rule(root: mir::Load) {
-    case root(mir::PtrOffset(ptr, inner), outer, flags)
-        => mir::Load(ptr, checked_cast(i64(inner) + i64(outer), u32)?, flags);
+fn fits_u32(value: i64) -> bool {
+    value = value >= 0 && value <= 0xffffffff;
+}
+rule Load {
+    case (PtrOffset(ptr, inner), outer, flags)
+        if fits_u32(i64(inner) + i64(outer))
+        => Load(ptr, wrapping_cast(i64(inner) + i64(outer), u32), flags);
 }
 ```
 
@@ -181,6 +232,10 @@ Repeated bindings require equality; cases are tried in source order per opcode.
 
 Root operations can have zero or multiple fixed results. Their existing result
 types are checked against the replacement's signature and property constraints.
+An optional `-> (T, Type::BOOL)` annotates multiple results; `-> ()` annotates
+an instruction without results. These annotations check the existing result
+types and never allocate or change result values. The expression host still
+requires a single result.
 Rule authors must preserve memory, trap and ownership semantics, including when
 changing opcodes; generated Rust does not add compile-time effect assertions.
 Variable operands, embedded SSA attributes and
@@ -224,11 +279,11 @@ Selection never edits IR during analysis.
 Directed rules may capture complete root successors:
 
 ```text
-rule(root: mir::Br) {
-    case root(mir::Select(c, yes, no), a, b)
+rule Br {
+    case (Select(c, yes, no), a, b)
         if constant_bits(yes) == 0 && constant_bits(no) == 1
-        => mir::Br(c, b, a);
-    case root(_, a, a) => mir::Jump(a);
+        => Br(c, b, a);
+    case (_, a, a) => Jump(a);
 }
 ```
 
@@ -289,9 +344,9 @@ classification is automatic; a guard alone does not require e-graph execution.
 The e-graph also explores equal-cost alternatives:
 
 ```text
-rule(root: mir::ISub) {
+rule ISub {
     where T: ScalarInteger {
-        case root<T>(x, c) if is_const(c) => mir::IAdd<T>(x, mir::INeg<T>(c));
+        case (x, c) -> T if is_const(c) => IAdd(x, INeg(c) -> T) -> T;
     }
 }
 ```
@@ -310,14 +365,14 @@ or that later-created expressions will be searched again.
 
 ### Types and predicates
 
-Untyped nested calls inherit the result type implied by their operand position.
-Casts and other independent types can use explicit result types:
+Nested patterns read their result types from matched nodes. Use an annotation
+when a rule needs to bind or compare one of those types:
 
 ```text
-rule(root: mir::Wrap) {
-    where T: Integer, W: Integer {
-        case root<T>(mir::ExtendU<W>(x)) if type_of(x) == T => x;
-        case root<T>(mir::ExtendU<W>(x)) if bits(type_of(x)) < bits(T) => mir::ExtendU<T>(x);
+rule Wrap {
+    where T: Integer, S: Any, (_) -> T {
+        case (ExtendU(x: T)) => x;
+        case (ExtendU(x: S)) if bits(S) < bits(T) => ExtendU(x);
     }
 }
 ```
@@ -325,6 +380,8 @@ rule(root: mir::Wrap) {
 Type parameters bind at matched nodes. Each pattern slot carries its own domain
 and type source, including scalar/vector shapes. Query checks and incremental
 triggers use the slot's domain, rather than assuming it shares the root type.
+Independent operand-type restrictions require a host with type queries and
+therefore stay in the graph matcher rather than the local folding interface.
 Construction validates each operation's full type contract before allocating IR,
 including cast width and shape constraints. Operations must be pure, non-trapping,
 value-only and single-result. Missing target layout rejects a layout-dependent

@@ -20,16 +20,16 @@ mod tests {
     #[test]
     fn where_blocks_preserve_order_and_lexical_parameters() {
         let file = parse_file(
-            "rule(root: mir::IAdd) {
-                where T: Integer, W: Integer {
-                    case root<T>(x, 0) => x;
+            "rule IAdd {
+                where T: Integer, W: Integer, (T, W) -> T {
+                    case (x, 0) => x;
                     where U: ScalarInteger {
-                        case root<U>(y, 0) => y;
+                        case (y, 0) -> U => y;
                     }
-                    case root<W>(z, 0) => z;
+                    case (z, 0) -> W => z;
                 }
-                where T: Any { case root<T>(v, 0) => v; }
-                case root<Type::I32>(w, 0) => w;
+                where T: Any, (T, T) -> T { case (v, 0) => v; }
+                case (w, 0) -> Type::I32 => w;
             }",
         )
         .unwrap();
@@ -63,15 +63,15 @@ mod tests {
     #[test]
     fn rejects_old_and_invalid_type_parameter_declarations() {
         for source in [
-            "rule<T: Integer>(root: mir::IAdd) { case root<T>(x, 0) => x; }",
-            "rule(root: mir::IAdd) { case<T: Integer> root<T>(x, 0) => x; }",
-            "rule(root: mir::IAdd) { scope<T: Integer> { case root<T>(x, 0) => x; } }",
-            "rule(root: mir::IAdd) { where<T: Integer> { case root<T>(x, 0) => x; } }",
-            "rule(root: mir::IAdd) { where { case root<T>(x, 0) => x; } }",
-            "rule(root: mir::IAdd) { where T: Integer {} }",
-            "rule(root: mir::IAdd) { where T: Integer, T: Any { case root<T>(x, 0) => x; } }",
-            "rule(root: mir::IAdd) { where T: Integer { where T: Any { case root<T>(x, 0) => x; } } }",
-            "rule(root: mir::IAdd) { where move T: Integer { case root<T>(x, 0) => x; } }",
+            "rule<T: Integer>(root: mir::IAdd) { case (x, 0) -> T => x; }",
+            "rule IAdd { case<T: Integer> root(x, 0) -> T => x; }",
+            "rule IAdd { scope<T: Integer> { case (x, 0) -> T => x; } }",
+            "rule IAdd { where<T: Integer> { case (x, 0) -> T => x; } }",
+            "rule IAdd { where { case (x, 0) -> T => x; } }",
+            "rule IAdd { where T: Integer {} }",
+            "rule IAdd { where T: Integer, T: Any { case (x, 0) -> T => x; } }",
+            "rule IAdd { where T: Integer { where T: Any { case (x, 0) -> T => x; } } }",
+            "rule IAdd { where move T: Integer { case (x, 0) -> T => x; } }",
         ] {
             assert!(parse_file(source).is_err(), "accepted {source}");
         }
@@ -98,6 +98,8 @@ enum Context {
     Value,
     // Typed rewrite expressions admit full-width integer attributes.
     Rewrite,
+    // Optimizer cases also admit value and result type annotations.
+    Rule,
     Type,
     Expr,
     // Like Rust, a bare struct literal is not a control-expression scrutinee.
@@ -122,6 +124,12 @@ struct Parser<'a> {
     source: &'a str,
     lexer: Lexer<'a>,
     token: Token<'a>,
+}
+
+#[derive(Clone)]
+struct RuleTypes {
+    inputs: Vec<Node>,
+    results: Vec<Node>,
 }
 
 impl<'a> Parser<'a> {
@@ -329,11 +337,12 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Flatten lexical generic scopes into cases without changing their order.
+    /// Flatten lexical type scopes into case annotations without changing order.
     /// The opening brace has already been consumed.
     fn rule_cases(
         &mut self,
         inherited: &BTreeMap<String, Node>,
+        signatures: &[RuleTypes],
         depth: u8,
     ) -> Result<Vec<Node>, Error> {
         self.check_depth(depth, Context::Rewrite)?;
@@ -342,16 +351,40 @@ impl<'a> Parser<'a> {
             let at = self.token.offset;
             if self.eat(TokenKind::Name("where"))? {
                 let mut generics = inherited.clone();
-                let params = self.sequence(TokenKind::LBrace, Self::parameter)?;
-                if params.is_empty() {
-                    return Err(self.error(at, "expected type parameters"));
-                }
-                for param in params {
-                    if param.moves || generics.insert(param.name, param.ty).is_some() {
-                        return Err(self.error(param.offset, "invalid or shadowed type parameter"));
+                let mut signatures = signatures.to_vec();
+                if !self.at(TokenKind::LParen) {
+                    loop {
+                        let param = self.parameter()?;
+                        if param.moves
+                            || param.name == "_"
+                            || generics.insert(param.name, param.ty).is_some()
+                        {
+                            return Err(
+                                self.error(param.offset, "invalid or shadowed type parameter")
+                            );
+                        }
+                        if self.at(TokenKind::LBrace) {
+                            break;
+                        }
+                        self.expect(TokenKind::Comma)?;
+                        if self.at(TokenKind::LParen) || self.at(TokenKind::LBrace) {
+                            break;
+                        }
                     }
                 }
-                let nested = self.rule_cases(&generics, depth + 1)?;
+                if self.eat(TokenKind::LParen)? {
+                    let inputs =
+                        self.sequence(TokenKind::RParen, |p| p.expression(0, Context::Type))?;
+                    self.expect(TokenKind::Arrow)?;
+                    let results = if self.eat(TokenKind::LParen)? {
+                        self.sequence(TokenKind::RParen, |p| p.expression(0, Context::Type))?
+                    } else {
+                        vec![self.expression(0, Context::Type)?]
+                    };
+                    signatures.push(RuleTypes { inputs, results });
+                }
+                self.expect(TokenKind::LBrace)?;
+                let nested = self.rule_cases(&generics, &signatures, depth + 1)?;
                 if nested.is_empty() {
                     return Err(self.error(at, "where requires cases"));
                 }
@@ -362,16 +395,38 @@ impl<'a> Parser<'a> {
             if self.at(TokenKind::Lt) {
                 return Err(self.error(at, "declare type parameters in a where block"));
             }
-            let pattern = if self.eat(TokenKind::LParen)? {
-                Node {
-                    offset: at,
-                    kind: Kind::List(
-                        self.sequence(TokenKind::RParen, |p| p.expression(0, Context::Rewrite))?,
-                    ),
+            self.expect(TokenKind::LParen)?;
+            let mut args = self.sequence(TokenKind::RParen, |p| p.expression(0, Context::Rule))?;
+            for signature in signatures {
+                if signature.inputs.len() != args.len() {
+                    return Err(self.error(at, "where signature must match case input arity"));
                 }
-            } else {
-                self.expression(0, Context::Rewrite)?
+                args = args
+                    .into_iter()
+                    .zip(&signature.inputs)
+                    .map(|(arg, ty)| {
+                        if matches!(&ty.kind, Kind::Name(name) if name == "_") {
+                            arg
+                        } else {
+                            Node {
+                                offset: arg.offset,
+                                kind: Kind::Typed(Box::new(arg), vec![ty.clone()]),
+                            }
+                        }
+                    })
+                    .collect();
+            }
+            let pattern = Node {
+                offset: at,
+                kind: Kind::List(args),
             };
+            let mut pattern = self.annotation(pattern, 0)?;
+            for signature in signatures {
+                pattern = Node {
+                    offset: at,
+                    kind: Kind::Typed(Box::new(pattern), signature.results.clone()),
+                };
+            }
             let mut fields = BTreeMap::from([("match".into(), pattern)]);
             if !inherited.is_empty() {
                 fields.insert(
@@ -386,7 +441,7 @@ impl<'a> Parser<'a> {
                 fields.insert("when".into(), self.expression(0, Context::Condition)?);
             }
             self.expect(TokenKind::FatArrow)?;
-            fields.insert("emit".into(), self.expression(0, Context::Rewrite)?);
+            fields.insert("emit".into(), self.expression(0, Context::Rule)?);
             self.expect(TokenKind::Semi)?;
             cases.push(Node {
                 offset: at,
@@ -431,31 +486,37 @@ impl<'a> Parser<'a> {
                 )]),
             });
         }
-        // Anonymous optimizer rules share signatures and expression parsing with
-        // named target rules, but do not introduce callable symbols.
-        if declaration_name == "rule" && (self.at(TokenKind::Lt) || self.at(TokenKind::LParen)) {
-            if self.at(TokenKind::Lt) {
-                return Err(self.error(offset, "declare type parameters in a where block"));
+        let name = self.name()?;
+        // Optimizer groups contain cases; named cross-IR rules contain fields
+        // such as `match` and `emit`. Both may use an unqualified name.
+        if declaration_name == "rule"
+            && (self.at(TokenKind::ColonColon)
+                || (self.at(TokenKind::LBrace)
+                    && matches!(
+                        self.lexer.clone().next()?.kind,
+                        TokenKind::Name("case" | "where") | TokenKind::RBrace
+                    )))
+        {
+            let mut operation = name;
+            while self.eat(TokenKind::ColonColon)? {
+                operation.push_str("::");
+                operation.push_str(&self.name()?);
             }
-            let signature = self.signature(None, false, true)?;
             self.expect(TokenKind::LBrace)?;
-            let cases = self.rule_cases(&BTreeMap::new(), 0)?;
-            let mut group_fields = BTreeMap::new();
-            group_fields.insert(
-                "cases".into(),
-                Node {
-                    offset,
-                    kind: Kind::List(cases),
-                },
-            );
+            let cases = self.rule_cases(&BTreeMap::new(), &[], 0)?;
             return Ok(Decl {
                 offset,
                 name: String::new(),
-                kind: DeclKind::Rule(signature),
-                fields: group_fields,
+                kind: DeclKind::Optimizer { operation },
+                fields: BTreeMap::from([(
+                    "cases".into(),
+                    Node {
+                        offset,
+                        kind: Kind::List(cases),
+                    },
+                )]),
             });
         }
-        let name = self.name()?;
         let mut fields = BTreeMap::new();
         let kind = match kind {
             TokenKind::Name("rule" | "rewrite")
@@ -754,7 +815,7 @@ impl<'a> Parser<'a> {
     }
 
     fn expression(&mut self, depth: u8, context: Context) -> Result<Node, Error> {
-        if context.is_expr() || context == Context::Rewrite {
+        if context.is_expr() || matches!(context, Context::Rewrite | Context::Rule) {
             self.binary(depth, 0, context)
         } else {
             self.union(depth, context)
@@ -808,7 +869,8 @@ impl<'a> Parser<'a> {
         let offset = self.token.offset;
         let kind = match self.token.kind {
             TokenKind::Bang | TokenKind::Minus
-                if context != Context::Rewrite || self.token.kind == TokenKind::Bang =>
+                if !matches!(context, Context::Rewrite | Context::Rule)
+                    || self.token.kind == TokenKind::Bang =>
             {
                 let op = self.token.kind.spelling();
                 self.bump()?;
@@ -863,39 +925,40 @@ impl<'a> Parser<'a> {
                     return Err(self.error(offset, ":: requires a type or namespace path"));
                 };
                 let name = format!("{owner}::{}", self.name()?);
-                let kind = if !context.is_expr() && self.eat(TokenKind::Lt)? {
-                    let types = self.sequence(TokenKind::Gt, |p| {
-                        p.expression(depth + postfix, Context::Type)
-                    })?;
-                    if context == Context::Type {
-                        Kind::Call(name, types)
-                    } else {
-                        self.expect(TokenKind::LParen)?;
-                        Kind::TypedCall(
+                let kind =
+                    if !context.is_expr() && context != Context::Rule && self.eat(TokenKind::Lt)? {
+                        let types = self.sequence(TokenKind::Gt, |p| {
+                            p.expression(depth + postfix, Context::Type)
+                        })?;
+                        if context == Context::Type {
+                            Kind::Call(name, types)
+                        } else {
+                            self.expect(TokenKind::LParen)?;
+                            Kind::TypedCall(
+                                name,
+                                types,
+                                self.sequence(TokenKind::RParen, |p| {
+                                    p.expression(depth + postfix, context)
+                                })?,
+                            )
+                        }
+                    } else if self.eat(TokenKind::LParen)? {
+                        Kind::Call(
                             name,
-                            types,
                             self.sequence(TokenKind::RParen, |p| {
                                 p.expression(depth + postfix, context)
                             })?,
                         )
-                    }
-                } else if self.eat(TokenKind::LParen)? {
-                    Kind::Call(
-                        name,
-                        self.sequence(TokenKind::RParen, |p| {
-                            p.expression(depth + postfix, context)
-                        })?,
-                    )
-                } else if !matches!(context, Context::Type | Context::Condition)
-                    && self.at(TokenKind::LBrace)
-                {
-                    Kind::Object(
-                        name,
-                        self.fields(depth + postfix, context, Fields::Literal)?,
-                    )
-                } else {
-                    Kind::Name(name)
-                };
+                    } else if !matches!(context, Context::Type | Context::Condition)
+                        && self.at(TokenKind::LBrace)
+                    {
+                        Kind::Object(
+                            name,
+                            self.fields(depth + postfix, context, Fields::Literal)?,
+                        )
+                    } else {
+                        Kind::Name(name)
+                    };
                 node = Node { offset, kind };
             } else {
                 self.expect(TokenKind::Dot)?;
@@ -911,7 +974,43 @@ impl<'a> Parser<'a> {
                 node = Node { offset, kind };
             }
         }
-        Ok(node)
+        if context == Context::Rule {
+            self.annotation(node, depth)
+        } else {
+            Ok(node)
+        }
+    }
+
+    fn annotation(&mut self, node: Node, depth: u8) -> Result<Node, Error> {
+        let types = if self.eat(TokenKind::Colon)? {
+            if !matches!(node.kind, Kind::Name(_)) {
+                return Err(self.error(
+                    node.offset,
+                    "value annotations require a binding; use -> for operation results",
+                ));
+            }
+            vec![self.expression(depth + 1, Context::Type)?]
+        } else if self.eat(TokenKind::Arrow)? {
+            if !matches!(node.kind, Kind::Call(..) | Kind::List(_)) {
+                return Err(self.error(
+                    node.offset,
+                    "result annotations follow an operation or case inputs",
+                ));
+            }
+            if self.eat(TokenKind::LParen)? {
+                self.sequence(TokenKind::RParen, |p| {
+                    p.expression(depth + 1, Context::Type)
+                })?
+            } else {
+                vec![self.expression(depth + 1, Context::Type)?]
+            }
+        } else {
+            return Ok(node);
+        };
+        Ok(Node {
+            offset: node.offset,
+            kind: Kind::Typed(Box::new(node), types),
+        })
     }
 
     fn binary_operator(&self) -> Option<(&'static str, u8)> {
@@ -992,7 +1091,7 @@ impl<'a> Parser<'a> {
                 };
                 let value = i128::from_str_radix(digits, radix)
                     .map_err(|_| self.error(offset, "invalid or out-of-range integer literal"))?;
-                if context.is_expr() || context == Context::Rewrite {
+                if context.is_expr() || matches!(context, Context::Rewrite | Context::Rule) {
                     Kind::Integer(value)
                 } else {
                     match u32::try_from(value) {
@@ -1003,7 +1102,7 @@ impl<'a> Parser<'a> {
             }
             word if word.name().is_some() => {
                 let name = word.name().unwrap().to_owned();
-                if !context.is_expr() && self.eat(TokenKind::Lt)? {
+                if !context.is_expr() && context != Context::Rule && self.eat(TokenKind::Lt)? {
                     let types =
                         self.sequence(TokenKind::Gt, |p| p.expression(depth + 1, Context::Type))?;
                     if context != Context::Type {
@@ -1017,7 +1116,9 @@ impl<'a> Parser<'a> {
                         Kind::Call(name, types)
                     }
                 } else if self.eat(TokenKind::LParen)? {
-                    let arguments = if context.is_expr() || context == Context::Rewrite {
+                    let arguments = if context.is_expr()
+                        || matches!(context, Context::Rewrite | Context::Rule)
+                    {
                         context
                     } else {
                         Context::Value

@@ -182,6 +182,12 @@ impl Checker<'_> {
                     self.node(arg, None, locals)?;
                 }
             }
+            Kind::Typed(value, types) => {
+                self.node(value, space, locals)?;
+                for ty in types {
+                    self.node(ty, Some(Space::Type), locals)?;
+                }
+            }
             Kind::Method(receiver, name, args) => {
                 if let Kind::Name(owner) = &receiver.kind
                     && !locals.contains(owner)

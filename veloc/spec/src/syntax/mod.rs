@@ -25,6 +25,8 @@ pub enum Kind {
     Call(String, Vec<Node>),
     /// An operation call with explicit result type arguments.
     TypedCall(String, Vec<Node>, Vec<Node>),
+    /// A value annotation (`x: T`) or operation result annotation (`op(x) -> T`).
+    Typed(Box<Node>, Vec<Node>),
     Member(Box<Node>, String),
     Method(Box<Node>, String, Vec<Node>),
     Object(String, BTreeMap<String, Node>),
@@ -118,6 +120,10 @@ pub enum DeclKind {
     },
     Op(Signature),
     Rule(Signature),
+    /// Optimizer cases grouped by operation, without a root alias.
+    Optimizer {
+        operation: String,
+    },
     /// Anonymous selection group with an explicit root parameter.
     Select(Signature),
     /// Callable IR rewrite; never participates in instruction matching implicitly.
@@ -137,6 +143,7 @@ impl Decl {
             DeclKind::Constant { .. } => "const",
             DeclKind::Op(_) => "op",
             DeclKind::Rule(_) => "rule",
+            DeclKind::Optimizer { .. } => "rule",
             DeclKind::Select(_) => "select",
             DeclKind::Rewrite(_) => "rewrite",
             DeclKind::Fields(name) => name,
@@ -215,7 +222,7 @@ impl Decl {
             | DeclKind::Rule(signature)
             | DeclKind::Select(signature)
             | DeclKind::Rewrite(signature) => signature.relocate(base),
-            DeclKind::Fields(_) => {}
+            DeclKind::Fields(_) | DeclKind::Optimizer { .. } => {}
         }
     }
 }
@@ -267,6 +274,12 @@ impl Node {
             Kind::TypedCall(_, types, args) => {
                 for node in types.iter_mut().chain(args) {
                     node.relocate(base);
+                }
+            }
+            Kind::Typed(value, types) => {
+                value.relocate(base);
+                for ty in types {
+                    ty.relocate(base);
                 }
             }
             Kind::Object(_, fields) | Kind::Record(fields) => {

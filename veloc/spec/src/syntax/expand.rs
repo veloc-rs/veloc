@@ -241,6 +241,9 @@ fn substitute_decl(
                 node(source, arg, bindings)?;
             }
         }
+        DeclKind::Optimizer { operation } => {
+            substitute_name(source, operation, decl.offset, bindings)?;
+        }
         DeclKind::Fields(_) => {}
         DeclKind::Template { .. } => unreachable!("nested templates rejected by parser"),
     }
@@ -317,6 +320,12 @@ pub(crate) fn children<E>(
         Kind::TypedCall(_, types, args) => {
             for item in types.iter_mut().chain(args) {
                 visit(item)?;
+            }
+        }
+        Kind::Typed(value, types) => {
+            visit(value)?;
+            for ty in types {
+                visit(ty)?;
             }
         }
         Kind::Binary(_, lhs, rhs) => {

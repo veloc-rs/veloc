@@ -466,19 +466,19 @@ fn control_rules_reject_new_edges_and_invalid_selection_contracts() {
     let definitions = common::load(root.join("module.spec")).unwrap();
     for (replacement, diagnostic) in [
         (
-            "mir::Jump(c)",
+            "Jump(c)",
             "replacement successors must be captured root edges",
         ),
         (
-            "mir::Br(c, a, a)",
+            "Br(c, a, a)",
             "branch replacements may only preserve or swap",
         ),
         (
-            "mir::Jump(successor(a))",
+            "Jump(successor(a))",
             "replacement successors must be captured root edges",
         ),
     ] {
-        let text = format!("rule(root: mir::Br) {{ case root(c, a, b) => {replacement}; }}");
+        let text = format!("rule Br {{ case (c, a, b) => {replacement}; }}");
         let rules = common::compiler::source(&text).unwrap();
         let error = rules
             .generate(

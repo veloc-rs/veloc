@@ -2,19 +2,18 @@
 use super::{equivalence, expression, instruction};
 use crate::{
     Definitions, Error, Source, SourceError,
-    syntax::{DeclKind, Kind, Node, Results},
+    syntax::{DeclKind, Kind, Node},
+    types::TypeSet,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// A normalized case. An explicit result type describes a value equality;
-/// otherwise the replacement preserves the matched instruction's SSA results.
+/// One normalized rule, independent of its execution host.
 pub(super) struct Case<'a> {
     pub offset: usize,
-    pub root: &'a str,
     pub operation: &'a str,
     pub args: &'a [Node],
-    pub result: Option<&'a Node>,
-    pub generics: Option<&'a BTreeMap<String, Node>>,
+    pub results: Vec<&'a [Node]>,
+    pub generics: BTreeMap<String, TypeSet>,
     pub guard: Option<&'a Node>,
     pub replacement: &'a Node,
 }
@@ -38,8 +37,9 @@ pub(crate) fn generate(
             "invalid optimizer Rust binding",
         )));
     }
-    let cases = cases(source).map_err(|e| source.locate(e))?;
-    let rules = expression::compile(source, defs, dialect, &cases).map_err(|e| source.locate(e))?;
+    let cases = cases(source, defs).map_err(|e| source.locate(e))?;
+    let (rules, instructions) =
+        expression::compile(source, defs, dialect, &cases).map_err(|e| source.locate(e))?;
     let opcode = format!("{rust}::Opcode");
     let types = format!("{rust}::Type");
     Ok(Output {
@@ -48,36 +48,70 @@ pub(crate) fn generate(
             + &expression::emit_folds(defs, &rules, &opcode, &types),
         equivalences: equivalence::generate(defs, &rules, &opcode)
             + &expression::emit_plans(defs, &rules, &opcode, &types),
-        rewrites: instruction::generate(source, defs, dialect, rust, &cases)?,
+        rewrites: instruction::generate(source, defs, dialect, rust, &instructions)?,
     })
 }
 
-fn cases(source: &Source) -> Result<Vec<Case<'_>>, Error> {
+pub(super) fn annotation(node: &Node) -> (&Node, Option<&[Node]>) {
+    match &node.kind {
+        Kind::Typed(value, types) => (value, Some(types)),
+        _ => (node, None),
+    }
+}
+
+/// Both hosts resolve the same logical operation and operand order. A capability
+/// mismatch may select another host; an unknown operation or wrong arity cannot.
+pub(super) fn operation<'a>(
+    source: &str,
+    defs: &'a Definitions,
+    dialect: &str,
+    path: &str,
+    arity: usize,
+    at: usize,
+) -> Result<&'a crate::model::Op, Error> {
+    let op = lookup(defs, dialect, path)
+        .ok_or_else(|| Error::at(source, at, "unknown rule operation"))?;
+    if op.params.len() != arity {
+        return Err(Error::at(
+            source,
+            at,
+            "rule operation operand arity mismatch",
+        ));
+    }
+    Ok(op)
+}
+
+pub(super) fn lookup<'a>(
+    defs: &'a Definitions,
+    dialect: &str,
+    path: &str,
+) -> Option<&'a crate::model::Op> {
+    let name = if path.contains("::") {
+        path.strip_prefix(dialect)?.strip_prefix("::")?
+    } else {
+        path
+    };
+    defs.ops.iter().find(|op| op.name == name)
+}
+
+fn cases<'a>(source: &'a Source, defs: &Definitions) -> Result<Vec<Case<'a>>, Error> {
+    let aliases: BTreeMap<_, _> = source
+        .declarations()
+        .iter()
+        .filter_map(|decl| {
+            if let DeclKind::TypeSet(value) = &decl.kind {
+                Some((decl.name.clone(), value.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
     let mut out = Vec::new();
     for decl in source.declarations() {
-        let DeclKind::Rule(sig) = &decl.kind else {
+        let DeclKind::Optimizer { operation } = &decl.kind else {
             continue;
         };
         let fail = |at, message| Error::at(source.text(), at, message);
-        let [root] = sig.params.as_slice() else {
-            return Err(fail(decl.offset, "optimizer rule requires one root"));
-        };
-        if root.moves
-            || !sig.generics.is_empty()
-            || !matches!(&sig.results, Results::Fixed(r) if r.is_empty())
-            || decl.fields.keys().any(|k| k != "cases")
-        {
-            return Err(fail(
-                decl.offset,
-                "optimizer groups declare only a root and cases",
-            ));
-        }
-        let Kind::Name(operation) = &root.ty.kind else {
-            return Err(fail(
-                root.ty.offset,
-                "declare the root operation without type arguments",
-            ));
-        };
         let Some(Node {
             kind: Kind::List(cases),
             ..
@@ -90,56 +124,70 @@ fn cases(source: &Source) -> Result<Vec<Case<'_>>, Error> {
         }
         for case in cases {
             let Kind::Record(fields) = &case.kind else {
-                return Err(fail(case.offset, "expected case"));
+                unreachable!("parsed case");
             };
-            if fields
-                .keys()
-                .any(|k| !matches!(k.as_str(), "match" | "emit" | "when" | "generics"))
-            {
-                return Err(fail(case.offset, "unknown optimizer case field"));
+            let mut pattern = &fields["match"];
+            let mut results = Vec::new();
+            while let Kind::Typed(value, types) = &pattern.kind {
+                results.push(types.as_slice());
+                pattern = value;
             }
-            let pattern = fields
-                .get("match")
-                .ok_or_else(|| fail(case.offset, "expected root pattern"))?;
-            let (args, result) = match &pattern.kind {
-                Kind::Call(name, args) if name == &root.name => (args.as_slice(), None),
-                Kind::TypedCall(name, types, args) if name == &root.name && types.len() == 1 => {
-                    (args.as_slice(), Some(&types[0]))
-                }
-                _ => {
-                    return Err(fail(
-                        pattern.offset,
-                        "expected the declared root: root(...) or root<T>(...)",
-                    ));
-                }
+            let Kind::List(args) = &pattern.kind else {
+                unreachable!("parsed case inputs");
             };
-            let generics = match fields.get("generics") {
-                Some(Node {
-                    kind: Kind::Record(params),
-                    ..
-                }) if result.is_some() => Some(params),
-                Some(params) => {
-                    return Err(fail(
-                        params.offset,
-                        "type parameters require a value pattern: root<T>(...)",
-                    ));
+            let mut generics = BTreeMap::new();
+            if let Some(Node {
+                kind: Kind::Record(params),
+                ..
+            }) = fields.get("generics")
+            {
+                for (name, bound) in params {
+                    let domain = defs.types.set(
+                        source.text(),
+                        &expand_domain(source.text(), bound, &aliases, &mut BTreeSet::new())?,
+                    )?;
+                    if domain.is_empty() {
+                        return Err(fail(bound.offset, "empty type parameter domain"));
+                    }
+                    generics.insert(name.clone(), domain);
                 }
-                None => None,
-            };
-            let replacement = fields
-                .get("emit")
-                .ok_or_else(|| fail(case.offset, "expected replacement"))?;
+            }
             out.push(Case {
                 offset: case.offset,
-                root: &root.name,
                 operation,
                 args,
-                result,
+                results,
                 generics,
                 guard: fields.get("when"),
-                replacement,
+                replacement: &fields["emit"],
             });
         }
     }
     Ok(out)
+}
+
+fn expand_domain(
+    source: &str,
+    node: &Node,
+    aliases: &BTreeMap<String, Node>,
+    active: &mut BTreeSet<String>,
+) -> Result<Node, Error> {
+    if let Kind::Name(name) = &node.kind
+        && let Some(alias) = aliases.get(name)
+    {
+        if !active.insert(name.clone()) {
+            return Err(Error::at(source, node.offset, "cyclic type-set alias"));
+        }
+        let result = expand_domain(source, alias, aliases, active);
+        active.remove(name);
+        return result;
+    }
+    let mut result = node.clone();
+    if let Kind::Union(parts) | Kind::Intersection(parts) | Kind::Call(_, parts) = &mut result.kind
+    {
+        for part in parts {
+            *part = expand_domain(source, part, aliases, active)?;
+        }
+    }
+    Ok(result)
 }
