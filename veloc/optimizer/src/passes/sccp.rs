@@ -1,13 +1,13 @@
 //! Sparse conditional constant propagation. Values and executable edges reach
 //! a joint fixed point before any IR is edited; unreachable predecessors never
 //! contribute to a block parameter. Work follows SSA uses, not whole-CFG rounds.
-use crate::evaluate::{Fact, Successors};
+use crate::evaluate::{Fact, Fold, Successors};
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile, evaluate};
 use cranelift_entity::SecondaryMap;
 use std::collections::VecDeque;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::function::EdgeRef;
-use veloc_mir::{Block, FuncBody, Inst, Value, ValueDef};
+use veloc_mir::{Block, FuncBody, Inst, Opcode, Value, ValueDef};
 
 pub struct SccpPass;
 
@@ -84,12 +84,32 @@ impl Solver {
             return;
         }
         let results = dfg.inst_results(inst);
-        if results.iter().all(|&v| self.facts[v] == Fact::Varying) {
+        self.evaluations += 1;
+        let args = dfg.operands(inst);
+        if let Some(folds) = evaluate::fold_inst(dfg, inst, |v| self.fact(f, v).constant()) {
+            for (&value, fold) in results.iter().zip(folds) {
+                let fact = match fold {
+                    Fold::Operand(i) => self.fact(f, args[i]),
+                    Fold::Constant(c) => Fact::Constant(c),
+                };
+                self.update(f, value, fact);
+            }
             return;
         }
-        self.evaluations += 1;
-        let evaluated = evaluate::evaluate_inst(dfg, inst, |v| self.fact(f, v));
-        for (&value, fact) in results.iter().zip(evaluated) {
+        let fact = if !evaluate::can_fold(view.opcode()) {
+            // Unsupported/effectful operations cannot wait on unknown inputs.
+            Fact::Varying
+        } else if view.opcode() == Opcode::Select {
+            // Join the arms before the general Unknown check: one pending arm
+            // must not prevent a varying condition from propagating the other.
+            self.fact(f, args[0])
+                .select(self.fact(f, args[1]), self.fact(f, args[2]))
+        } else if args.iter().any(|&v| self.fact(f, v) == Fact::Unknown) {
+            Fact::Unknown
+        } else {
+            Fact::Varying
+        };
+        for &value in results {
             self.update(f, value, fact);
         }
     }

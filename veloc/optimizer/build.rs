@@ -12,7 +12,7 @@ fn main() {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let output = source
-        .generate(&[Emit::Evaluation, Emit::Semantics], Options::default())
+        .generate(&[Emit::Semantics], Options::default())
         .expect("compile optimizer definitions");
     let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
     let mut files = output.write(&dir).expect("write optimizer artifacts");

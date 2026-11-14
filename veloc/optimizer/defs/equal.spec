@@ -6,6 +6,8 @@ import "../../defs/type_sets.spec";
 // Arithmetic is modular; -1 denotes all bits set at the integer width.
 // Factoring and constant reassociation avoid enumerating arbitrary permutations.
 // Direct operand/constant reductions also feed the shared local evaluator.
+// Identity, absorbing and idempotence rules are explicit here; commutative
+// operations automatically match both operand orders.
 
 // Conversion and boolean equalities explored by the e-graph.
 // Canonical cases also permit equal-cost changes toward the chosen normal form.
@@ -35,6 +37,7 @@ rule(root: mir::Select) {
 
 rule(root: mir::IAdd) {
     where T: ScalarInteger {
+        case root<T>(x, 0) => x;
         case root<T>(mir::ISub(x, y), y) => x;
         case root<T>(x, mir::IXor(x, -1)) => -1;
         case root<T>(mir::IAdd(x, y), z) if is_const(y) => mir::IAdd(x, mir::IAdd(y, z));
@@ -55,12 +58,22 @@ rule(root: mir::ISub) {
 
 rule(root: mir::IMul) {
     where T: ScalarInteger {
+        case root<T>(x, 1) => x;
+        case root<T>(x, 0) => 0;
         case root<T>(mir::IMul(x, y), z) if is_const(y) => mir::IMul(x, mir::IMul(y, z));
     }
 }
 
 rule(root: mir::IAnd) {
+    case root<Type::BOOL>(x, true) => x;
+    case root<Type::BOOL>(x, false) => false;
+    case root<Type::BOOL>(x, x) => x;
+
     where T: ScalarInteger {
+        case root<T>(x, -1) => x;
+        case root<T>(x, 0) => 0;
+        case root<T>(x, x) => x;
+
         // A contiguous interval [low, high] becomes an unsigned distance check.
         case root<T>(mir::ExtendU<T>(mir::Icmp<Type::BOOL>(IntCC::GeS, x, low)),
               mir::ExtendU<T>(mir::Icmp<Type::BOOL>(IntCC::LeS, x, high)))
@@ -96,7 +109,14 @@ rule(root: mir::IAnd) {
 }
 
 rule(root: mir::IOr) {
+    case root<Type::BOOL>(x, false) => x;
+    case root<Type::BOOL>(x, true) => true;
+    case root<Type::BOOL>(x, x) => x;
+
     where T: ScalarInteger {
+        case root<T>(x, 0) => x;
+        case root<T>(x, -1) => -1;
+        case root<T>(x, x) => x;
         case root<T>(x, mir::IXor(x, -1)) => -1;
         case root<T>(x, mir::IXor(x, y)) => mir::IOr(x, y);
         case root<T>(mir::IOr(x, y), z) if is_const(y) => mir::IOr(x, mir::IOr(y, z));
@@ -111,7 +131,10 @@ rule(root: mir::IOr) {
 }
 
 rule(root: mir::IXor) {
+    case root<Type::BOOL>(x, false) => x;
+
     where T: ScalarInteger {
+        case root<T>(x, 0) => x;
         case root<T>(x, x) => 0;
         case root<T>(mir::IXor(x, y), y) => x;
         case root<T>(mir::IXor(x, y), z) if is_const(y) => mir::IXor(x, mir::IXor(y, z));

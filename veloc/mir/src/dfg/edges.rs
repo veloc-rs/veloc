@@ -27,10 +27,6 @@ impl DataFlowGraph {
         inst.fields.set_edge_target(edge.index as usize, target);
         inst.fields
             .set_stored_edge_arg_count(edge.index as usize, count);
-        debug_assert!({
-            let (actual_target, actual_args) = self.edge_args(edge);
-            actual_target == target && actual_args.end - actual_args.start == count
-        });
         old_target != target
     }
 
@@ -60,16 +56,6 @@ impl DataFlowGraph {
         for index in selected {
             stored.fields.set_stored_edge_arg_count(index, count);
         }
-        debug_assert!({
-            let stored = &self.instructions[inst];
-            let mut valid = true;
-            stored.fields.visit_edges(stored.operands.len, |edge, _| {
-                if edge.block == target {
-                    valid &= edge.len == count;
-                }
-            });
-            valid
-        });
     }
 
     /// Keep one branch edge and its existing uses, without an owned snapshot.

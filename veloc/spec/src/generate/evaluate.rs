@@ -3,7 +3,7 @@
 //! Only legal scalar signatures representable by MIR Constant are emitted. Widths,
 //! operand references and result layouts are resolved here, not during folding.
 
-use std::fmt::Write;
+use std::{collections::BTreeMap, fmt::Write};
 
 use veloc_semantics::{BvOp, ComparisonRef, Conversion, IntPredicate, Sort, Step, TypeRef};
 
@@ -27,12 +27,22 @@ struct Case {
 }
 
 impl Plan {
-    /// Opcodes with at least one representable scalar evaluation case.
-    pub(crate) fn supported_opcodes(&self) -> impl Iterator<Item = usize> + '_ {
+    /// Scalar evaluation bodies to append after each opcode's local rules.
+    pub(crate) fn folding_bodies(
+        &self,
+        defs: &Definitions,
+        types: &str,
+    ) -> BTreeMap<String, String> {
         self.operations
             .iter()
             .filter(|op| !op.cases.is_empty())
-            .map(|op| op.opcode)
+            .map(|op| {
+                (
+                    defs.ops[op.opcode].name.clone(),
+                    emit_operation(defs, op, types, Output::Folds),
+                )
+            })
+            .collect()
     }
 
     pub(crate) fn prepare(defs: &Definitions) -> Self {
@@ -77,89 +87,98 @@ impl Plan {
 pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
     let mut code = String::from(
         "// @generated from checked operation semantics.\n\
-         /// Constant-propagation lattice. Unknown means no information has arrived yet,\n\
-         /// not an IR undef value. Facts never serve as operand identities.\n\
-         #[derive(Clone, Copy, Default, PartialEq, Eq)]\n\
-         pub(crate) enum Fact {\n\
-             #[default]\n\
-             Unknown,\n\
-             Constant(ScalarConst),\n\
-             Varying,\n\
-         }\n\
          #[allow(unused_variables, unreachable_patterns)]\n\
          pub(crate) fn evaluate(fields: &veloc_mir::InstFields, args: &[ScalarConst], results: &[Type]) -> Option<smallvec::SmallVec<[ScalarConst; 2]>> {\n\
          match fields.opcode() {\n",
     );
-    for prepared in &plan.operations {
-        let op = &defs.ops[prepared.opcode];
-        let sem = op.semantics.as_ref().expect("prepared semantic operation");
-        let mut arms = String::new();
-        for case in &prepared.cases {
-            let instance = &case.instance;
-            let variants = &case.variants;
-            let scalars = case
-                .scalars
-                .iter()
-                .map(|&i| &defs.types.scalars[i])
-                .collect::<Vec<_>>();
-            let inputs = sem.inputs as usize;
-            let args = variants[..inputs]
-                .iter()
-                .enumerate()
-                .map(|(i, _)| format!("a{i}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let results = scalars[inputs..]
-                .iter()
-                .map(|s| format!("Type::{}", s.exact()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let guard = scalars[..inputs]
-                .iter()
-                .enumerate()
-                .map(|(i, s)| format!("a{i}.ty() == Type::{}", s.exact()))
-                .collect::<Vec<_>>()
-                .join(" && ");
-            let guard = if guard.is_empty() {
-                String::new()
-            } else {
-                format!(" if {guard}")
-            };
-            writeln!(arms, "([{args}], [{results}]){guard} => {{").unwrap();
-            emit(sem, instance, &variants[inputs..], &mut arms);
-            arms.push_str("},\n");
-        }
-        if !arms.is_empty() {
-            let inputs = sem.inputs as usize;
-            let results = prepared.cases[0].instance.kinds.len() - inputs;
-            let constraints = applicability(op);
-            let bindings = sem
-                .properties
-                .iter()
-                .enumerate()
-                .map(|(i, name)| (name.clone(), format!("p{i}")))
-                .collect();
-            let fields = if sem.properties.is_empty() {
-                String::new()
-            } else {
-                crate::storage::compact::bind_attributes(
-                    op,
-                    &defs.storage,
-                    &bindings,
-                    "fields",
-                    "return None;",
-                )
-            };
-            writeln!(
-                code,
-                "Opcode::{} => {{\nassert_eq!(args.len(), {inputs}, \"semantic operand count\");\nassert_eq!(results.len(), {results}, \"semantic result count\");\n{fields}{constraints}match (args, results) {{\n{arms}_ => None,\n}}\n}},",
-                op.name,
-            )
-            .unwrap();
-        }
+    for prepared in plan.operations.iter().filter(|op| !op.cases.is_empty()) {
+        writeln!(
+            code,
+            "Opcode::{} => {{\n{}\n}},",
+            defs.ops[prepared.opcode].name,
+            emit_operation(defs, prepared, "Type", Output::Constants),
+        )
+        .unwrap();
     }
     code.push_str("_ => None,\n}\n}\n");
-    code.push_str(&crate::model::control::generate(defs));
+    code
+}
+
+#[derive(Clone, Copy)]
+enum Output {
+    Constants,
+    Folds,
+}
+
+fn emit_operation(defs: &Definitions, prepared: &Operation, types: &str, output: Output) -> String {
+    let op = &defs.ops[prepared.opcode];
+    let sem = op.semantics.as_ref().expect("prepared semantic operation");
+    let inputs = sem.inputs as usize;
+    let results = prepared.cases[0].instance.kinds.len() - inputs;
+    let mut code = format!(
+        "assert_eq!(args.len(), {inputs}, \"semantic operand count\");\nassert_eq!(results.len(), {results}, \"semantic result count\");\n"
+    );
+    if matches!(output, Output::Folds) {
+        let constants = (0..inputs)
+            .map(|i| format!("constant(args[{i}])?"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(code, "let args: &[ScalarConst] = &[{constants}];").unwrap();
+    }
+    if !sem.properties.is_empty() {
+        let bindings = sem
+            .properties
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), format!("p{i}")))
+            .collect();
+        code.push_str(&crate::storage::compact::bind_attributes(
+            op,
+            &defs.storage,
+            &bindings,
+            "fields",
+            "return None;",
+        ));
+    }
+    code.push_str(&applicability(op));
+    code.push_str("match (args, results) {\n");
+    for case in &prepared.cases {
+        let scalars = case
+            .scalars
+            .iter()
+            .map(|&i| &defs.types.scalars[i])
+            .collect::<Vec<_>>();
+        let args = (0..inputs)
+            .map(|i| format!("a{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let results = scalars[inputs..]
+            .iter()
+            .map(|s| format!("{types}::{}", s.exact()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let guard = scalars[..inputs]
+            .iter()
+            .enumerate()
+            .map(|(i, s)| format!("a{i}.ty() == {types}::{}", s.exact()))
+            .collect::<Vec<_>>()
+            .join(" && ");
+        let guard = if guard.is_empty() {
+            String::new()
+        } else {
+            format!(" if {guard}")
+        };
+        writeln!(code, "([{args}], [{results}]){guard} => {{").unwrap();
+        emit(
+            sem,
+            &case.instance,
+            &case.variants[inputs..],
+            output,
+            &mut code,
+        );
+        code.push_str("},\n");
+    }
+    code.push_str("_ => None,\n}\n");
     code
 }
 
@@ -209,7 +228,13 @@ fn mask(sort: Sort) -> u128 {
     veloc_semantics::Width::new(width(sort)).unwrap().mask()
 }
 
-fn emit(sem: &Semantic, instance: &Instance, results: &[String], code: &mut String) {
+fn emit(
+    sem: &Semantic,
+    instance: &Instance,
+    results: &[String],
+    output: Output,
+    code: &mut String,
+) {
     let inputs = sem.inputs as usize;
     let sort = |ty: TypeRef| match ty {
         TypeRef::Input(i) => instance.sorts[i as usize],
@@ -282,13 +307,17 @@ fn emit(sem: &Semantic, instance: &Instance, results: &[String], code: &mut Stri
         .iter()
         .zip(results)
         .map(|(i, variant)| {
-            if variant == "Bool" {
+            let value = if variant == "Bool" {
                 format!("ScalarConst::from(s{i} != 0)")
             } else {
                 format!(
                     "ScalarConst::from(s{i} as {})",
                     variant.to_ascii_lowercase()
                 )
+            };
+            match output {
+                Output::Constants => value,
+                Output::Folds => format!("crate::evaluate::Fold::Constant({value})"),
             }
         })
         .collect::<Vec<_>>()

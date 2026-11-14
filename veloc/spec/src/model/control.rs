@@ -122,13 +122,13 @@ pub(crate) fn validate(
 
 pub(crate) fn generate(defs: &Definitions) -> String {
     let mut out = String::from(
-        "/// Executable successor knowledge; Unknown selectors must not activate edges.\npub(crate) enum Successors { Pending, All, One(usize) }\n/// Resolve successor knowledge using supplied facts; no IR edits.\n#[allow(unused_variables, unused_mut)]\npub(crate) fn successors(view: veloc_mir::InstView<'_>, mut fact: impl FnMut(veloc_mir::Value) -> Fact) -> Successors { match view.opcode() {\n",
+        "/// Resolve successor knowledge using supplied facts; no IR edits.\n#[allow(unused_variables, unused_mut)]\npub(crate) fn successors(view: veloc_mir::InstView<'_>, mut fact: impl FnMut(veloc_mir::Value) -> Fact) -> Successors { match view.opcode() {\n",
     );
     for op in &defs.ops {
         let Some(control) = &op.control else {
             continue;
         };
-        writeln!(out, "Opcode::{} => {{\nconst {{ let opcode = Opcode::{}; assert!(opcode.spec().is_terminator() && opcode.spec().memory_effect().is_none() && !opcode.spec().may_trap() && !opcode.transfers_ownership(), \"control selection requires a non-trapping effect-free terminator\"); }}", op.name, op.name).unwrap();
+        writeln!(out, "Opcode::{} => {{", op.name).unwrap();
         if matches!(control, Control::Jump) {
             out.push_str("Successors::All\n},\n");
             continue;

@@ -215,24 +215,26 @@ conversion remain separate passes.
 
 ### Shared expression evaluation
 
-`evaluate_expression` accepts an opcode, operand identities, result types,
-properties and an operand-fact query. `evaluate_inst` adapts an existing MIR
-instruction to the same interface. Identities are distinct from constant facts:
-two different values both described as `Varying` are not equal operands.
+`fold` accepts instruction fields, operand identities, result types and a
+constant query. `fold_inst` adapts an existing MIR instruction. They return only
+original operand positions or established constants. Identities are distinct
+from constant facts: two different values described as `Varying` are not equal
+operands.
 
 The constant lattice is `Unknown`, `Constant` or `Varying`. `Unknown` means an
 iterative analysis has not supplied information yet, not an IR undef value.
-Evaluation returns either an operand position or a result fact. Spec identities
-and concrete evaluation run first; the shared evaluator then propagates facts,
-including joining Select arms for a varying condition. Unsupported or effectful
-operations produce `Varying` rather than waiting on unknown inputs.
+SCCP first applies spec identities and concrete evaluation through `fold_inst`,
+then propagates provisional facts for instructions that did not fold. A Select
+with a varying condition joins its arms through `Fact::select`. This propagation
+is owned by SCCP, independently of spec rule generation.
+Unsupported or effectful operations produce `Varying` rather than waiting on
+unknown inputs.
 
 SCCP supplies its current facts and publishes updates through its worklist.
-`reduce` and `reduce_inst` are folding adapters for Simplify, e-graph construction,
-rewrite plans and block specialization: their callers supply established
-constants, and other operands are treated as `Varying`. They expose only operand
-or constant replacements, never pending analysis facts. Evaluation does not edit
-IR, activate CFG edges or schedule analysis work.
+It revisits users when input facts change and reaches a fixed point before
+applying replacements. Simplify, e-graph construction, rewrite plans and block
+specialization use `fold` or `fold_inst`, which never expose pending analysis
+facts. Evaluation does not edit IR, activate CFG edges or schedule analysis work.
 
 ### Application and extraction
 
@@ -292,9 +294,13 @@ replacements cannot refer to unmatched values or unbound types.
 ### Generated execution
 
 `Emit::LocalFolds` emits e-graph guard checks, plan constructors and
-allocation-free direct operand/constant reductions. It emits no SSA subgraph
-matcher. Primitive identity, absorbing and idempotence laws go through the same checker. Scalar
-constant results and trap checks still come from generated operation semantics.
+direct operand/constant folding. It emits no SSA subgraph
+matcher. Identity, absorbing and idempotence reductions must be written explicitly
+in the rule source; operation semantics do not inject expression rules. Commutative
+operand permutations still follow the operation metadata. Each opcode's generated
+`fold` branch tries these rules first, then computes constants from its operation
+semantics, including trap checks. Both paths return operand/constant replacements
+through the same result type and opcode dispatch.
 
 `Emit::Equivalences` emits incremental query bytecode. It retains shared scan
 prefixes, commutative bindings and reverse-path triggers. Constant conditions on

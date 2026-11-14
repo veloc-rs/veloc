@@ -7,18 +7,18 @@ use veloc_analyzer::AnalysisManager;
 use veloc_mir::{FuncBody, Value};
 
 struct Parameters {
-    values: Vec<Value>,
+    params: Vec<Value>,
     incoming: SecondaryMap<Value, Vec<Value>>,
 }
 
 impl Parameters {
     fn new(f: &FuncBody) -> Self {
         let mut graph = Self {
-            values: Vec::new(),
+            params: Vec::new(),
             incoming: SecondaryMap::new(),
         };
         for block in f.layout().block_order() {
-            graph.values.extend_from_slice(f.dfg().block_params(block));
+            graph.params.extend_from_slice(f.dfg().block_params(block));
             let Some(terminator) = f.layout().last_inst(block) else {
                 continue;
             };
@@ -44,7 +44,7 @@ impl FunctionPass for SimplifyParamsPass {
         let f = am.function_mut();
         let graph = Parameters::new(f);
         let mut replacements = Solver::new(&graph).solve();
-        let changed = replacements.apply(f, &graph.values);
+        let changed = replacements.apply(f, &graph.params);
         metrics.count("params.forwarded", changed);
         metrics.count("params.removed", changed);
         if changed == 0 {
@@ -85,14 +85,19 @@ impl Replacements {
         }
         // All uses are replaced before any parameter positions are removed.
         // General dead-parameter elimination remains the responsibility of DCE.
-        let blocks: Vec<_> = f.layout().block_order().collect();
-        for block in blocks {
-            let keep: Vec<_> = f
-                .dfg()
-                .block_params(block)
-                .iter()
-                .map(|&p| self.aliases[p].is_none())
-                .collect();
+        let mut next = f.layout().block_order().next();
+        let mut keep = Vec::new();
+        while let Some(block) = next {
+            // Retaining parameters does not change block layout. Save the next
+            // ID without holding a layout borrow across the edit.
+            next = f.layout().next_block(block);
+            keep.clear();
+            keep.extend(
+                f.dfg()
+                    .block_params(block)
+                    .iter()
+                    .map(|&p| self.aliases[p].is_none()),
+            );
             if keep.contains(&false) {
                 f.edit().retain_block_params(block, &keep);
             }
@@ -121,7 +126,7 @@ impl<'a> Solver<'a> {
     fn solve(mut self) -> Replacements {
         let mut pending =
             self.components
-                .compute(self.graph, &self.graph.values, &mut self.replacements);
+                .compute(self.graph, &self.graph.params, &mut self.replacements);
         pending.reverse();
         while let Some(members) = pending.pop() {
             let inner = self.simplify(&members);
@@ -179,10 +184,16 @@ impl<'a> Solver<'a> {
 #[derive(Clone, Copy, Default)]
 enum Visit {
     #[default]
+    // Not part of the subset being decomposed by this compute call.
     Outside,
     Pending,
+    // Discovered but not yet assigned to a component. Its DFS frame may
+    // already have returned while the value remains on the active stack.
     Active {
+        // DFS discovery order, fixed for the duration of this compute call.
         index: usize,
+        // Minimum of this index, DFS children's low-links, and discovery
+        // indices reached by edges to values still on the active stack.
         low: usize,
     },
     Complete,
@@ -193,12 +204,15 @@ struct Frame {
     next_input: usize,
 }
 
-/// Iterative Tarjan traversal of a parameter subset. Components are emitted
-/// before their users. Scratch storage is reused for nested induced subgraphs.
+/// Iterative Tarjan traversal of a parameter subset. Edges point from a
+/// parameter to its incoming values, so components are emitted before their
+/// users. Scratch storage is reused for nested induced subgraphs.
 #[derive(Default)]
 struct Components {
     visits: SecondaryMap<Value, Visit>,
+    // Tarjan stack: values waiting for their component's root to finish.
     active: Vec<Value>,
+    // Explicit DFS call stack; next_input is the return/resume position.
     frames: Vec<Frame>,
     next_index: usize,
 }
@@ -211,6 +225,8 @@ impl Components {
         replacements: &mut Replacements,
     ) -> Vec<Vec<Value>> {
         self.next_index = 0;
+        // Only members are traversable. Other parameters and non-parameter
+        // values are external inputs, even if an incoming edge refers to them.
         for &member in members {
             self.visits[member] = Visit::Pending;
         }
@@ -223,11 +239,18 @@ impl Components {
             while let Some(frame) = self.frames.last_mut() {
                 let value = frame.value;
                 if let Some(&arg) = graph.incoming[value].get(frame.next_input) {
+                    // Advance before descending so the parent resumes at the
+                    // next input when the child's frame returns.
                     frame.next_input += 1;
+                    // Earlier simplifications may have redirected this edge.
                     let arg = replacements.resolve(arg);
                     match self.visits[arg] {
                         Visit::Pending => self.enter(arg),
+                        // An edge to an unassigned value uses its discovery
+                        // index; a returning DFS child propagates its low below.
                         Visit::Active { index, .. } => self.update_low_link(value, index),
+                        // External values and closed components cannot join
+                        // the component currently being discovered.
                         Visit::Outside | Visit::Complete => {}
                     }
                     continue;
@@ -236,6 +259,8 @@ impl Components {
                 let Visit::Active { index, low } = self.visits[value] else {
                     unreachable!("DFS frame is active");
                 };
+                // All inputs are visited. If no lower index was reached,
+                // value is a component root; pop through it, inclusively.
                 if low == index {
                     let mut component = Vec::new();
                     loop {
@@ -248,10 +273,15 @@ impl Components {
                     }
                     result.push(component);
                 } else if let Some(parent) = self.frames.last() {
+                    // Return the child's low-link to its DFS parent. A closed
+                    // root above needs no propagation: its index exceeds the
+                    // parent's, so it cannot lower the parent's low-link.
                     self.update_low_link(parent.value, low);
                 }
             }
         }
+        // Every DFS frame and active value has been popped. Reset membership
+        // as well, since the next call may inspect a smaller induced subgraph.
         for &member in members {
             self.visits[member] = Visit::Outside;
         }
