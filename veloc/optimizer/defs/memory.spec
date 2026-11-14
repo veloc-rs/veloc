@@ -1,11 +1,16 @@
+import "../../defs/type_sets.spec";
 import "../../mir/defs/formats.spec";
 
-// Directed replacements preserve the root's position, SSA results and memory
-// operation. Failed conversions leave the original instruction untouched.
+rule(root: mir::PtrOffset) {
+    case root<Type::PTR>(ptr, 0) => ptr;
+}
+
+// Preserve the memory operation and its existing SSA results.
 rule(root: mir::Load) {
     case root(mir::PtrOffset(ptr, inner), outer, flags)
         => mir::Load(ptr, checked_cast(i64(inner) + i64(outer), u32)?, flags);
 }
+
 rule(root: mir::Store) {
     case root(mir::PtrOffset(ptr, inner), value, outer, flags)
         => mir::Store(ptr, value, checked_cast(i64(inner) + i64(outer), u32)?, flags);
@@ -21,16 +26,4 @@ fn index_offset(index: u64, imm: PtrIndexImm) -> optional(i32) {
 rule(root: mir::PtrIndex) {
     case root(ptr, index, imm)
         => mir::PtrOffset(ptr, index_offset(constant_bits(index), imm)?);
-}
-
-// Captured successors include their complete argument lists. Replacements may
-// select one original edge or permute both; they cannot construct new edges.
-rule(root: mir::Br) {
-    case root(mir::Select(c, yes, no), a, b)
-        if constant_bits(yes) == 1 && constant_bits(no) == 0
-        => mir::Br(c, a, b);
-    case root(mir::Select(c, yes, no), a, b)
-        if constant_bits(yes) == 0 && constant_bits(no) == 1
-        => mir::Br(c, b, a);
-    case root(_, a, a) => mir::Jump(a);
 }

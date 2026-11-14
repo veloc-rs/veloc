@@ -87,6 +87,7 @@ impl Emit {
         match self {
             Self::Validator => "validation.rs".into(),
             Self::Equivalences => "equal.rs".into(),
+            Self::LocalFolds => "fold.rs".into(),
             Self::Rewrites => "rewrite.rs".into(),
             _ => format!("{}.rs", self.name().replace('-', "_")),
         }
@@ -121,22 +122,14 @@ pub struct Options<'a> {
     pub interfaces: Option<&'a str>,
     pub rules: Option<ValueRules<'a>>,
     pub decisions: Option<Decisions<'a>>,
-    pub equivalences: Option<Equivalences<'a>>,
-    pub rewrites: Option<Rewrites<'a>>,
+    pub optimizations: Option<Optimizations<'a>>,
 }
 
-/// Directed rewrites over an instruction container with stable SSA results.
-pub struct Rewrites<'a> {
+/// One rule module supplies folds, expression equalities and instruction edits.
+pub struct Optimizations<'a> {
     pub definitions: &'a Source,
     pub dialect: &'a str,
     pub rust: &'a str,
-}
-
-pub struct Equivalences<'a> {
-    pub definitions: &'a Source,
-    pub dialect: &'a str,
-    pub opcode: &'a str,
-    pub types: &'a str,
 }
 
 /// Bind a checked rule module to two explicitly named IR dialects.
@@ -205,43 +198,29 @@ impl Source {
         let mut output = BTreeMap::new();
         let mut ir = None;
         let mut target = None;
-        let mut expressions: Option<crate::rules::equivalence::Output> = None;
+        let mut optimizations: Option<crate::rules::optimizer::Output> = None;
         for &kind in selected {
             if output.contains_key(&kind) {
                 continue;
             }
             let text = match kind {
-                Emit::Rewrites => {
-                    let config = options.rewrites.as_ref().ok_or_else(|| {
-                        fail("rewrites require definitions, dialect and IR Rust namespace")
+                Emit::Equivalences | Emit::LocalFolds | Emit::Rewrites => {
+                    let config = options.optimizations.as_ref().ok_or_else(|| {
+                        fail("optimizer rules require definitions, dialect and IR Rust namespace")
                     })?;
-                    crate::rules::instruction::generate(
-                        self,
-                        &config.definitions.parse()?,
-                        config.dialect,
-                        config.rust,
-                    )?
-                }
-                Emit::Equivalences | Emit::LocalFolds => {
-                    let config = options.equivalences.as_ref().ok_or_else(|| {
-                        fail("equivalences require definitions and Rust bindings")
-                    })?;
-                    if expressions.is_none() {
-                        expressions = Some(
-                            crate::rules::equivalence::generate(
-                                self,
-                                &config.definitions.parse()?,
-                                config.dialect,
-                                config.opcode,
-                                config.types,
-                            )
-                            .map_err(|e| self.locate(e))?,
-                        );
+                    if optimizations.is_none() {
+                        optimizations = Some(crate::rules::optimizer::generate(
+                            self,
+                            &config.definitions.parse()?,
+                            config.dialect,
+                            config.rust,
+                        )?);
                     }
-                    let compiled = expressions.as_mut().unwrap();
+                    let compiled = optimizations.as_mut().unwrap();
                     std::mem::take(match kind {
-                        Emit::LocalFolds => &mut compiled.local_folds,
+                        Emit::LocalFolds => &mut compiled.folds,
                         Emit::Equivalences => &mut compiled.equivalences,
+                        Emit::Rewrites => &mut compiled.rewrites,
                         _ => unreachable!(),
                     })
                 }

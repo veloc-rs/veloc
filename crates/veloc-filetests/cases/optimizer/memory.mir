@@ -1,6 +1,6 @@
 // ----- scalar-promotion
 // run: o1
-// check: const 42
+// check: return i32(42)
 // not: alloca
 // not: load
 // not: store

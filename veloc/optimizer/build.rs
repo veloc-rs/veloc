@@ -2,7 +2,7 @@ use std::{
     env,
     path::{Path, PathBuf},
 };
-use veloc_spec::{Emit, Equivalences, Options, Rewrites, Source};
+use veloc_spec::{Emit, Optimizations, Options, Source};
 
 fn main() {
     println!("cargo:rerun-if-changed=../../rustfmt.toml");
@@ -16,34 +16,15 @@ fn main() {
         .expect("compile optimizer definitions");
     let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
     let mut files = output.write(&dir).expect("write optimizer artifacts");
-    let rules = Source::load("defs/equal.spec").expect("load equivalence rules");
+    let rules = Source::load("defs/rules.spec").expect("load optimizer rules");
     for path in rules.dependencies() {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let generated = rules
         .generate(
-            &[Emit::Equivalences, Emit::LocalFolds],
+            &[Emit::Equivalences, Emit::LocalFolds, Emit::Rewrites],
             Options {
-                equivalences: Some(Equivalences {
-                    definitions: &source,
-                    dialect: "mir",
-                    opcode: "veloc_mir::Opcode",
-                    types: "veloc_mir::Type",
-                }),
-                ..Default::default()
-            },
-        )
-        .expect("compile equivalence rules");
-    files.extend(generated.write(&dir).expect("write equivalence rules"));
-    let rewrites = Source::load("defs/rewrite.spec").expect("load instruction rewrites");
-    for path in rewrites.dependencies() {
-        println!("cargo:rerun-if-changed={}", path.display());
-    }
-    let generated = rewrites
-        .generate(
-            &[Emit::Rewrites],
-            Options {
-                rewrites: Some(Rewrites {
+                optimizations: Some(Optimizations {
                     definitions: &source,
                     dialect: "mir",
                     rust: "veloc_mir",
@@ -51,8 +32,8 @@ fn main() {
                 ..Default::default()
             },
         )
-        .expect("compile instruction rewrites");
-    files.extend(generated.write(&dir).expect("write instruction rewrites"));
+        .expect("compile optimizer rules");
+    files.extend(generated.write(&dir).expect("write optimizer rules"));
     veloc_spec::format_rust(&files, Path::new("../../rustfmt.toml"))
         .expect("format optimizer artifacts");
 }

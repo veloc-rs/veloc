@@ -1,9 +1,8 @@
 //! Directed instruction rewrites and checked replacement plans for equality search.
 //! Construction folds direct reductions before the graph allocates candidates.
-use crate::evaluate::{Fact, Successors};
 use crate::passes::expression::{ExprValue as Value, Expressions};
 use smallvec::SmallVec;
-use veloc_mir::{InstFields, ScalarConst, Type, TypeInfo};
+use veloc_mir::{FuncBody, Inst, InstFields, ScalarConst, Type, TypeInfo};
 
 /// Facts available to generated guards and replacement recipes.
 pub(crate) struct Context<'a, 'ir> {
@@ -183,21 +182,42 @@ impl Plan {
     }
 }
 
+/// A checked edit for the matched instruction. Apply before changing its
+/// operands or successors; matching itself does not modify the function.
+pub(crate) enum InstRewrite {
+    Replace {
+        fields: InstFields,
+        args: SmallVec<[veloc_mir::Value; 3]>,
+    },
+    SelectEdge(u32),
+    Branch {
+        condition: veloc_mir::Value,
+        order: [usize; 2],
+    },
+}
+
+impl InstRewrite {
+    pub(crate) fn apply(self, func: &mut FuncBody, inst: Inst) {
+        match self {
+            Self::Replace { fields, args } => {
+                func.edit()
+                    .replace_inst(inst, |writer| writer.from_fields(fields, &args));
+            }
+            Self::SelectEdge(index) => {
+                func.edit()
+                    .fold_to_edge(veloc_mir::function::EdgeRef { inst, index });
+            }
+            Self::Branch { condition, order } => {
+                func.edit().rewrite_branch(inst, condition, order);
+            }
+        }
+    }
+}
+
 mod directed {
+    use super::InstRewrite;
+
     include!(concat!(env!("OUT_DIR"), "/rewrite.rs"));
 }
 
-pub(crate) fn rewrite_inst(func: &mut veloc_mir::FuncBody, inst: veloc_mir::Inst) -> bool {
-    if let Successors::One(index) = crate::evaluate::successors(func.dfg().inst(inst), |value| {
-        func.dfg()
-            .as_scalar_const(value)
-            .map_or(Fact::Varying, Fact::Constant)
-    }) {
-        func.edit().fold_to_edge(veloc_mir::function::EdgeRef {
-            inst,
-            index: index.try_into().expect("too many successors"),
-        });
-        return true;
-    }
-    directed::rewrite_inst(func, inst)
-}
+pub(crate) use directed::find_rewrite;

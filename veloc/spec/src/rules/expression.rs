@@ -4,15 +4,17 @@
 use crate::{
     Definitions, Error,
     schema::Operation,
-    syntax::{DeclKind, Kind, Node, Results},
+    syntax::{DeclKind, Kind, Node},
     types::TypeSet,
 };
 use std::collections::{BTreeMap, BTreeSet};
 mod attributes;
-mod local;
+mod fold;
+mod plan;
 mod predicate;
 pub(super) use attributes::emit_attributes;
-pub(super) use local::emit_local;
+pub(super) use fold::emit_folds;
+pub(super) use plan::emit_plans;
 use predicate::{GuardType, Predicate};
 
 #[derive(Clone)]
@@ -166,20 +168,26 @@ impl CheckedRule {
         };
         opcode
     }
-    /// Allocation-free reductions remain a specialized projection of the model.
-    pub fn is_flat(&self) -> bool {
-        self.guard.is_none()
-            && self
-                .pattern
-                .iter()
-                .skip(1)
-                .all(|p| !matches!(p.kind, PatternKind::Operation { .. }))
+    /// The fold interface can inspect only the root and return an operand or
+    /// constant. Guards qualify when all their queries are available locally.
+    pub fn can_fold_locally(&self) -> bool {
+        self.pattern
+            .iter()
+            .skip(1)
+            .all(|p| !matches!(p.kind, PatternKind::Operation { .. }))
             && !matches!(self.replacement, Recipe::Build { .. })
             && match &self.replacement {
                 Recipe::Value(slot) => self.pattern[*slot].ty.source == self.pattern[0].ty.source,
                 Recipe::Constant(..) => true,
                 _ => false,
             }
+            && self.guard.as_ref().is_none_or(|guard| {
+                let PatternKind::Operation { args, .. } = &self.pattern[0].kind else {
+                    unreachable!()
+                };
+                let order: Vec<_> = (0..args.len()).collect();
+                guard.local_code(self, "Type", &order).is_some()
+            })
     }
 }
 
@@ -187,6 +195,7 @@ pub(super) fn compile(
     source: &crate::Source,
     defs: &Definitions,
     dialect: &str,
+    cases: &[super::optimizer::Case<'_>],
 ) -> Result<Vec<CheckedRule>, Error> {
     let aliases: BTreeMap<_, _> = source
         .declarations()
@@ -198,106 +207,51 @@ pub(super) fn compile(
         .collect();
     let operations: BTreeMap<_, _> = defs.operations().map(|op| (op.name.clone(), op)).collect();
     let mut rules = Vec::new();
-    for decl in source.declarations() {
-        let DeclKind::Rule(sig) = &decl.kind else {
+    for case in cases {
+        let Some(result) = case.result else {
             continue;
         };
-        let fail = |message| Error::at(source.text(), decl.offset, message);
-        if decl.fields.keys().any(|k| k != "cases") {
-            return Err(fail("expression groups only contain cases"));
+        let fail = |message| Error::at(source.text(), case.offset, message);
+        let mut generics = BTreeMap::new();
+        if let Some(params) = case.generics {
+            for (name, bound) in params {
+                let domain = defs.types.set(
+                    source.text(),
+                    &expand_domain(source.text(), bound, &aliases, &mut BTreeSet::new())?,
+                )?;
+                if domain.is_empty() || name == case.root {
+                    return Err(fail("invalid or shadowed case type parameter"));
+                }
+                generics.insert(name.clone(), domain);
+            }
         }
-        if !matches!(&sig.results, Results::Fixed(r) if r.is_empty()) {
-            return Err(fail("expression rules do not declare return values"));
-        }
-        let [root] = sig.params.as_slice() else {
-            return Err(fail("expected one root instruction"));
+        let mut checker = Checker::new(source.text(), defs, &operations, dialect, generics);
+        let ty = checker.bind_type(result, 0)?;
+        let lhs = Node {
+            offset: case.offset,
+            kind: Kind::Call(case.operation.into(), case.args.to_vec()),
         };
-        if root.moves {
-            return Err(fail("expression rules cannot move their root"));
-        }
-        let Kind::Name(path) = &root.ty.kind else {
-            return Err(fail(
-                "declare only the root operation here; put its result type on each case",
-            ));
-        };
-        let Some(Node {
-            kind: Kind::List(cases),
-            ..
-        }) = decl.fields.get("cases")
-        else {
-            return Err(fail("expected cases"));
-        };
-        if cases.is_empty() {
-            return Err(fail("expected nonempty cases"));
-        }
-        for case in cases {
-            let fail = |message| Error::at(source.text(), case.offset, message);
-            let Kind::Record(fields) = &case.kind else {
-                return Err(fail("expected case"));
-            };
-            if fields
+        let rule = checker.rule(
+            &lhs,
+            ty,
+            case.replacement,
+            case.guard,
+            format!("{} case at byte {}", case.operation, case.offset),
+        )?;
+        if checker.attributes.contains_key(case.root)
+            || checker
+                .generics
                 .keys()
-                .any(|k| !matches!(k.as_str(), "match" | "emit" | "when" | "generics"))
-            {
-                return Err(fail("unknown expression case field"));
-            }
-            let mut generics = BTreeMap::new();
-            if let Some(params) = fields.get("generics") {
-                let Kind::Record(params) = &params.kind else {
-                    return Err(fail("expected case type parameters"));
-                };
-                for (name, bound) in params {
-                    let domain = defs.types.set(
-                        source.text(),
-                        &expand_domain(source.text(), bound, &aliases, &mut BTreeSet::new())?,
-                    )?;
-                    if domain.is_empty()
-                        || name == &root.name
-                        || generics.insert(name.clone(), domain).is_some()
-                    {
-                        return Err(fail("invalid or shadowed case type parameter"));
-                    }
-                }
-            }
-            let pattern = fields
-                .get("match")
-                .ok_or_else(|| fail("expected root pattern"))?;
-            let (args, ty) = match &pattern.kind {
-                Kind::TypedCall(name, types, args) if name == &root.name && types.len() == 1 => {
-                    (args, &types[0])
-                }
-                _ => {
-                    return Err(fail(
-                        "expected the declared root with one result type: root<T>(...)",
-                    ));
-                }
-            };
-            let rhs = fields
-                .get("emit")
-                .ok_or_else(|| fail("expected replacement"))?;
-            let mut checker =
-                Checker::new(source.text(), defs, &operations, dialect, generics.clone());
-            let ty = checker.bind_type(ty, 0)?;
-            let lhs = Node {
-                offset: case.offset,
-                kind: Kind::Call(path.clone(), args.clone()),
-            };
-            let rule = checker.rule(
-                &lhs,
-                ty,
-                rhs,
-                fields.get("when"),
-                format!("{path} case at byte {}", case.offset),
-            )?;
-            if checker.attributes.contains_key(&root.name)
-                || generics.keys().any(|n| checker.attributes.contains_key(n))
-                || checker.variables.contains_key(&root.name)
-                || generics.keys().any(|n| checker.variables.contains_key(n))
-            {
-                return Err(fail("pattern binding shadows root or type parameter"));
-            }
-            rules.push(rule);
+                .any(|n| checker.attributes.contains_key(n))
+            || checker.variables.contains_key(case.root)
+            || checker
+                .generics
+                .keys()
+                .any(|n| checker.variables.contains_key(n))
+        {
+            return Err(fail("pattern binding shadows root or type parameter"));
         }
+        rules.push(rule);
     }
     Ok(rules)
 }

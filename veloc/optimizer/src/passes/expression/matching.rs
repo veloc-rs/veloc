@@ -6,7 +6,7 @@ use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use veloc_bytecode::{Reader, equivalence::Instruction as Op};
-use veloc_mir::{Opcode, Type};
+use veloc_mir::{Opcode, Type, TypeInfo};
 
 use super::{
     Limit,
@@ -474,12 +474,7 @@ impl Machine {
                         body,
                         layout: graph.layout,
                     };
-                    if crate::evaluate::accepts(
-                        PROGRAM.rules[rule].plan,
-                        &cx,
-                        &self.values,
-                        &self.nodes,
-                    ) {
+                    if accepts(PROGRAM.rules[rule].plan, &cx, &self.values, &self.nodes) {
                         self.matches
                             .capture(root, rule, &self.slots, values, &self.nodes)?;
                     }
@@ -518,8 +513,7 @@ impl Machine {
                 layout: graph.layout,
             };
             graph.profile.count("egraph.replacement_plans", 1);
-            let Some(plan) = crate::evaluate::plan(rule.plan, &cx, &self.values, &matched.nodes)
-            else {
+            let Some(plan) = plan(rule.plan, &cx, &self.values, &matched.nodes) else {
                 continue;
             };
             let replacement = plan.materialize(|step, args| match step {

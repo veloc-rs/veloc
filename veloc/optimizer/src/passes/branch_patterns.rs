@@ -1,4 +1,5 @@
 //! Local branch patterns; no data-flow analysis or CFG cleanup.
+use crate::evaluate::{Fact, Successors};
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{FuncBody, Inst, InstView, SuccessorData};
@@ -18,7 +19,7 @@ impl FunctionPass for BranchPatternsPass {
             let Some(last) = f.layout().last_inst(block) else {
                 continue;
             };
-            if crate::rewrite::rewrite_inst(f, last) {
+            if rewrite_terminator(f, last) {
                 changed += 1;
             }
             if compare_chain(f, last) {
@@ -32,6 +33,27 @@ impl FunctionPass for BranchPatternsPass {
             PassOutcome::Changed
         }
     }
+}
+
+/// Fold literal selectors before trying spec branch rules. Shared with CFG
+/// cleanup so it can simplify terminators without a separate branch pass.
+pub(super) fn rewrite_terminator(func: &mut FuncBody, inst: Inst) -> bool {
+    if let Successors::One(index) = crate::evaluate::successors(func.dfg().inst(inst), |value| {
+        func.dfg()
+            .as_scalar_const(value)
+            .map_or(Fact::Varying, Fact::Constant)
+    }) {
+        func.edit().fold_to_edge(veloc_mir::function::EdgeRef {
+            inst,
+            index: index.try_into().expect("too many successors"),
+        });
+        return true;
+    }
+    let Some(rewrite) = crate::rewrite::find_rewrite(func, inst) else {
+        return false;
+    };
+    rewrite.apply(func, inst);
+    true
 }
 
 /// Combine two equality tests with the same taken edge. A pair separated by

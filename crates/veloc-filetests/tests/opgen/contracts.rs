@@ -461,7 +461,7 @@ storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; w
 
 #[test]
 fn control_rules_reject_new_edges_and_invalid_selection_contracts() {
-    use veloc_spec::{Emit, Options, Rewrites};
+    use veloc_spec::{Emit, Optimizations, Options};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../veloc/mir/defs");
     let definitions = common::load(root.join("module.spec")).unwrap();
     for (replacement, diagnostic) in [
@@ -484,7 +484,7 @@ fn control_rules_reject_new_edges_and_invalid_selection_contracts() {
             .generate(
                 &[Emit::Rewrites],
                 Options {
-                    rewrites: Some(Rewrites {
+                    optimizations: Some(Optimizations {
                         definitions: &definitions,
                         dialect: "mir",
                         rust: "veloc_mir",

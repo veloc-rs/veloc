@@ -99,7 +99,8 @@ impl FunctionPass for SimplifyPass {
 }
 
 fn fold_instruction(func: &mut FuncBody, inst: Inst, work: &mut Worklist) -> bool {
-    if crate::rewrite::rewrite_inst(func, inst) {
+    if let Some(rewrite) = crate::rewrite::find_rewrite(func, inst) {
+        rewrite.apply(func, inst);
         work.changed(func, inst);
         return true;
     }

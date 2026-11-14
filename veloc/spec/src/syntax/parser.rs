@@ -431,7 +431,7 @@ impl<'a> Parser<'a> {
                 )]),
             });
         }
-        // Anonymous equality rules share signatures and expression parsing with
+        // Anonymous optimizer rules share signatures and expression parsing with
         // named target rules, but do not introduce callable symbols.
         if declaration_name == "rule" && (self.at(TokenKind::Lt) || self.at(TokenKind::LParen)) {
             if self.at(TokenKind::Lt) {

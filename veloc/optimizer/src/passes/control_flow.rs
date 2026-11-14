@@ -290,7 +290,9 @@ block1(v4: i32):
             evaluate::successors(view, |_| Fact::Varying),
             Successors::All
         ));
-        assert!(crate::rewrite::rewrite_inst(f, inst));
+        crate::rewrite::find_rewrite(f, inst)
+            .unwrap()
+            .apply(f, inst);
         let view = f.dfg().inst(inst);
         assert_eq!(f.dfg().operands(inst)[0], f.params()[0]);
         assert_eq!(view.successor(0).unwrap().args, &[f.params()[2]]);
@@ -299,13 +301,15 @@ block1(v4: i32):
         let edge = view.successor(1).unwrap();
         let dest = edge.block;
         let value = edge.args[0];
-        assert!(!crate::rewrite::rewrite_inst(f, inst));
+        assert!(crate::rewrite::find_rewrite(f, inst).is_none());
         f.edit().redirect_edge(
             veloc_mir::function::EdgeRef { inst, index: 0 },
             dest,
             &[value],
         );
-        assert!(crate::rewrite::rewrite_inst(f, inst));
+        crate::rewrite::find_rewrite(f, inst)
+            .unwrap()
+            .apply(f, inst);
         assert_eq!(f.dfg().opcode(inst), Opcode::Jump);
         module.validate().unwrap();
     }

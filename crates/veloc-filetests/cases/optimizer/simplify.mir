@@ -91,6 +91,6 @@ block0():
 local function select_types(v0: bool, v1: ptr, v2: f64, v3: i32<4>) -> (ptr, f64, i32<4>)
 block0():
   v4: ptr = select v0, v1, v1
-  v5: f64 = select bool(true), v2, f64(0)
+  v5: f64 = select bool(true), v2, f64(0x0000000000000000)
   v6: i32<4> = select bool(false), i32<4>(splat(0)), v3
   return v4, v5, v6

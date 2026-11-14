@@ -65,11 +65,11 @@ pub(crate) enum Successors {
 
 mod local {
     use super::*;
-    include!(concat!(env!("OUT_DIR"), "/local_folds.rs"));
+    include!(concat!(env!("OUT_DIR"), "/fold.rs"));
 }
 
-pub(crate) use local::{accepts, plan, successors, validate_fields};
 pub use local::{can_fold, fold};
+pub(crate) use local::{successors, validate_fields};
 
 /// Pattern literals are masked to the operand width. An unknown constant proves
 /// neither equality nor inequality, in direct reductions, guards or queries.

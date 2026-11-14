@@ -72,7 +72,7 @@ impl FunctionPass for CfgPass {
                         _ => None,
                     })
                     .collect();
-                let mut edited = crate::rewrite::rewrite_inst(f, last);
+                let mut edited = super::branch_patterns::rewrite_terminator(f, last);
                 edited |= forward_edges(f, block, last);
                 // Merging substitutes block parameters, including uses in blocks
                 // other than the merged pair. Revisit those users as well.

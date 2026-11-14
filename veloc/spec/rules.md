@@ -44,7 +44,30 @@ Type checking is **not semantic equivalence verification**. Explicit rules
 remain reviewed transformations, including trap and floating-point contracts;
 there is no SMT invocation or new proof claim here.
 
-## Expression equivalences
+## Optimizer rules
+
+`Options::optimizations` binds one rule module to its operation definitions,
+dialect and IR Rust namespace. The shared frontend checks rule groups and
+normalizes their cases once, independent of which artifacts are requested.
+`root<T>(...)` describes an equality between values of type `T`;
+`root(...)` describes an instruction replacement that retains the original
+SSA results. Both forms may appear in one file or rule group. They share
+operation contracts and storage mappings, with separate checks for value
+construction and instruction edits.
+
+The optimizer imports `defs/rules.spec`, which groups rules by instruction
+family: arithmetic, bitwise, compare, convert, memory and control. Files do not
+choose a compiler or execution host. One build call produces `fold.rs`,
+`equal.rs` and `rewrite.rs`; local-fold capability determines which value rules
+feed folding and which feed equality search. Instruction cases feed rewrites.
+
+```sh
+cargo run -p veloc-spec --features cli -- veloc/optimizer/defs/rules.spec \
+  --emit local-folds,equivalences,rewrites --definitions veloc/mir/defs/module.spec \
+  --source-dialect mir --namespace veloc_mir --out-dir /tmp/optimizer-rules
+```
+
+### Expression equivalences
 
 Anonymous `rule` groups describe semantic equalities. One checker produces a
 `CheckedRule` containing typed pattern slots, guards and a replacement recipe.
@@ -132,16 +155,15 @@ a mask for 1–64 low bits. Missing facts and checked-arithmetic failures reject
 plan. A replacement result type may use `type_of(binding)` and is validated when
 the plan is built. Matched subexpressions reused by a recipe retain their values.
 
-Equivalence and local-fold outputs share one parsing and checking step per build.
+Equivalence and local-fold outputs consume the same checked value rules.
 
-## Directed instruction rewrites
+### Directed instruction rewrites
 
-`Emit::Rewrites` consumes rule groups through `Options::rewrites`. The caller
-supplies the operation definitions, dialect and Rust namespace of the IR.
-The current host uses packed instruction views and `FuncBody::edit`; operands
-and constructors are resolved through the same logical storage mapping as
-expression attributes. Ordinary operand rewrites use the checked storage mapping; control rewrites
-use the restricted successor operations described below.
+`Emit::Rewrites` emits instruction cases from the same optimizer rule module.
+The host matches packed instruction views and returns an owned
+`InstRewrite`; the caller applies it through `FuncBody::edit`. Instruction fields
+and operands use the same checked storage mapping as expression construction.
+Control rewrites use the restricted successor operations described below.
 
 ```text
 rule(root: mir::Load) {
@@ -151,7 +173,7 @@ rule(root: mir::Load) {
 ```
 
 These rules replace one instruction in place and retain its SSA results.
-Patterns may inspect nested pure, single-result definitions without deleting
+Patterns may inspect nested single-result definitions without deleting
 them. Replacement operands can use captured values, attributes, field access,
 typed helper functions and `constant_bits(value)` (the raw scalar constant bits).
 Unavailable facts or a failed `?` reject the case before any IR mutation.
@@ -159,9 +181,9 @@ Repeated bindings require equality; cases are tried in source order per opcode.
 
 Root operations can have zero or multiple fixed results. Their existing result
 types are checked against the replacement's signature and property constraints.
-Opcode changes require pure operations without ownership transfers. Effectful
-roots keep their opcode and position; rule authors must preserve their memory,
-trap and ownership semantics. Variable operands, embedded SSA attributes and
+Rule authors must preserve memory, trap and ownership semantics, including when
+changing opcodes; generated Rust does not add compile-time effect assertions.
+Variable operands, embedded SSA attributes and
 context-dependent instruction contracts require a separate host adapter.
 
 Matching and construction planning are read-only and use no runtime rule
@@ -169,6 +191,15 @@ interpreter. A successful plan is materialized once. Identical replacements are
 ignored; the caller owns worklist updates. Directed rules must converge when
 reapplied; they are not automatically sent to equality saturation. In contrast,
 expression equivalences retain alternatives for cost-based extraction.
+
+Generated `rewrite.rs` dispatches by opcode to one named function per rule,
+preserving source order. `find_rewrite(&FuncBody, Inst)` returns `None` on a
+failed match, validation, or identical replacement, and `Some(InstRewrite)` on
+success. Captured values retain their spec names with a `capture_` prefix.
+Ordinary replacements carry owned `InstFields` and operand IDs; they allocate
+no instruction during matching. The caller applies the result to the matched
+instruction before changing its operands or successors. `fold` keeps returning
+operand positions and constants directly, without an `InstRewrite` wrapper.
 
 ### Branch selection and local control rewrites
 
@@ -204,10 +235,13 @@ rule(root: mir::Br) {
 Repeated successor captures compare the destination **and all arguments**.
 Replacements may select a captured edge or preserve/swap both original edges;
 constructing new successors, editing their arguments, and matching across blocks
-are rejected. All directed rules share the `rewrite_inst` entry point; branch
-replacements use `FuncEditor::fold_to_edge` or `rewrite_branch` for the complete edit.
-This entry point also folds branches selected by literal constants, reusing the
-same read-only selection query as SCCP and threading. CFG cleanup calls it directly.
+are rejected. All directed rules share the `find_rewrite` entry point. Branch
+plans carry an original edge index or a new condition and edge order; applying
+them uses `FuncEditor::fold_to_edge` or `rewrite_branch` for the complete edit.
+`branch_patterns::rewrite_terminator` first folds branches selected by literal
+constants, then matches and applies the generated rules. Both branch patterns
+and CFG cleanup use this helper. Literal selection reuses the same read-only
+query as SCCP and threading.
 Callers choose which instructions to rewrite: Simplify skips terminators, while
 branch patterns process only terminators. Expression e-graphs
 do not acquire CFG rewriting. Cross-block threading and speculative diamond
@@ -240,8 +274,19 @@ facts. Evaluation does not edit IR, activate CFG edges or schedule analysis work
 
 Direct reductions return an existing operand or constant without constructing
 replacement instructions. They need no structural search or profitability walk.
-Rules that inspect nested operations, use guards or construct instructions run
-in the e-graph, including equal-cost alternatives:
+The checked rule's `can_fold_locally()` classifies by the fold interface's
+capabilities: the pattern must contain only a root operation with value/constant
+operands, the replacement must be an operand of the result type or a constant,
+and every guard query must be available locally. Guards can inspect constants,
+root attributes, exact types and types determined by the root result. Checked
+arithmetic and boolean short-circuiting use the same predicate emitter as the
+e-graph. Missing facts or failed arithmetic reject only the current candidate,
+allowing later rules and commutative operand orders to match.
+
+Queries requiring an independent operand type or target pointer width remain
+on the e-graph path, as do nested patterns and instruction construction. This
+classification is automatic; a guard alone does not require e-graph execution.
+The e-graph also explores equal-cost alternatives:
 
 ```text
 rule(root: mir::ISub) {
@@ -293,8 +338,8 @@ replacements cannot refer to unmatched values or unbound types.
 
 ### Generated execution
 
-`Emit::LocalFolds` emits e-graph guard checks, plan constructors and
-direct operand/constant folding. It emits no SSA subgraph
+`Emit::LocalFolds` emits `fold.rs` with direct operand/constant folding, field
+validation and the successor query. It emits no SSA subgraph
 matcher. Identity, absorbing and idempotence reductions must be written explicitly
 in the rule source; operation semantics do not inject expression rules. Commutative
 operand permutations still follow the operation metadata. Each opcode's generated
@@ -302,7 +347,8 @@ operand permutations still follow the operation metadata. Each opcode's generate
 semantics, including trap checks. Both paths return operand/constant replacements
 through the same result type and opcode dispatch.
 
-`Emit::Equivalences` emits incremental query bytecode. It retains shared scan
+`Emit::Equivalences` emits `equal.rs` with incremental query bytecode, guard
+checks and construction plans. It retains shared scan
 prefixes, commutative bindings and reverse-path triggers. Constant conditions on
 conjunctive guard paths filter triggers, including through repeated-variable
 aliases; disjunctions remain conservative. A class becoming constant can enable

@@ -4,7 +4,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
 };
-use veloc_spec::{Decisions, Emit, Equivalences, Options, Rewrites, Source, Target, ValueRules};
+use veloc_spec::{Decisions, Emit, Optimizations, Options, Source, Target, ValueRules};
 
 /// Compile instruction definitions into selected Rust artifacts.
 #[derive(Parser)]
@@ -27,7 +27,7 @@ struct Args {
     /// Operation definitions for transformation rules.
     #[arg(long)]
     definitions: Option<PathBuf>,
-    /// Rust namespace for generated interfaces or the IR used by rewrites.
+    /// Rust namespace for generated interfaces or optimizer rules.
     #[arg(long)]
     namespace: Option<String>,
     /// Source dialect definition module for cross-IR rules.
@@ -39,9 +39,6 @@ struct Args {
     /// Rust source opcode path.
     #[arg(long)]
     source_opcode: Option<String>,
-    /// Rust type enum path for expression equivalences.
-    #[arg(long)]
-    type_path: Option<String>,
     /// Namespace of the destination dialect.
     #[arg(long)]
     target_dialect: Option<String>,
@@ -152,27 +149,17 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             interfaces: args.namespace.as_deref(),
             rules,
             decisions,
-            rewrites: if args.emit.contains(&Emit::Rewrites) {
-                Some(Rewrites {
+            optimizations: if args
+                .emit
+                .iter()
+                .any(|e| matches!(e, Emit::Equivalences | Emit::LocalFolds | Emit::Rewrites))
+            {
+                Some(Optimizations {
                     definitions: definitions
                         .as_ref()
-                        .ok_or("rewrites require --definitions")?,
+                        .ok_or("optimizer rules require --definitions")?,
                     dialect: required(args.source_dialect.as_deref(), "source-dialect")?,
                     rust: required(args.namespace.as_deref(), "namespace")?,
-                })
-            } else {
-                None
-            },
-            equivalences: if args.emit.contains(&Emit::Equivalences)
-                || args.emit.contains(&Emit::LocalFolds)
-            {
-                Some(Equivalences {
-                    definitions: definitions
-                        .as_ref()
-                        .ok_or("equivalences require --definitions")?,
-                    dialect: required(args.source_dialect.as_deref(), "source-dialect")?,
-                    opcode: required(args.source_opcode.as_deref(), "source-opcode")?,
-                    types: required(args.type_path.as_deref(), "type-path")?,
                 })
             } else {
                 None

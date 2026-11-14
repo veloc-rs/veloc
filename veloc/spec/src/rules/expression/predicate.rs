@@ -25,38 +25,117 @@ pub(in crate::rules) enum Predicate {
     Binary(&'static str, Box<Self>, Box<Self>),
 }
 
-impl Predicate {
-    pub(super) fn code(&self, types: &str, captures: &[usize]) -> String {
-        let code = |p: &Self| p.code(types, captures);
-        let value = |slot| capture_code(captures, slot);
+/// The predicate tree and arithmetic are shared; each host supplies only the
+/// value, constant and type queries that its interface can answer. Returning
+/// None during generation keeps an unsupported guard on the e-graph path.
+enum Context<'a> {
+    Graph(&'a [usize]),
+    Local {
+        rule: &'a CheckedRule,
+        order: &'a [usize],
+    },
+}
+
+impl Context<'_> {
+    fn value(&self, slot: usize) -> Option<String> {
         match self {
-            Self::Value(slot) => value(*slot),
-            Self::Number(n) => format!("{n}u64"),
-            Self::Type(ty) => ty.code(types, captures),
-            Self::Attribute(value) => value.code(),
-            Self::PointerBits => "u64::from(cx.pointer_bits()?)".into(),
-            Self::Integer { slot, signed } => {
-                let value = value(*slot);
-                if *signed {
-                    format!("cx.constant({value})?.as_int()?.signed()")
+            Self::Graph(captures) => Some(capture_code(captures, slot)),
+            Self::Local { rule, order } => {
+                let PatternKind::Operation { args, .. } = &rule.pattern[0].kind else {
+                    unreachable!()
+                };
+                let column = order[args.iter().position(|&arg| arg == slot)?];
+                Some(format!("args[{column}]"))
+            }
+        }
+    }
+
+    fn constant(&self, slot: usize) -> Option<String> {
+        let value = self.value(slot)?;
+        Some(match self {
+            Self::Graph(_) => format!("cx.constant({value})"),
+            Self::Local { .. } => format!("constant({value})"),
+        })
+    }
+
+    fn ty(&self, slot: usize, types: &str) -> Option<String> {
+        match self {
+            Self::Graph(_) => Some(format!("cx.ty({})", self.value(slot)?)),
+            Self::Local { rule, .. } => {
+                let source = &rule.pattern[slot].ty.source;
+                if *source == rule.pattern[0].ty.source {
+                    Some("ty".into())
+                } else if let TypeSource::Exact(name) = source {
+                    Some(name.replacen("Type", types, 1))
                 } else {
-                    format!("cx.constant({value})?.as_int()?.to_bits()")
+                    // Operand identities carry no type query. Do not rely on a
+                    // constant being available just to discover an input type.
+                    None
                 }
             }
-            Self::ShiftAmount(slot) => format!(
-                "cx.constant({value})?.as_int()?.to_bits() % u64::from(cx.ty({value}).element_bits()?)",
-                value = value(*slot)
-            ),
+        }
+    }
+}
+
+impl Predicate {
+    pub(super) fn code(&self, types: &str, captures: &[usize]) -> String {
+        self.emit(types, &Context::Graph(captures))
+            .expect("e-graph guard queries")
+    }
+
+    pub(super) fn local_code(
+        &self,
+        rule: &CheckedRule,
+        types: &str,
+        order: &[usize],
+    ) -> Option<String> {
+        self.emit(types, &Context::Local { rule, order })
+    }
+
+    fn emit(&self, types: &str, cx: &Context<'_>) -> Option<String> {
+        let code = |p: &Self| p.emit(types, cx);
+        Some(match self {
+            Self::Value(slot) => cx.value(*slot)?,
+            Self::Number(n) => format!("{n}u64"),
+            Self::Type(ty) => match &ty.source {
+                TypeSource::Value(slot) => cx.ty(*slot, types)?,
+                TypeSource::Exact(name) => name.replacen("Type", types, 1),
+            },
+            Self::Attribute(value) => value.code(),
+            Self::PointerBits => match cx {
+                Context::Graph(_) => "u64::from(cx.pointer_bits()?)".into(),
+                Context::Local { .. } => return None,
+            },
+            Self::Integer { slot, signed } => {
+                let constant = cx.constant(*slot)?;
+                if *signed {
+                    format!("{constant}?.as_int()?.signed()")
+                } else {
+                    format!("{constant}?.as_int()?.to_bits()")
+                }
+            }
+            Self::ShiftAmount(slot) => {
+                let constant = cx.constant(*slot)?;
+                // An integer constant carries its own width in either host.
+                format!(
+                    "{{ let c = {constant}?; c.as_int()?.to_bits() % u64::from(c.ty().element_bits()?) }}"
+                )
+            }
             Self::LowMask(bits) => format!(
                 "u64::MAX.checked_shr(64u32.checked_sub(u32::try_from({}).ok()?)?)?",
-                code(bits)
+                code(bits)?
             ),
-            Self::TypeOf(value) => format!("cx.ty({})", code(value)),
-            Self::Bits(ty) => format!("u64::from(({}).element_bits()?)", code(ty)),
-            Self::IsConstant(slot) => format!("cx.constant({}).is_some()", value(*slot)),
+            Self::TypeOf(value) => {
+                let Self::Value(slot) = value.as_ref() else {
+                    unreachable!("checked value type query")
+                };
+                cx.ty(*slot, types)?
+            }
+            Self::Bits(ty) => format!("u64::from(({}).element_bits()?)", code(ty)?),
+            Self::IsConstant(slot) => format!("{}.is_some()", cx.constant(*slot)?),
             Self::Constant { value, bits, equal } => format!(
-                "crate::evaluate::matches_constant(cx.constant({}), {bits}u64, {equal})",
-                capture_code(captures, *value)
+                "crate::evaluate::matches_constant({}, {bits}u64, {equal})",
+                cx.constant(*value)?
             ),
             Self::Binary(op @ ("+" | "-" | "*"), a, b) => {
                 let method = match *op {
@@ -64,10 +143,10 @@ impl Predicate {
                     "-" => "checked_sub",
                     _ => "checked_mul",
                 };
-                format!("({}).{method}({})?", code(a), code(b))
+                format!("({}).{method}({})?", code(a)?, code(b)?)
             }
-            Self::Binary(op, a, b) => format!("({}) {op} ({})", code(a), code(b)),
-        }
+            Self::Binary(op, a, b) => format!("({}) {op} ({})", code(a)?, code(b)?),
+        })
     }
 
     pub(super) fn captures(&self, slots: &mut BTreeSet<usize>) {

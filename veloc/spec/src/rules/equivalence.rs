@@ -1,40 +1,19 @@
 //! Incremental e-class query compilation over the shared checked rule model.
-use super::expression::{self, AttributeValue, CheckedRule, Filter, PatternKind, TypeSource};
-use crate::{Definitions, Error};
+use super::expression::{AttributeValue, CheckedRule, Filter, PatternKind, TypeSource};
+use crate::Definitions;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write,
 };
 use veloc_bytecode::{Reader, Words, equivalence::Instruction as Op};
 
-pub(crate) struct Output {
-    pub local_folds: String,
-    pub equivalences: String,
-}
-
-pub(crate) fn generate(
-    source: &crate::Source,
-    defs: &Definitions,
-    dialect: &str,
-    opcode: &str,
-    types: &str,
-) -> Result<Output, Error> {
-    if !super::identifier(dialect)
-        || ![opcode, types]
-            .iter()
-            .all(|p| p.split("::").all(super::identifier))
-    {
-        return Err(Error::at(
-            source.text(),
-            0,
-            "invalid expression Rust binding",
-        ));
-    }
-    let rules = expression::compile(source, defs, dialect)?;
-    let local_folds =
-        expression::emit_attributes(defs) + &expression::emit_local(defs, &rules, opcode, types);
+pub(super) fn generate(defs: &Definitions, rules: &[CheckedRule], opcode: &str) -> String {
     let mut groups = BTreeMap::<&str, Vec<(usize, &CheckedRule)>>::new();
-    for (id, rule) in rules.iter().enumerate().filter(|(_, r)| !r.is_flat()) {
+    for (id, rule) in rules
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.can_fold_locally())
+    {
         groups.entry(rule.opcode()).or_default().push((id, rule));
     }
     let mut program = Bytecode::new(defs);
@@ -45,10 +24,7 @@ pub(crate) fn generate(
     }
     output.push_str("_ => None,\n} }\n");
     output.push_str(&program.emit(opcode));
-    Ok(Output {
-        local_folds,
-        equivalences: output,
-    })
+    output
 }
 
 /// Build-time byte assembler. Opcode numbers belong to the runtime enum;

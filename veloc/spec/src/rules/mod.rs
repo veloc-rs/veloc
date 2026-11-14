@@ -2,11 +2,12 @@
 //! OpSpec; this module knows neither MIR storage nor machine registers.
 mod check;
 mod decision;
-pub(crate) mod equivalence;
+mod equivalence;
 mod expression;
 mod functions;
 pub(crate) mod graph;
-pub(crate) mod instruction;
+mod instruction;
+pub(crate) mod optimizer;
 mod rust;
 pub(crate) mod typed;
 pub use decision::{DecisionRust, decisions};

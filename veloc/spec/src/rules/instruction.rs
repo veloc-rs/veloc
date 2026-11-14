@@ -3,233 +3,185 @@
 //! are inspected but never erased. Expressions and storage mappings are shared
 //! with the other spec consumers.
 use crate::model::{Op, ParamKind, expr::Emitter};
-use crate::syntax::{DeclKind, Kind, Node, Results};
+use crate::syntax::{Kind, Node};
 use crate::{Definitions, Error, Source, SourceError};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write,
 };
 
-pub(crate) fn generate(
+pub(super) fn generate(
     source: &Source,
     defs: &Definitions,
     dialect: &str,
     rust: &str,
+    cases: &[super::optimizer::Case<'_>],
 ) -> Result<String, SourceError> {
     let fail = |at, message| source.locate(Error::at(source.text(), at, message));
-    if !super::identifier(dialect) || !rust.split("::").all(super::identifier) {
-        return Err(fail(0, "invalid instruction rewrite binding"));
-    }
     let mut expressions = source.expressions()?;
     let eligible: BTreeSet<_> = defs
         .operations()
         .filter(|op| op.expression.is_some())
         .map(|op| op.name)
         .collect();
-    let mut groups = BTreeMap::<String, String>::new();
-    for decl in source.declarations() {
-        let DeclKind::Rule(sig) = &decl.kind else {
+    let mut groups = BTreeMap::<String, Vec<String>>::new();
+    let mut functions = String::new();
+    let mut next_rule = 0;
+    for case in cases.iter().filter(|case| case.result.is_none()) {
+        let mut compiler = Compiler {
+            source,
+            defs,
+            dialect,
+            eligible: &eligible,
+            expressions: &mut expressions,
+            bindings: BTreeMap::new(),
+            edges: BTreeMap::new(),
+            next: 0,
+            code: String::new(),
+        };
+        let args = case.args;
+        let root_op = compiler.operation(case.operation, args.len(), case.offset)?;
+        compiler.pattern(root_op, args, "inst")?;
+        if compiler.bindings.contains_key(case.root) || compiler.edges.contains_key(case.root) {
+            return Err(fail(case.offset, "pattern binding shadows the root"));
+        }
+        if let Some(guard) = case.guard {
+            let guard = compiler.expression(guard, "bool")?;
+            writeln!(compiler.code, "if !({guard}) {{ return None; }}").unwrap();
+        }
+        let replacement = case.replacement;
+        let Kind::Call(path, args) = &replacement.kind else {
+            return Err(fail(
+                replacement.offset,
+                "replacement must be one operation",
+            ));
+        };
+        let target = compiler.operation(path, args.len(), replacement.offset)?;
+        let result_count = root_op.signature.results.patterns().unwrap().len();
+        if target.signature.results.patterns().unwrap().len() != result_count {
+            return Err(fail(
+                replacement.offset,
+                "replacement must preserve result arity",
+            ));
+        }
+        next_rule += 1;
+        let function = format!(
+            "match_{}_rule_{next_rule}",
+            crate::storage::constructor_name(&root_op.name)
+        );
+        groups
+            .entry(root_op.name.clone())
+            .or_default()
+            .push(function.clone());
+        if root_op.control.is_some() || target.control.is_some() {
+            let body = compiler.control_replacement(root_op, target, args, replacement.offset)?;
+            emit_rule(&mut functions, &function, &body);
             continue;
-        };
-        let [root] = sig.params.as_slice() else {
-            return Err(fail(decl.offset, "instruction rule requires one root"));
-        };
-        if root.moves
-            || !sig.generics.is_empty()
-            || !matches!(&sig.results, Results::Fixed(r) if r.is_empty())
-            || decl.fields.keys().any(|k| k != "cases")
-        {
-            return Err(fail(
-                decl.offset,
-                "instruction rules preserve the root's result types",
-            ));
         }
-        let Kind::Name(path) = &root.ty.kind else {
-            return Err(fail(
-                root.ty.offset,
-                "expected an unparameterized root operation",
-            ));
-        };
-        let Some(Node {
-            kind: Kind::List(cases),
-            ..
-        }) = decl.fields.get("cases")
-        else {
-            return Err(fail(decl.offset, "expected instruction cases"));
-        };
-        if cases.is_empty() {
-            return Err(fail(decl.offset, "expected nonempty cases"));
+        let mut inputs = BTreeMap::new();
+        let mut values = Vec::new();
+        for (param, arg) in target.params.iter().zip(args) {
+            let ty = match &param.kind {
+                ParamKind::Value => "Value",
+                ParamKind::Property(ty) => ty,
+                _ => unreachable!("checked fixed operation"),
+            };
+            let value = compiler.expression(arg, ty)?;
+            let name = format!("new_{}", param.name);
+            writeln!(compiler.code, "let {name} = {value};").unwrap();
+            if param.kind == ParamKind::Value {
+                values.push(format!("dfg.value_type({name})"));
+            }
+            inputs.insert(param.name.clone(), name);
         }
-        for case in cases {
-            let mut compiler = Compiler {
-                source,
-                defs,
-                dialect,
-                eligible: &eligible,
-                expressions: &mut expressions,
-                bindings: BTreeMap::new(),
-                edges: BTreeMap::new(),
-                next: 0,
-                code: String::new(),
-            };
-            let Kind::Record(fields) = &case.kind else {
-                unreachable!("parsed case")
-            };
-            if fields
-                .keys()
-                .any(|k| !matches!(k.as_str(), "match" | "when" | "emit"))
-            {
-                return Err(fail(
-                    case.offset,
-                    "instruction rewrite cases do not declare type parameters or result types",
-                ));
-            }
-            let args = match &fields["match"].kind {
-                Kind::List(args) => args,
-                Kind::Call(name, args) if name == &root.name => args,
-                _ => {
-                    return Err(fail(
-                        case.offset,
-                        "expected the declared root without type arguments",
-                    ));
-                }
-            };
-            let root_op = compiler.operation(path, args.len(), case.offset)?;
-            compiler.pattern(root_op, args, "inst")?;
-            if compiler.bindings.contains_key(&root.name) || compiler.edges.contains_key(&root.name)
-            {
-                return Err(fail(case.offset, "pattern binding shadows the root"));
-            }
-            if let Some(guard) = fields.get("when") {
-                let guard = compiler.expression(guard, "bool")?;
-                writeln!(compiler.code, "if !({guard}) {{ return None; }}").unwrap();
-            }
-            let replacement = &fields["emit"];
-            let Kind::Call(path, args) = &replacement.kind else {
-                return Err(fail(
-                    replacement.offset,
-                    "replacement must be one operation",
-                ));
-            };
-            let target = compiler.operation(path, args.len(), replacement.offset)?;
-            let result_count = root_op.signature.results.patterns().unwrap().len();
-            if target.signature.results.patterns().unwrap().len() != result_count {
-                return Err(fail(
-                    replacement.offset,
-                    "replacement must preserve result arity",
-                ));
-            }
-            if root_op.control.is_some() || target.control.is_some() {
-                let body =
-                    compiler.control_replacement(root_op, target, args, replacement.offset)?;
-                groups
-                    .entry(root_op.name.clone())
-                    .or_default()
-                    .push_str(&body);
-                continue;
-            }
-            // Effectful roots can change operands, but cannot change their opcode.
-            // Rule authors still own the equivalence of the old and new address.
-            if root_op.name != target.name {
-                writeln!(compiler.code, "const {{ assert!(Opcode::{}.spec().is_pure() && Opcode::{}.spec().is_pure() && !Opcode::{}.transfers_ownership() && !Opcode::{}.transfers_ownership(), \"opcode-changing rewrites require pure operations\"); }}", root_op.name, target.name, root_op.name, target.name).unwrap();
-            }
-            let mut inputs = BTreeMap::new();
-            let mut values = Vec::new();
-            for (param, arg) in target.params.iter().zip(args) {
-                let ty = match &param.kind {
-                    ParamKind::Value => "Value",
-                    ParamKind::Property(ty) => ty,
-                    _ => unreachable!("checked fixed operation"),
-                };
-                let value = compiler.expression(arg, ty)?;
-                let name = format!("new_{}", param.name);
-                writeln!(compiler.code, "let {name} = {value};").unwrap();
-                if param.kind == ParamKind::Value {
-                    values.push(format!("dfg.value_type({name})"));
-                }
-                inputs.insert(param.name.clone(), name);
-            }
-            if root_op.name == target.name {
-                let unchanged = target
-                    .params
-                    .iter()
-                    .map(|p| {
-                        let original = root_op.inputs[&p.name]
-                            .emit(&|f| format!("root_{f}"), &|v| format!("{v}?"));
-                        format!("{} == {original}", inputs[&p.name])
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" && ");
-                writeln!(
-                    compiler.code,
-                    "if {} {{ return None; }}",
-                    if unchanged.is_empty() {
-                        "true"
-                    } else {
-                        &unchanged
-                    }
-                )
-                .unwrap();
-            }
-            writeln!(compiler.code, "// Check the replacement before editing the instruction.\nlet operand_types = [{}];", values.join(", ")).unwrap();
-            let results = (0..result_count)
-                .map(|i| format!("dfg.value_type(dfg.inst_results(inst)[{i}])"))
-                .collect::<Vec<_>>();
-            writeln!(
-                compiler.code,
-                "let result_types = [{}];\nOpcode::{}.validate_types(&operand_types, &result_types).ok()?;",
-                results.join(", "),
-                target.name
-            )
-            .unwrap();
-            let mut emitter =
-                Emitter::types(target, inputs.clone(), "operand_types", "result_types");
-            emitter.dfg = "dfg";
-            for constraint in &target.constraints {
-                if !constraint.type_only || constraint.binding.is_some() {
-                    compiler
-                        .code
-                        .push_str(&constraint.emit(&emitter, "return None"));
-                }
-            }
-            let args = target
+        if root_op.name == target.name {
+            let unchanged = target
                 .params
                 .iter()
-                .map(|p| inputs[&p.name].as_str())
+                .map(|p| {
+                    let original = root_op.inputs[&p.name]
+                        .emit(&|f| format!("root_{f}"), &|v| format!("{v}?"));
+                    format!("{} == {original}", inputs[&p.name])
+                })
                 .collect::<Vec<_>>()
-                .join(", ");
-            // Keep single-field replacements as tuples; empty replacements use ().
-            let tuple = if args.is_empty() {
-                "()".to_owned()
-            } else {
-                format!("({args},)")
-            };
-            writeln!(compiler.code, "Some({tuple})").unwrap();
-            let constructor = crate::model::access::constructor(
-                target,
-                &defs.storage,
-                &inputs,
-                &format!("Opcode::{}", target.name),
-                "writer",
-            );
+                .join(" && ");
             writeln!(
-                groups.entry(root_op.name.clone()).or_default(),
-                "let replacement = (|| {{ let dfg = func.dfg(); {} }})();\nif let Some({tuple}) = replacement {{\nfunc.edit().replace_inst(inst, |writer| {constructor});\nreturn true;\n}}",
-                compiler.code
+                compiler.code,
+                "if {} {{ return None; }}",
+                if unchanged.is_empty() {
+                    "true"
+                } else {
+                    &unchanged
+                }
             )
             .unwrap();
         }
+        writeln!(
+            compiler.code,
+            "// Check the replacement against the existing results.\nlet operand_types = [{}];",
+            values.join(", ")
+        )
+        .unwrap();
+        let results = (0..result_count)
+            .map(|i| format!("dfg.value_type(dfg.inst_results(inst)[{i}])"))
+            .collect::<Vec<_>>();
+        writeln!(
+            compiler.code,
+            "let result_types = [{}];\nOpcode::{}.validate_types(&operand_types, &result_types).ok()?;",
+            results.join(", "),
+            target.name
+        )
+        .unwrap();
+        let mut emitter = Emitter::types(target, inputs.clone(), "operand_types", "result_types");
+        emitter.dfg = "dfg";
+        for constraint in &target.constraints {
+            if !constraint.type_only || constraint.binding.is_some() {
+                compiler
+                    .code
+                    .push_str(&constraint.emit(&emitter, "return None"));
+            }
+        }
+        let fields = crate::generate::fields::constructor(
+            defs,
+            target,
+            &inputs,
+            "InstFields",
+            &format!("Opcode::{}", target.name),
+        );
+        let operands = target
+            .params
+            .iter()
+            .filter(|p| p.kind == ParamKind::Value)
+            .map(|p| inputs[&p.name].as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            compiler.code,
+            "Some(InstRewrite::Replace {{ fields: {fields}, args: smallvec::smallvec![{operands}] }})"
+        )
+        .unwrap();
+        emit_rule(&mut functions, &function, &compiler.code);
     }
     let mut code = format!(
         "// @generated directed instruction rewrites.\n#[allow(unused_imports)] use {rust}::*;\n#[allow(unused_imports)] use {rust}::inst::*;\n"
     );
-    writeln!(code, "#[allow(unused_variables)]\npub(crate) fn rewrite_inst(func: &mut FuncBody, inst: Inst) -> bool {{ match func.dfg().inst(inst).opcode() {{").unwrap();
-    for (op, body) in groups {
-        let body = body.replace("crate::", &format!("{rust}::"));
-        writeln!(code, "Opcode::{op} => {{ {body} false }},").unwrap();
+    writeln!(code, "pub(crate) fn find_rewrite(func: &FuncBody, inst: Inst) -> Option<InstRewrite> {{ match func.dfg().inst(inst).opcode() {{").unwrap();
+    for (op, rules) in groups {
+        let calls = rules
+            .iter()
+            .map(|name| format!("{name}(func, inst)"))
+            .reduce(|previous, next| format!("{previous}.or_else(|| {next})"))
+            .unwrap();
+        writeln!(code, "Opcode::{op} => {calls},").unwrap();
     }
-    code.push_str("_ => false,\n} }\n");
+    code.push_str("_ => None,\n} }\n");
+    code.push_str(&functions.replace("crate::", &format!("{rust}::")));
     Ok(code)
+}
+
+/// Match and validate without borrowing the function into the returned edit.
+fn emit_rule(out: &mut String, name: &str, body: &str) {
+    writeln!(out, "#[allow(unused_variables)]\nfn {name}(func: &FuncBody, inst: Inst) -> Option<InstRewrite> {{\nlet dfg = func.dfg();\n{body}\n}}\n").unwrap();
 }
 
 struct Compiler<'a, 'e> {
@@ -285,9 +237,6 @@ impl<'a> Compiler<'a, '_> {
         if !matches!(root.control, Some(Control::Branch)) {
             return Err(self.fail(at, "control rewrites require a conditional root"));
         }
-        for op in [root, target] {
-            writeln!(self.code, "const {{ let opcode = Opcode::{}; assert!(opcode.spec().is_terminator() && opcode.spec().memory_effect().is_none() && !opcode.spec().may_trap() && !opcode.transfers_ownership(), \"control rewrites require non-trapping effect-free terminators\"); }}", op.name).unwrap();
-        }
         let edge = |arg: &Node| -> Result<usize, SourceError> {
             if let Kind::Name(name) = &arg.kind
                 && let Some((index, _)) = self.edges.get(name)
@@ -299,15 +248,10 @@ impl<'a> Compiler<'a, '_> {
                 "replacement successors must be captured root edges",
             ))
         };
-        let (result, pattern, edit): (String, String, String) = match target.control {
+        let rewrite = match target.control {
             Some(Control::Jump) => {
                 let index = edge(&args[0])?;
-                (
-                    format!("Some({index}u32)"),
-                    "index".into(),
-                    "func.edit().fold_to_edge(function::EdgeRef { inst, index }); return true;"
-                        .into(),
-                )
+                format!("Some(InstRewrite::SelectEdge({index}))")
             }
             Some(Control::Branch) if target.name == root.name => {
                 let yes = edge(&args[1])?;
@@ -320,13 +264,22 @@ impl<'a> Compiler<'a, '_> {
                 }
                 let condition = self.expression(&args[0], "Value")?;
                 writeln!(self.code, "let condition = {condition};\nif dfg.value_type(condition) != Type::BOOL {{ return None; }}").unwrap();
-                (
-                    format!("Some(condition)"),
-                    "condition".into(),
+                let original = |index: usize| {
+                    root.inputs[&root.params[index].name]
+                        .emit(&|f| format!("root_{f}"), &|v| format!("{v}?"))
+                };
+                let unchanged = if yes == 0 {
+                    format!("condition == {}", original(0))
+                } else {
                     format!(
-                        "if func.edit().rewrite_branch(inst, condition, [{yes}, {no}]) {{ return true; }}"
-                    ),
-                )
+                        "condition == {} && {} == {}",
+                        original(0),
+                        original(1),
+                        original(2)
+                    )
+                };
+                writeln!(self.code, "if {unchanged} {{ return None; }}").unwrap();
+                format!("Some(InstRewrite::Branch {{ condition, order: [{yes}, {no}] }})")
             }
             _ => {
                 return Err(self.fail(
@@ -335,10 +288,7 @@ impl<'a> Compiler<'a, '_> {
                 ));
             }
         };
-        Ok(format!(
-            "let replacement = (|| {{ let dfg = func.dfg(); {} {result} }})();\nif let Some({pattern}) = replacement {{ {edit} }}\n",
-            self.code
-        ))
+        Ok(format!("{}\n{rewrite}", self.code))
     }
 
     fn fail(&self, at: usize, message: &str) -> SourceError {
@@ -385,16 +335,8 @@ impl<'a> Compiler<'a, '_> {
         let prefix = if id == 0 {
             "root".to_owned()
         } else {
-            format!("node{id}")
+            format!("{}_{id}", crate::storage::constructor_name(&op.name))
         };
-        if id != 0 {
-            writeln!(
-                self.code,
-                "if dfg.inst({inst}).opcode() != Opcode::{} {{ return None; }}",
-                op.name
-            )
-            .unwrap();
-        }
         let format = self
             .defs
             .storage
@@ -405,7 +347,13 @@ impl<'a> Compiler<'a, '_> {
         let fields = format
             .fields
             .iter()
-            .map(|f| format!("{}: {prefix}_{}", f.name, f.name))
+            .map(|f| {
+                if f.ty.named("Opcode") {
+                    format!("{}: Opcode::{}", f.name, op.name)
+                } else {
+                    format!("{}: {prefix}_{}", f.name, f.name)
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ");
         writeln!(
@@ -437,6 +385,8 @@ impl<'a> Compiler<'a, '_> {
                     && !self.bindings.contains_key(name)
                     && !self.edges.contains_key(name)
                 {
+                    let capture = format!("capture_{name}");
+                    writeln!(self.code, "let {capture} = {value};").unwrap();
                     self.bindings.insert(
                         name.clone(),
                         (
@@ -444,7 +394,7 @@ impl<'a> Compiler<'a, '_> {
                                 offset: arg.offset,
                                 kind: Kind::Name(ty.into()),
                             },
-                            value,
+                            capture,
                         ),
                     );
                     continue;
@@ -458,8 +408,11 @@ impl<'a> Compiler<'a, '_> {
                 if child.signature.results.patterns().unwrap().len() != 1 {
                     return Err(self.fail(arg.offset, "nested operation must have one result"));
                 }
-                writeln!(self.code, "const {{ assert!(Opcode::{}.spec().is_pure() && !Opcode::{}.transfers_ownership(), \"nested patterns require pure operations\"); }}", child.name, child.name).unwrap();
-                let name = format!("def{}", self.next);
+                let name = format!(
+                    "{}_inst_{}",
+                    crate::storage::constructor_name(&child.name),
+                    self.next
+                );
                 writeln!(self.code, "let {name} = dfg.value_inst({value})?;").unwrap();
                 self.pattern(child, nested, &name)?;
             } else {

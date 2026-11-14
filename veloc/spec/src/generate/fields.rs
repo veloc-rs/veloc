@@ -10,6 +10,7 @@ pub(crate) fn constructor(
     defs: &Definitions,
     op: &Op,
     attributes: &BTreeMap<String, String>,
+    fields: &str,
     opcode: &str,
 ) -> String {
     let format = defs
@@ -30,7 +31,7 @@ pub(crate) fn constructor(
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "veloc_mir::InstFields::{}({args})",
+        "{fields}::{}({args})",
         crate::storage::constructor_name(&op.format)
     )
 }

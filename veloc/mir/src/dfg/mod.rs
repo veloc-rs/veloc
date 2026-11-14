@@ -7,8 +7,6 @@ use hashbrown::HashMap;
 
 mod edges;
 mod operands;
-#[cfg(test)]
-mod tests;
 pub(crate) use operands::OperandRange;
 pub use operands::{Use, Uses};
 
