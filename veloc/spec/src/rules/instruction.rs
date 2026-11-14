@@ -324,19 +324,23 @@ impl<'a> Compiler<'a, '_> {
             Some(Control::Branch) if target.name == root.name => {
                 let yes = edge(&args[1])?;
                 let no = edge(&args[2])?;
-                if !matches!((yes, no), (0, 1) | (1, 0)) {
-                    return Err(self.fail(
-                        at,
-                        "branch replacements may only preserve or swap the original edges",
-                    ));
-                }
+                let swap_edges = match (yes, no) {
+                    (0, 1) => false,
+                    (1, 0) => true,
+                    _ => {
+                        return Err(self.fail(
+                            at,
+                            "branch replacements may only preserve or swap the original edges",
+                        ));
+                    }
+                };
                 let condition = self.expression(&args[0], "Value")?;
                 writeln!(self.code, "let condition = {condition};\nif dfg.value_type(condition) != Type::BOOL {{ return None; }}").unwrap();
                 let original = |index: usize| {
                     root.inputs[&root.params[index].name]
                         .emit(&|f| format!("root_{f}"), &|v| format!("{v}?"))
                 };
-                let unchanged = if yes == 0 {
+                let unchanged = if !swap_edges {
                     format!("condition == {}", original(0))
                 } else {
                     format!(
@@ -347,7 +351,7 @@ impl<'a> Compiler<'a, '_> {
                     )
                 };
                 writeln!(self.code, "if {unchanged} {{ return None; }}").unwrap();
-                format!("Some(InstRewrite::Branch {{ condition, order: [{yes}, {no}] }})")
+                format!("Some(InstRewrite::Branch {{ condition, swap_edges: {swap_edges} }})")
             }
             _ => {
                 return Err(self.fail(

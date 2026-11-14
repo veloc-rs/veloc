@@ -89,7 +89,7 @@ fn main() {
             ];
             let (op, args, results) = black_box((op, args, results));
             if fast {
-                veloc_optimizer::evaluate::fold_inst(body.dfg(), inst, |value| {
+                veloc_optimizer::rewrite::fold_inst(body.dfg(), inst, |value| {
                     inputs
                         .iter()
                         .position(|&input| input == value)
@@ -99,8 +99,8 @@ fn main() {
                     folds
                         .into_iter()
                         .map(|fold| match fold {
-                            veloc_optimizer::evaluate::Fold::Operand(i) => args[i],
-                            veloc_optimizer::evaluate::Fold::Constant(c) => c,
+                            veloc_optimizer::rewrite::Fold::Operand(i) => args[i],
+                            veloc_optimizer::rewrite::Fold::Constant(c) => c,
                         })
                         .collect()
                 })

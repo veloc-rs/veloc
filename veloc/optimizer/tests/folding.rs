@@ -1,6 +1,6 @@
 use veloc_mir::constant::ScalarConst;
 use veloc_mir::{InstFields, Opcode, Type};
-use veloc_optimizer::evaluate::{Fold, can_fold, fold};
+use veloc_optimizer::rewrite::{Fold, can_fold, fold};
 
 #[test]
 fn folding_returns_constants_or_original_operands() {

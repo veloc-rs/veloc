@@ -2,6 +2,7 @@
 use super::DataFlowGraph;
 use crate::{Inst, Value};
 use alloc::vec::Vec;
+use core::ops::Range;
 use cranelift_entity::{EntityRef, SecondaryMap, packed_option::PackedOption};
 use veloc_collections::{LinkId as Operand, Links};
 
@@ -12,7 +13,7 @@ pub(crate) struct OperandRange {
 }
 
 impl OperandRange {
-    fn range(self) -> core::ops::Range<usize> {
+    fn range(self) -> Range<usize> {
         self.start as usize..self.start as usize + self.len as usize
     }
 }
@@ -78,7 +79,7 @@ impl Operands {
         &mut self,
         owner: Inst,
         range: OperandRange,
-        group: core::ops::Range<u32>,
+        group: Range<u32>,
         values: &[Value],
     ) -> OperandRange {
         assert!(group.start <= group.end && group.end <= range.len);
@@ -93,9 +94,9 @@ impl Operands {
             if values.len() == removed {
                 return range;
             }
-            let mut compact = self.compact(range);
-            compact.retain(group.start + values.len() as u32..group.end, |_| false);
-            return compact.finish();
+            return self.retain_groups(range, |groups| {
+                groups.retain_range(group.start + values.len() as u32..group.end, |_| false);
+            });
         }
         let len = (range.len as usize - removed)
             .checked_add(values.len())
@@ -115,13 +116,29 @@ impl Operands {
         result
     }
 
-    pub fn compact(&mut self, range: OperandRange) -> OperandCompactor<'_> {
-        OperandCompactor {
+    /// Filter ordered groups in one traversal, preserving operands outside them.
+    /// The callback uses original operand positions; compaction finishes on return.
+    pub fn retain_groups(
+        &mut self,
+        range: OperandRange,
+        filter: impl FnOnce(&mut OperandCompactor<'_>),
+    ) -> OperandRange {
+        let mut compact = OperandCompactor {
             operands: self,
             range,
             read: 0,
             write: 0,
-        }
+        };
+        filter(&mut compact);
+        compact.finish()
+    }
+
+    /// Keep only this contiguous group, using original operand positions.
+    pub fn keep_range(&mut self, range: OperandRange, group: Range<u32>) -> OperandRange {
+        self.retain_groups(range, |groups| {
+            groups.retain_range(0..group.start, |_| false);
+            groups.retain_range(group.end..range.len, |_| false);
+        })
     }
 
     fn truncate(&mut self, range: OperandRange, len: u32) -> OperandRange {
@@ -174,7 +191,7 @@ impl Operands {
     }
 }
 
-/// Compact ordered groups in one forward traversal, maintaining reverse uses.
+/// Scoped group filtering provided by `Operands::retain_groups`.
 pub(super) struct OperandCompactor<'a> {
     operands: &'a mut Operands,
     range: OperandRange,
@@ -195,7 +212,9 @@ impl OperandCompactor<'_> {
         self.read += 1;
     }
 
-    pub fn retain(&mut self, group: core::ops::Range<u32>, mut keep: impl FnMut(usize) -> bool) {
+    /// Groups must be non-overlapping and ordered by their original positions.
+    /// The predicate receives the index within this group, starting at zero.
+    pub fn retain_range(&mut self, group: Range<u32>, mut keep: impl FnMut(usize) -> bool) {
         assert!(
             self.read <= group.start && group.start <= group.end && group.end <= self.range.len
         );
@@ -207,7 +226,7 @@ impl OperandCompactor<'_> {
         }
     }
 
-    pub fn finish(mut self) -> OperandRange {
+    fn finish(mut self) -> OperandRange {
         while self.read < self.range.len {
             self.advance(true);
         }

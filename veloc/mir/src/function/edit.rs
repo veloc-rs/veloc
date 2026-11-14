@@ -290,11 +290,7 @@ impl<'a> FuncEditor<'a> {
     }
 
     /// Rebind a conditional branch while preserving or swapping its original edges.
-    pub fn rewrite_branch(&mut self, inst: Inst, condition: Value, order: [usize; 2]) -> bool {
-        assert!(
-            matches!(order, [0, 1] | [1, 0]),
-            "branch edge order must be a permutation"
-        );
+    pub fn rewrite_branch(&mut self, inst: Inst, condition: Value, swap_edges: bool) -> bool {
         debug_assert_eq!(self.body.dfg.value_type(condition), crate::Type::BOOL);
         let crate::InstView::Br {
             condition: old,
@@ -304,12 +300,16 @@ impl<'a> FuncEditor<'a> {
         else {
             panic!("conditional branch required");
         };
-        let edges = [then_dest, else_dest];
-        if old == condition && edges[order[0]] == then_dest && edges[order[1]] == else_dest {
+        if old == condition && (!swap_edges || then_dest == else_dest) {
             return false;
         }
-        let yes = SuccessorData::new(edges[order[0]].block, edges[order[0]].args);
-        let no = SuccessorData::new(edges[order[1]].block, edges[order[1]].args);
+        let (yes, no) = if swap_edges {
+            (else_dest, then_dest)
+        } else {
+            (then_dest, else_dest)
+        };
+        let yes = SuccessorData::new(yes.block, yes.args);
+        let no = SuccessorData::new(no.block, no.args);
         self.replace_inst(inst, |w| w.br(condition, yes.as_view(), no.as_view()));
         true
     }

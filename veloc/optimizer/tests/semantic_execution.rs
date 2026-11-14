@@ -30,7 +30,7 @@ fn evaluate(
         },
         results,
     );
-    veloc_optimizer::evaluate::fold_inst(body.dfg(), inst, |value| {
+    veloc_optimizer::rewrite::fold_inst(body.dfg(), inst, |value| {
         inputs
             .iter()
             .position(|&input| input == value)
@@ -40,8 +40,8 @@ fn evaluate(
         folds
             .into_iter()
             .map(|fold| match fold {
-                veloc_optimizer::evaluate::Fold::Operand(i) => args[i],
-                veloc_optimizer::evaluate::Fold::Constant(c) => c,
+                veloc_optimizer::rewrite::Fold::Operand(i) => args[i],
+                veloc_optimizer::rewrite::Fold::Constant(c) => c,
             })
             .collect()
     })
@@ -347,7 +347,7 @@ fn generated_evaluators_match_graphs_for_all_scalar_signatures() {
             if op.validate_types(inputs, outputs).is_err() {
                 continue;
             }
-            assert!(veloc_optimizer::evaluate::can_fold(op));
+            assert!(veloc_optimizer::rewrite::can_fold(op));
             let properties = if program.properties == 0 {
                 vec![vec![]]
             } else {

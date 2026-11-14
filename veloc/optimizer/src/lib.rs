@@ -1,11 +1,10 @@
 extern crate alloc;
 
 mod error;
-pub mod evaluate;
 pub mod manager;
 pub mod pass;
 pub mod passes;
-mod rewrite;
+pub mod rewrite;
 
 pub use error::Error;
 pub use manager::PassManager;

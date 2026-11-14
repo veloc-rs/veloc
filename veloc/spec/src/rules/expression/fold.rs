@@ -34,7 +34,7 @@ pub(in crate::rules) fn emit_folds(
         /// Operand indices refer to the original argument order. A potentially\n\
         /// trapping instruction may only be erased after a successful fold.\n\
         #[allow(unused_variables, unreachable_patterns)]\n\
-        pub fn fold<V: Copy + Eq>(fields: &veloc_mir::InstFields, args: &[V], results: &[{types}], mut constant: impl FnMut(V) -> Option<ScalarConst>) -> Option<smallvec::SmallVec<[crate::evaluate::Fold; 2]>> {{\n\
+        pub fn fold<V: Copy + Eq>(fields: &veloc_mir::InstFields, args: &[V], results: &[{types}], mut constant: impl FnMut(V) -> Option<ScalarConst>) -> Option<smallvec::SmallVec<[crate::rewrite::Fold; 2]>> {{\n\
         let opcode = fields.opcode();\n\
         if {effectful} {{ return None; }}\n\
         match opcode {{").unwrap();
@@ -90,13 +90,13 @@ pub(in crate::rules) fn emit_folds(
                         match rule.pattern[slot].kind {
                             PatternKind::Value(previous) if previous != slot => {
                                 checks.push(format!(
-                                    "crate::evaluate::same_value(args[{c}], args[{}], &mut constant)",
+                                    "crate::rewrite::same_value(args[{c}], args[{}], &mut constant)",
                                     column(previous)
                                 ));
                             }
                             PatternKind::Constant(bits) => {
                                 checks.push(format!(
-                                    "crate::evaluate::matches_constant(constant(args[{c}]), {bits}u64, true)"
+                                    "crate::rewrite::matches_constant(constant(args[{c}]), {bits}u64, true)"
                                 ));
                             }
                             _ => {}
@@ -112,10 +112,10 @@ pub(in crate::rules) fn emit_folds(
                     }
                     let result = match &rule.replacement {
                         Recipe::Value(slot) => {
-                            format!("crate::evaluate::Fold::Operand({})", column(*slot))
+                            format!("crate::rewrite::Fold::Operand({})", column(*slot))
                         }
                         Recipe::Constant(_, bits) => format!(
-                            "crate::evaluate::Fold::Constant(ScalarConst::from_bits(ty, {bits}u64 & u64::MAX.checked_shr(64u32.checked_sub(ty.element_bits()?)?)?)?)"
+                            "crate::rewrite::Fold::Constant(ScalarConst::from_bits(ty, {bits}u64 & u64::MAX.checked_shr(64u32.checked_sub(ty.element_bits()?)?)?)?)"
                         ),
                         _ => unreachable!(),
                     };

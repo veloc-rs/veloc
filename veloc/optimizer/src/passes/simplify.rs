@@ -1,7 +1,7 @@
 //! Worklist constant propagation and single-instruction reductions. Structural
 //! expression rules run in ExpressionPass; directed rewrites come from spec.
 //! Every CFG edge is considered; this pass does not prune branches.
-use crate::{FunctionPass, OptConfig, PassOutcome, Profile, evaluate};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile, rewrite};
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
 use std::collections::VecDeque;
@@ -34,11 +34,7 @@ impl FunctionPass for SimplifyPass {
                     if func.layout().inst_block(inst).is_none() {
                         continue;
                     }
-                    if func.dfg().inst(inst).is_terminator() {
-                        func.dfg()
-                            .inst(inst)
-                            .visit_successors(|edge| work.block(edge.block));
-                    } else if fold_instruction(func, inst, &mut work) {
+                    if fold_instruction(func, inst, &mut work) {
                         folded += 1;
                     }
                 }
@@ -58,12 +54,8 @@ impl FunctionPass for SimplifyPass {
                                 .dfg()
                                 .inst(edge.inst)
                                 .successor(edge.index as usize)
-                                .and_then(|successor| successor.args.get(index))
-                                .copied();
-                            let Some(argument) = argument else {
-                                agrees = false;
-                                break;
-                            };
+                                .unwrap()
+                                .args[index];
                             // A loop carrying the same parameter preserves the
                             // constant supplied by its other incoming edges.
                             if argument == param {
@@ -105,7 +97,7 @@ fn fold_instruction(func: &mut FuncBody, inst: Inst, work: &mut Worklist) -> boo
         return true;
     }
     let dfg = func.dfg();
-    let Some(folds) = evaluate::fold_inst(dfg, inst, |value| dfg.as_scalar_const(value)) else {
+    let Some(folds) = rewrite::fold_inst(dfg, inst, |value| dfg.as_scalar_const(value)) else {
         return false;
     };
     let args: SmallVec<[Value; 3]> = dfg.operands(inst).into();
@@ -113,8 +105,8 @@ fn fold_instruction(func: &mut FuncBody, inst: Inst, work: &mut Worklist) -> boo
     assert_eq!(folds.len(), results.len(), "fold result arity");
     for (value, fold) in results.into_iter().zip(folds) {
         let replacement = match fold {
-            evaluate::Fold::Operand(index) => args[index],
-            evaluate::Fold::Constant(value) => func.edit().constant(value.into()),
+            rewrite::Fold::Operand(index) => args[index],
+            rewrite::Fold::Constant(value) => func.edit().constant(value.into()),
         };
         work.replace(func, value, replacement);
     }
@@ -146,9 +138,12 @@ impl Worklist {
         for block in func.layout().block_order() {
             work.block(block);
             for inst in func.layout().block_insts(block) {
-                work.instruction(inst);
+                let view = func.dfg().inst(inst);
+                if !view.is_terminator() {
+                    work.instruction(inst);
+                }
                 let mut index = 0;
-                func.dfg().inst(inst).visit_successors(|edge| {
+                view.visit_successors(|edge| {
                     work.incoming[edge.block].push(EdgeRef { inst, index });
                     index += 1;
                 });
@@ -182,7 +177,18 @@ impl Worklist {
 
     fn users(&mut self, func: &FuncBody, value: Value) {
         for site in func.dfg().uses(value) {
-            self.instruction(site.inst());
+            let inst = site.inst();
+            let view = func.dfg().inst(inst);
+            if view.is_terminator() {
+                // Only edge arguments affect destination parameters.
+                view.visit_successors(|edge| {
+                    if edge.args.contains(&value) {
+                        self.block(edge.block);
+                    }
+                });
+            } else {
+                self.instruction(inst);
+            }
         }
     }
 
@@ -194,6 +200,7 @@ impl Worklist {
     }
 
     fn replace(&mut self, func: &mut FuncBody, old: Value, new: Value) {
+        // Read old uses before replacement detaches them; queued work runs later.
         self.users(func, old);
         func.edit().replace_all_uses(old, new);
     }

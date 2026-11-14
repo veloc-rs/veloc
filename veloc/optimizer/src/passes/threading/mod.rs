@@ -5,7 +5,7 @@ mod bypass;
 mod ssa;
 pub use bypass::BypassPass;
 
-use crate::{FunctionPass, OptConfig, PassOutcome, Profile, evaluate};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile, rewrite};
 use hashbrown::{HashMap, HashSet};
 use std::collections::VecDeque;
 use veloc_analyzer::AnalysisManager;
@@ -237,24 +237,24 @@ fn duplicate(
             .collect();
         let results = f.dfg().inst_results(inst).to_vec();
         let types: Vec<_> = results.iter().map(|&v| f.dfg().value_type(v)).collect();
-        if let Some(folds) = evaluate::fold(f.dfg().inst_fields(inst), &args, &types, |v| {
+        if let Some(folds) = rewrite::fold(f.dfg().inst_fields(inst), &args, &types, |v| {
             f.dfg().as_scalar_const(v)
         }) {
             for (&old, fold) in results.iter().zip(folds) {
                 let new = match fold {
-                    evaluate::Fold::Operand(i) => args[i],
-                    evaluate::Fold::Constant(c) => f.edit().constant(c.into()),
+                    rewrite::Fold::Operand(i) => args[i],
+                    rewrite::Fold::Constant(c) => f.edit().constant(c.into()),
                 };
                 values.insert(old, new);
             }
             continue;
         }
-        let chosen = evaluate::successors(f.dfg().inst(inst), |value| {
+        let chosen = rewrite::successors(f.dfg().inst(inst), |value| {
             f.dfg()
                 .as_scalar_const(values.get(&value).copied().unwrap_or(value))
-                .map_or(evaluate::Fact::Varying, evaluate::Fact::Constant)
+                .map_or(rewrite::Fact::Varying, rewrite::Fact::Constant)
         });
-        if let evaluate::Successors::One(chosen) = chosen {
+        if let rewrite::Successors::One(chosen) = chosen {
             let edge = f
                 .dfg()
                 .inst(inst)

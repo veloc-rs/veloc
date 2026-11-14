@@ -134,7 +134,7 @@ impl Predicate {
             Self::Bits(ty) => format!("u64::from(({}).element_bits()?)", code(ty)?),
             Self::IsConstant(slot) => format!("{}.is_some()", cx.constant(*slot)?),
             Self::Constant { value, bits, equal } => format!(
-                "crate::evaluate::matches_constant({}, {bits}u64, {equal})",
+                "crate::rewrite::matches_constant({}, {bits}u64, {equal})",
                 cx.constant(*value)?
             ),
             Self::Binary(op @ ("+" | "-" | "*"), a, b) => {

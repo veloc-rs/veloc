@@ -1,5 +1,5 @@
 //! Local branch patterns; no data-flow analysis or CFG cleanup.
-use crate::evaluate::{Fact, Successors};
+use crate::rewrite::{Fact, Successors};
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{FuncBody, Inst, InstView, SuccessorData};
@@ -38,7 +38,7 @@ impl FunctionPass for BranchPatternsPass {
 /// Fold literal selectors before trying spec branch rules. Shared with CFG
 /// cleanup so it can simplify terminators without a separate branch pass.
 pub(super) fn rewrite_terminator(func: &mut FuncBody, inst: Inst) -> bool {
-    if let Successors::One(index) = crate::evaluate::successors(func.dfg().inst(inst), |value| {
+    if let Successors::One(index) = crate::rewrite::successors(func.dfg().inst(inst), |value| {
         func.dfg()
             .as_scalar_const(value)
             .map_or(Fact::Varying, Fact::Constant)

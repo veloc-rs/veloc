@@ -317,7 +317,7 @@ fn emit(
             };
             match output {
                 Output::Constants => value,
-                Output::Folds => format!("crate::evaluate::Fold::Constant({value})"),
+                Output::Folds => format!("crate::rewrite::Fold::Constant({value})"),
             }
         })
         .collect::<Vec<_>>()

@@ -1,6 +1,6 @@
 //! Bypass dispatch blocks using facts specific to each incoming edge.
 //! This does not clone instructions or specialize general block bodies.
-use crate::evaluate::{self, Fact, Successors};
+use crate::rewrite::{self, Fact, Successors};
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use std::collections::HashSet;
 use veloc_analyzer::AnalysisManager;
@@ -63,7 +63,7 @@ fn bypass(f: &mut FuncBody, block: Block, last: Inst) -> u64 {
             }
             let params = f.dfg().block_params(edge.block);
             let view = f.dfg().inst(inst);
-            let Successors::One(chosen) = evaluate::successors(view, |value| {
+            let Successors::One(chosen) = rewrite::successors(view, |value| {
                 let mapped = params
                     .iter()
                     .position(|&p| p == value)

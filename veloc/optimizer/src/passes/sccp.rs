@@ -1,8 +1,8 @@
 //! Sparse conditional constant propagation. Values and executable edges reach
 //! a joint fixed point before any IR is edited; unreachable predecessors never
 //! contribute to a block parameter. Work follows SSA uses, not whole-CFG rounds.
-use crate::evaluate::{Fact, Fold, Successors};
-use crate::{FunctionPass, OptConfig, PassOutcome, Profile, evaluate};
+use crate::rewrite::{Fact, Fold, Successors};
+use crate::{FunctionPass, OptConfig, PassOutcome, Profile, rewrite};
 use cranelift_entity::SecondaryMap;
 use std::collections::VecDeque;
 use veloc_analyzer::AnalysisManager;
@@ -61,7 +61,7 @@ impl Solver {
         }
     }
     fn successors(&self, f: &FuncBody, inst: Inst) -> Successors {
-        evaluate::successors(f.dfg().inst(inst), |value| self.fact(f, value))
+        rewrite::successors(f.dfg().inst(inst), |value| self.fact(f, value))
     }
 
     fn transfer(&mut self, f: &FuncBody, inst: Inst) {
@@ -86,7 +86,7 @@ impl Solver {
         let results = dfg.inst_results(inst);
         self.evaluations += 1;
         let args = dfg.operands(inst);
-        if let Some(folds) = evaluate::fold_inst(dfg, inst, |v| self.fact(f, v).constant()) {
+        if let Some(folds) = rewrite::fold_inst(dfg, inst, |v| self.fact(f, v).constant()) {
             for (&value, fold) in results.iter().zip(folds) {
                 let fact = match fold {
                     Fold::Operand(i) => self.fact(f, args[i]),
@@ -96,7 +96,7 @@ impl Solver {
             }
             return;
         }
-        let fact = if !evaluate::can_fold(view.opcode()) {
+        let fact = if !rewrite::can_fold(view.opcode()) {
             // Unsupported/effectful operations cannot wait on unknown inputs.
             Fact::Varying
         } else if view.opcode() == Opcode::Select {

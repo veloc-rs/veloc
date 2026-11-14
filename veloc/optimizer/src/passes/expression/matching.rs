@@ -1,7 +1,7 @@
 //! Equality queries over a stable graph. Captured matches construct checked
 //! replacement plans after enumeration finishes.
 use super::storage::{Expressions, Value};
-use crate::evaluate::matches_constant;
+use crate::rewrite::matches_constant;
 use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;

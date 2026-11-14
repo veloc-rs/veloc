@@ -105,7 +105,7 @@ impl<'a> Expressions<'a> {
     pub(super) fn import_inst(&mut self, original: veloc_mir::Inst) -> Option<Inst> {
         let dfg = self.body.dfg();
         let view = dfg.inst(original);
-        let supported = crate::evaluate::can_fold(view.opcode())
+        let supported = crate::rewrite::can_fold(view.opcode())
             || (super::matching::supports(view.opcode()) && view.can_speculate())
             || matches!(
                 view,
@@ -150,8 +150,7 @@ impl<'a> Expressions<'a> {
 
     pub(super) fn create(&mut self, fields: InstFields, args: &[Value], ty: Type) -> Inst {
         let types: SmallVec<[Type; 3]> = args.iter().map(|&v| self.value_type(v)).collect();
-        crate::evaluate::validate_fields(&fields, &types, &[ty])
-            .expect("checked expression recipe");
+        crate::rewrite::validate_fields(&fields, &types, &[ty]).expect("checked expression recipe");
         let result = self.storage.values.push(ValueData {
             ty,
             inst: None.into(),

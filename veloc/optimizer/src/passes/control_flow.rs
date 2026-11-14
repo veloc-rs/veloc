@@ -266,7 +266,7 @@ block2(v3: i32):
     }
     #[test]
     fn generated_branch_rules_preserve_arguments_and_pending_facts() {
-        use crate::evaluate::{self, Fact, Successors};
+        use crate::rewrite::{self, Fact, Successors};
         let mut module = ModuleParser::new()
             .parse(
                 "local function branch(v0: bool, v1: i32, v2: i32) -> i32
@@ -283,11 +283,11 @@ block1(v4: i32):
         let inst = f.layout().last_inst(f.entry_block()).unwrap();
         let view = f.dfg().inst(inst);
         assert!(matches!(
-            evaluate::successors(view, |_| Fact::Unknown),
+            rewrite::successors(view, |_| Fact::Unknown),
             Successors::Pending
         ));
         assert!(matches!(
-            evaluate::successors(view, |_| Fact::Varying),
+            rewrite::successors(view, |_| Fact::Varying),
             Successors::All
         ));
         crate::rewrite::find_rewrite(f, inst)

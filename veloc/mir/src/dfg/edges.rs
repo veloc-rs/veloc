@@ -33,25 +33,24 @@ impl DataFlowGraph {
     /// Filter every occurrence of the target, including repeated table cases.
     pub(crate) fn retain_edge_args(&mut self, inst: Inst, target: Block, keep: &[bool]) {
         let stored = &mut self.instructions[inst];
-        let mut compact = self.operands.compact(stored.operands);
+        let old = stored.operands;
         let mut selected = smallvec::SmallVec::<[usize; 2]>::new();
-        let mut index = 0;
         let count = keep.iter().filter(|&&retain| retain).count() as u32;
-        stored
-            .fields
-            .visit_edges(stored.operands.len, |edge, args| {
+        stored.operands = self.operands.retain_groups(old, |groups| {
+            let mut index = 0;
+            stored.fields.visit_edges(old.len, |edge, args| {
                 if edge.block == target {
                     assert_eq!(
                         edge.len as usize,
                         keep.len(),
                         "successor argument count mismatch"
                     );
-                    compact.retain(args, |index| keep[index]);
+                    groups.retain_range(args, |index| keep[index]);
                     selected.push(index);
                 }
                 index += 1;
             });
-        stored.operands = compact.finish();
+        });
         // All old ranges have been consumed; only now change stored lengths.
         for index in selected {
             stored.fields.set_stored_edge_arg_count(index, count);
@@ -66,10 +65,7 @@ impl DataFlowGraph {
         ));
         let (block, args) = self.edge_args(edge);
         let old = self.instructions[edge.inst].operands;
-        let mut compact = self.operands.compact(old);
-        compact.retain(0..args.start, |_| false);
-        compact.retain(args.end..old.len, |_| false);
-        let operands = compact.finish();
+        let operands = self.operands.keep_range(old, args);
 
         self.instructions[edge.inst].replace_with_jump(block, operands);
     }

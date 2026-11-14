@@ -294,7 +294,7 @@ impl Symbolic<'_> {
             .iter()
             .map(|&v| Self::value(body, state, v))
             .collect::<Option<_>>()?;
-        if let Some(folds) = crate::evaluate::fold_inst(body.dfg(), inst, |v| {
+        if let Some(folds) = crate::rewrite::fold_inst(body.dfg(), inst, |v| {
             ScalarConst::from_bits(
                 body.dfg().value_type(v),
                 number(&Self::value(body, state, v)?)?,
@@ -302,8 +302,8 @@ impl Symbolic<'_> {
         }) && let [fold] = &folds[..]
         {
             return Some(match fold {
-                crate::evaluate::Fold::Operand(i) => args[*i].clone(),
-                crate::evaluate::Fold::Constant(value) => constant(value.to_bits(), bits),
+                crate::rewrite::Fold::Operand(i) => args[*i].clone(),
+                crate::rewrite::Fold::Constant(value) => constant(value.to_bits(), bits),
             });
         }
         let a = args.first()?;
