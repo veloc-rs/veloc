@@ -2,8 +2,9 @@
 //! Spec supplies semantics and rules; callers own analysis state and decide
 //! when to apply the returned results.
 use crate::passes::expression::{ExprValue, Expressions};
+use crate::range::IntRange;
 use smallvec::SmallVec;
-use veloc_mir::{FuncBody, Inst, InstFields, Opcode, ScalarConst, Type, TypeInfo, Value};
+use veloc_mir::{FuncBody, Inst, InstFields, InstView, Opcode, ScalarConst, Type, TypeInfo, Value};
 
 /// A replacement for one instruction result. Operand indices refer to the
 /// original argument order.
@@ -13,22 +14,30 @@ pub enum Fold {
     Constant(ScalarConst),
 }
 
-/// Constant-propagation lattice. Unknown means no information has arrived yet,
+/// Value-propagation lattice. Unknown means no information has arrived yet,
 /// not an IR undef value. Facts never serve as operand identities.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Fact {
     #[default]
     Unknown,
     Constant(ScalarConst),
+    Range(IntRange),
     Varying,
 }
 
 impl Fact {
+    /// Merge facts for the same MIR type, as guaranteed by SSA and Select.
     pub(crate) fn join(self, other: Self) -> Self {
         match (self, other) {
             (Self::Unknown, x) | (x, Self::Unknown) => x,
             (a, b) if a == b => a,
-            _ => Self::Varying,
+            (a, b) => match (a.known_range(), b.known_range()) {
+                (Some(a), Some(b)) => {
+                    debug_assert_eq!(a.ty, b.ty);
+                    a.union(&b).fact()
+                }
+                _ => Self::Varying,
+            },
         }
     }
 
@@ -36,6 +45,21 @@ impl Fact {
         match self {
             Self::Constant(c) => Some(c),
             _ => None,
+        }
+    }
+
+    fn known_range(self) -> Option<IntRange> {
+        match self {
+            Self::Constant(c) => IntRange::constant(c),
+            Self::Range(range) => Some(range),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn range(self, ty: Type) -> Option<IntRange> {
+        match self {
+            Self::Varying => IntRange::full(ty),
+            _ => self.known_range(),
         }
     }
 
@@ -52,7 +76,7 @@ impl Fact {
                 }
             }
             Self::Unknown => Self::Unknown,
-            Self::Varying => yes.join(no),
+            Self::Varying | Self::Range(_) => yes.join(no),
         }
     }
 }
@@ -64,13 +88,35 @@ pub(crate) enum Successors {
     One(usize),
 }
 
+/// Resolve executable edges from analysis facts without changing the IR.
+pub(crate) fn successors(view: InstView<'_>, mut fact: impl FnMut(Value) -> Fact) -> Successors {
+    let (selector, cases) = match view {
+        InstView::Br { condition, .. } => (condition, None),
+        // A valid table always ends with its default successor.
+        InstView::BrTable { index, table } => (index, Some(table.len() - 1)),
+        _ => return Successors::All,
+    };
+    match fact(selector) {
+        Fact::Unknown => Successors::Pending,
+        Fact::Varying => Successors::All,
+        Fact::Range(range) => match cases {
+            Some(count) if range.unsigned_min() >= count as u64 => Successors::One(count),
+            _ => Successors::All,
+        },
+        Fact::Constant(value) => Successors::One(match cases {
+            Some(count) => value.to_bits().min(count as u64) as usize,
+            None => usize::from(value.to_bits() == 0),
+        }),
+    }
+}
+
 mod local {
     use super::*;
     include!(concat!(env!("OUT_DIR"), "/fold.rs"));
 }
 
+pub(crate) use local::validate_fields;
 pub use local::{can_fold, fold};
-pub(crate) use local::{successors, validate_fields};
 
 /// Pattern literals are masked to the operand width. An unknown constant proves
 /// neither equality nor inequality, in direct reductions, guards or queries.

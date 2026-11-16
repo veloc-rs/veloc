@@ -72,7 +72,11 @@ impl FunctionPass for CfgPass {
                         _ => None,
                     })
                     .collect();
-                let mut edited = super::branch_patterns::rewrite_terminator(f, last);
+                let mut edited = false;
+                if let Some(rewrite) = crate::rewrite::find_rewrite(f, last) {
+                    rewrite.apply(f, last);
+                    edited = true;
+                }
                 edited |= forward_edges(f, block, last);
                 // Merging substitutes block parameters, including uses in blocks
                 // other than the merged pair. Revisit those users as well.
@@ -167,9 +171,8 @@ fn forward_edges(f: &mut FuncBody, block: Block, inst: Inst) -> bool {
     changed
 }
 
-/// Map an incoming edge through a jump-only block. Shared with edge-specific
-/// threading so parameter substitution and escaping-use checks stay identical.
-pub(super) fn forward_successor(f: &FuncBody, edge: &SuccessorData) -> Option<SuccessorData> {
+/// Map an incoming edge through a jump-only block without leaving parameter uses behind.
+fn forward_successor(f: &FuncBody, edge: &SuccessorData) -> Option<SuccessorData> {
     let only = f.layout().first_inst(edge.block)?;
     if f.layout().last_inst(edge.block) != Some(only) {
         return None;

@@ -24,6 +24,8 @@ rule Select {
 // Captured successors include their complete argument lists. Replacements may
 // select one original edge or permute both; they cannot construct new edges.
 rule Br {
+    case (true, yes, _) => Jump(yes);
+    case (false, _, no) => Jump(no);
     case (Select(c, yes, no), a, b)
         if constant_bits(yes) == 1 && constant_bits(no) == 0
         => Br(c, a, b);
@@ -31,4 +33,9 @@ rule Br {
         if constant_bits(yes) == 0 && constant_bits(no) == 1
         => Br(c, b, a);
     case (_, a, a) => Jump(a);
+}
+
+rule BrTable {
+    case (index, cases, default)
+        => Jump(cases.get(constant_bits(index)).unwrap_or(default));
 }

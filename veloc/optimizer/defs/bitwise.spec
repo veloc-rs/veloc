@@ -7,6 +7,21 @@ rule IAnd {
         case (x, x) => x;
     }
 
+    where T: ScalarInteger {
+        // Excluding two constants is the complement of the corresponding IOr.
+        // With a clear differing bit, masking alone identifies both constants.
+        case (Icmp(IntCC::Ne, x: T, a), Icmp(IntCC::Ne, x, b))
+            if unsigned(a) < unsigned(b)
+                && ((unsigned(b) - unsigned(a)) & (unsigned(b) - unsigned(a) - 1)) == 0
+                && (unsigned(a) & (unsigned(b) - unsigned(a))) == 0
+            => Icmp(IntCC::Ne, IAnd(x, IXor(ISub(b, a), -1)), a);
+        // Otherwise translate a to zero before ignoring the differing bit.
+        case (Icmp(IntCC::Ne, x: T, a), Icmp(IntCC::Ne, x, b))
+            if unsigned(a) < unsigned(b)
+                && ((unsigned(b) - unsigned(a)) & (unsigned(b) - unsigned(a) - 1)) == 0
+            => Icmp(IntCC::Ne, IAnd(ISub(x, a), IXor(ISub(b, a), -1)), 0);
+    }
+
     where T: ScalarInteger, (T, T) -> T {
         case (x, -1) => x;
         case (x, 0) => 0;
@@ -53,6 +68,21 @@ rule IOr {
         case (x, x) => x;
     }
 
+    where T: ScalarInteger {
+        // a < b and (b - a) & (b - a - 1) == 0 establish a power-of-two gap.
+        // If a has that bit clear, a and b already differ in exactly one bit.
+        case (Icmp(IntCC::Eq, x: T, a), Icmp(IntCC::Eq, x, b))
+            if unsigned(a) < unsigned(b)
+                && ((unsigned(b) - unsigned(a)) & (unsigned(b) - unsigned(a) - 1)) == 0
+                && (unsigned(a) & (unsigned(b) - unsigned(a))) == 0
+            => Icmp(IntCC::Eq, IAnd(x, IXor(ISub(b, a), -1)), a);
+        // (x - a) is either zero or b - a; subtraction uses the operand width.
+        case (Icmp(IntCC::Eq, x: T, a), Icmp(IntCC::Eq, x, b))
+            if unsigned(a) < unsigned(b)
+                && ((unsigned(b) - unsigned(a)) & (unsigned(b) - unsigned(a) - 1)) == 0
+            => Icmp(IntCC::Eq, IAnd(ISub(x, a), IXor(ISub(b, a), -1)), 0);
+    }
+
     where T: ScalarInteger, (T, T) -> T {
         case (x, 0) => x;
         case (x, -1) => -1;
@@ -72,6 +102,8 @@ rule IOr {
 
 rule IXor {
     case (x: Type::BOOL, false) => x;
+    case (Icmp(IntCC::Eq, x, y), true) => Icmp(IntCC::Ne, x, y);
+    case (Icmp(IntCC::Ne, x, y), true) => Icmp(IntCC::Eq, x, y);
 
     where T: ScalarInteger, (T, T) -> T {
         case (x, 0) => x;

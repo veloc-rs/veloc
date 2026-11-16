@@ -4,6 +4,8 @@ mod error;
 pub mod manager;
 pub mod pass;
 pub mod passes;
+mod path_facts;
+mod range;
 pub mod rewrite;
 
 pub use error::Error;

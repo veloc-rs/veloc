@@ -44,7 +44,6 @@ pub(crate) fn generate(
     let types = format!("{rust}::Type");
     Ok(Output {
         folds: expression::emit_attributes(defs)
-            + &crate::model::control::generate(defs)
             + &expression::emit_folds(defs, &rules, &opcode, &types),
         equivalences: equivalence::generate(defs, &rules, &opcode)
             + &expression::emit_plans(defs, &rules, &opcode, &types),

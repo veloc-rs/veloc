@@ -258,49 +258,74 @@ operand positions and constants directly, without an `InstRewrite` wrapper.
 
 ### Branch selection and local control rewrites
 
-MIR instructions declare successor-selection semantics alongside their storage:
-
-```text
-control = jump(dest);
-control = branch(condition, then_dest, else_dest);
-control = table(index, cases, default);
-```
-
-These forms require the corresponding parameter/storage order, no results,
-and a `bool` or `i32` selector respectively. The generated `successors` query accepts `Fact` and returns
-`Successors::{Pending, All, One(index)}`. For a constant selector, `One` names
+The handwritten `rewrite::successors` query accepts `Fact` and returns
+`Successors::{Pending, All, One(index)}` for MIR branches. For a constant selector, `One` names
 an original edge index: false selects the second branch edge; a table index is
 unsigned and selects the default when outside the case range. Unconditional
 jumps need no reduction. SCCP supplies abstract facts and keeps `Unknown`
-selectors pending; local CFG cleanup and threading supply `Constant` for known
-constants and `Varying` otherwise.
+selectors pending; threading supplies `Constant` for known constants and
+`Varying` otherwise.
 Selection never edits IR during analysis.
 
-Directed rules may capture complete root successors:
+Directed rules may capture complete root successors. The MIR instruction
+adapter supports `Jump`, `Br` and `BrTable`, checking their signatures and
+storage order before lowering to editor operations:
 
 ```text
 rule Br {
+    case (true, yes, _) => Jump(yes);
+    case (false, _, no) => Jump(no);
     case (Select(c, yes, no), a, b)
         if constant_bits(yes) == 0 && constant_bits(no) == 1
         => Br(c, b, a);
     case (_, a, a) => Jump(a);
 }
+
+rule BrTable {
+    case (index, cases, default)
+        => Jump(cases.get(constant_bits(index)).unwrap_or(default));
+}
 ```
 
+Boolean operand patterns require a known boolean constant. Successor-list
+`get(index)` takes an unsigned `u64` index and produces an optional original
+edge; `unwrap_or(edge)` supplies the fallback, while `?` rejects an out-of-range
+selection. `constant_bits(index)` rejects the whole rule when the selector is
+not constant: only an out-of-range constant chooses the default edge here.
+Selection retains the original edge occurrence and its complete arguments.
 Repeated successor captures compare the destination **and all arguments**.
 Replacements may select a captured edge or preserve/swap both original edges;
 constructing new successors, editing their arguments, and matching across blocks
 are rejected. All directed rules share the `find_rewrite` entry point. Branch
 plans carry an original edge index or a new condition and edge order; applying
 them uses `FuncEditor::fold_to_edge` or `rewrite_branch` for the complete edit.
-`branch_patterns::rewrite_terminator` first folds branches selected by literal
-constants, then matches and applies the generated rules. Both branch patterns
-and CFG cleanup use this helper. Literal selection reuses the same read-only
-query as SCCP and threading.
+`CfgPass` matches and applies the generated terminator rules, including
+constant branch and table selection. SCCP and threading use the fact-based
+`successors` query without editing IR during analysis.
 Callers choose which instructions to rewrite: Simplify skips terminators, while
-branch patterns process only terminators. Expression e-graphs
-do not acquire CFG rewriting. Cross-block threading and speculative diamond
-conversion remain separate passes.
+CFG cleanup processes terminators. Expression e-graphs do not acquire CFG rewriting.
+
+`IfConversionPass` merges branches with a common complete successor into boolean
+`IOr`/`IAnd` expressions, optionally negating the second condition. It speculates
+only a single safe comparison in a block with one predecessor and no parameters.
+It also converts cheap diamonds to selects. These transformations run before
+`ExpressionPass`, whose spec rules simplify the resulting expressions, followed
+by `ControlFlowPass` for threading and structural cleanup. The CFG layer chooses
+whether to speculate; expression extraction only costs the resulting computation.
+The masked comparison rules in `bitwise.spec` therefore also apply to boolean
+expressions that did not originate from branches.
+
+`BypassPass` specializes incoming edges using the already simplified IR. It
+binds block parameters to that edge's arguments, substitutes operands, and calls
+`fold` in instruction order. The incoming branch also supplies its known truth
+value and integer comparison predicate. Folded results can become arguments on
+the redirected edge. A block is bypassed only when every ordinary instruction
+folds and none of its definitions have direct uses in other blocks. This keeps
+effects, traps and SSA availability intact without cloning instructions. Tracing
+stops at an unknown branch. A cycle or an exhausted instruction budget discards
+the trace to avoid repeatedly peeling constant loops. Other incoming edges retain
+the original block. No SCCP fact table or fixed-point solver is needed for these
+local substitutions.
 
 ### Shared expression evaluation
 
@@ -310,14 +335,59 @@ original operand positions or established constants. Identities are distinct
 from constant facts: two different values described as `Varying` are not equal
 operands.
 
-The constant lattice is `Unknown`, `Constant` or `Varying`. `Unknown` means an
-iterative analysis has not supplied information yet, not an IR undef value.
+The value lattice is `Unknown`, `Constant`, an integer `Range`, or `Varying`.
+`Unknown` means an iterative analysis has not supplied information yet, not an
+IR undef value. Different integer constants join to a typed range instead of
+immediately becoming `Varying`. Singleton ranges become constants; full ranges
+become `Varying`. Floating-point constants keep their exact bit patterns and do
+not enter integer range arithmetic.
 SCCP first applies spec identities and concrete evaluation through `fold_inst`,
-then propagates provisional facts for instructions that did not fold. A Select
-with a varying condition joins its arms through `Fact::select`. This propagation
-is owned by SCCP, independently of spec rule generation.
+then transfers integer ranges through comparisons, add/subtract/multiply,
+negation, AND/OR/XOR, integer conversions and unsigned division/remainder with a
+proven nonzero divisor. A Select with a varying condition joins its arms through
+`Fact::select`. These transfer functions live in `range.rs`; scheduling and
+convergence remain owned by SCCP, independently of spec rule generation.
 Unsupported or effectful operations produce `Varying` rather than waiting on
 unknown inputs.
+
+Integer facts use `IntRange`, one half-open interval on the fixed-width
+bit-pattern circle, following LLVM's ConstantRange representation. Two `u64`
+endpoints store the range; `lower > upper` wraps through zero. Equal endpoints
+are reserved: `[0, 0)` is empty and `[MAX, MAX)` is full. Intermediate `u128`
+arithmetic handles the full `2^64` span without overflow. Signed comparisons
+reinterpret the same bit patterns in signed order.
+
+Union chooses the smallest arc covering both inputs, breaking ties by the
+unsigned lower bound. Thus `{3, 5}` becomes `[3, 6)`, while an 8-bit wrapping
+range such as `[253, 3)` needs no splitting. Intersection is exact when one arc
+can represent it; disconnected intersections are conservatively covered by one
+arc as well. Empty intersections are detected exactly and denote infeasible
+constraints, never pending SCCP facts. Approximate joins can depend on arrival
+order, but always retain both inputs.
+
+The representation has fixed size, so there is no interval-count budget or
+interval-list normalization. Wrapping add/subtract/negate operate directly on
+arcs. Multiplication, bitwise operations and unsigned division/remainder use
+unsigned bounds, which may lose precision for wrapping inputs. Loop widening
+remains a separate convergence policy.
+
+`PathFacts` shares substitutions, integer constraints and relational predicates
+between branch bypass and the dominator-scoped PredicatePass. A comparison
+against a constant intersects the local value set with its allowed values;
+an empty intersection rejects that path. Arithmetic and comparison queries
+consume these local facts. Checkpoints restore facts before visiting sibling
+paths; none of these refinements are published as global SCCP results.
+
+Only block-parameter merges apply widening, since loop feedback passes through
+them. Each parameter gets one range extension per executable incoming edge plus
+one additional extension before widening to `Varying`. Successor occurrences
+are counted separately, even when several edges share the same predecessor and
+destination. Ordinary instruction transfers have no widening counter. This
+allows large acyclic merges while bounding repeated loop growth. Branches become
+unconditional when range comparisons produce a constant. A table also selects
+its default when the entire index range is beyond its cases; a wrapping range
+containing zero cannot satisfy that test. Other table ranges conservatively
+keep all successors executable.
 
 SCCP supplies its current facts and publishes updates through its worklist.
 It revisits users when input facts change and reaches a fixed point before

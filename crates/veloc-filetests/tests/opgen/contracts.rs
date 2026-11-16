@@ -496,13 +496,4 @@ fn control_rules_reject_new_edges_and_invalid_selection_contracts() {
             .expect("invalid replacement was accepted");
         assert!(error.to_string().contains(diagnostic), "{error}");
     }
-    common::rejected(
-        &changed_record(
-            "op",
-            "Br",
-            "control = branch(condition, then_dest, else_dest);",
-            "control = branch(then_dest, condition, else_dest);",
-        ),
-        "control requires",
-    );
 }

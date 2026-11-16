@@ -2,93 +2,11 @@
 //! a unique-predecessor successor and undone on leaving its dominator subtree.
 //! This exposes path-specific constants without cloning code or changing CFG.
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
-use hashbrown::HashMap;
+use crate::{path_facts::PathFacts, rewrite::Fact};
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{Block, FuncBody, InstView, IntCC, ScalarConst, Type, Value};
+use veloc_mir::{Block, FuncBody, InstView, ScalarConst, Value};
 
 pub struct PredicatePass;
-
-enum Undo {
-    Constant(Value, Option<Value>),
-    Comparison([Value; 2]),
-}
-#[derive(Default)]
-struct Facts {
-    constants: HashMap<Value, Value>,
-    comparisons: HashMap<[Value; 2], Vec<IntCC>>,
-    undo: Vec<Undo>,
-}
-impl Facts {
-    fn constant(&mut self, value: Value, literal: Value) {
-        if value != literal {
-            let old = self.constants.insert(value, literal);
-            self.undo.push(Undo::Constant(value, old));
-        }
-    }
-    fn resolve(&self, value: Value) -> Value {
-        self.constants.get(&value).copied().unwrap_or(value)
-    }
-    fn assume(&mut self, f: &mut FuncBody, condition: Value, truth: bool) {
-        let literal = f.edit().constant(
-            ScalarConst::from_bits(Type::BOOL, u64::from(truth))
-                .unwrap()
-                .into(),
-        );
-        self.constant(condition, literal);
-        let Some(inst) = f.dfg().value_inst(condition) else {
-            return;
-        };
-        if let InstView::IntCompare { mut kind, args } = f.dfg().inst(inst) {
-            let mut args = args.map(|v| self.resolve(v));
-            if !truth {
-                kind = kind.complement();
-            }
-            if kind == IntCC::Eq {
-                if f.dfg().as_scalar_const(args[0]).is_some() {
-                    self.constant(args[1], args[0]);
-                } else if f.dfg().as_scalar_const(args[1]).is_some() {
-                    self.constant(args[0], args[1]);
-                }
-            }
-            if args[1] < args[0] {
-                args.swap(0, 1);
-                kind = kind.swap();
-            }
-            self.undo.push(Undo::Comparison(args));
-            self.comparisons.entry(args).or_default().push(kind);
-        }
-    }
-    fn comparison(&self, mut args: [Value; 2], mut kind: IntCC) -> Option<bool> {
-        if args[1] < args[0] {
-            args.swap(0, 1);
-            kind = kind.swap();
-        }
-        self.comparisons
-            .get(&args)?
-            .iter()
-            .find_map(|known| known.implies(kind))
-    }
-    fn restore(&mut self, checkpoint: usize) {
-        while self.undo.len() > checkpoint {
-            match self.undo.pop().unwrap() {
-                Undo::Constant(value, old) => {
-                    if let Some(old) = old {
-                        self.constants.insert(value, old);
-                    } else {
-                        self.constants.remove(&value);
-                    }
-                }
-                Undo::Comparison(args) => {
-                    let predicates = self.comparisons.get_mut(&args).unwrap();
-                    predicates.pop();
-                    if predicates.is_empty() {
-                        self.comparisons.remove(&args);
-                    }
-                }
-            }
-        }
-    }
-}
 
 fn incoming_fact(f: &FuncBody, block: Block) -> Option<(Value, bool)> {
     if block == f.entry_block() {
@@ -118,7 +36,7 @@ impl FunctionPass for PredicatePass {
     fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         let dom = am.take_dominators();
         let f = am.function_mut();
-        let mut facts = Facts::default();
+        let mut facts = PathFacts::default();
         // Explicit enter/leave events avoid recursion on deeply nested CFGs.
         let mut work = vec![(f.entry_block(), None)];
         let mut changed = 0;
@@ -127,30 +45,44 @@ impl FunctionPass for PredicatePass {
                 facts.restore(checkpoint);
                 continue;
             }
-            let checkpoint = facts.undo.len();
-            if let Some((condition, truth)) = incoming_fact(f, block) {
-                facts.assume(f, condition, truth);
+            let checkpoint = facts.checkpoint();
+            if let Some((condition, truth)) = incoming_fact(f, block)
+                && !facts.assume(f, condition, truth)
+            {
+                facts.restore(checkpoint);
+                continue;
             }
             let insts: Vec<_> = f.layout().block_insts(block).collect();
             for inst in insts {
                 let operands = f.dfg().operands(inst).to_vec();
                 for (i, value) in operands.into_iter().enumerate() {
-                    let new = facts.resolve(value);
+                    let mut new = facts.resolve(value);
+                    if let Some(c) = facts.fact(f.dfg(), new).constant() {
+                        new = f.edit().constant(c.into());
+                    }
                     if value != new {
                         f.edit().set_operand(inst, i as u32, new);
                         changed += 1;
                     }
                 }
-                if let InstView::IntCompare { kind, args } = f.dfg().inst(inst)
-                    && let Some(truth) = facts.comparison(*args, kind)
-                {
-                    let result = f.dfg().first_result(inst).unwrap();
-                    let literal = f.edit().constant(
-                        ScalarConst::from_bits(Type::BOOL, u64::from(truth))
-                            .unwrap()
-                            .into(),
-                    );
-                    facts.constant(result, literal);
+                let fact = match f.dfg().inst(inst) {
+                    InstView::IntCompare { kind, args } => facts
+                        .comparison(f.dfg(), kind, *args)
+                        .map(|truth| Fact::Constant(ScalarConst::from(truth))),
+                    _ => None,
+                }
+                .or_else(|| crate::range::evaluate(f.dfg(), inst, |v| facts.fact(f.dfg(), v)));
+                match fact {
+                    Some(Fact::Constant(c)) => {
+                        let result = f.dfg().first_result(inst).unwrap();
+                        let literal = f.edit().constant(c.into());
+                        facts.bind(result, literal);
+                    }
+                    Some(Fact::Range(range)) => {
+                        let result = f.dfg().first_result(inst).unwrap();
+                        facts.refine(f.dfg(), result, range);
+                    }
+                    _ => {}
                 }
             }
             work.push((block, Some(checkpoint)));

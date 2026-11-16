@@ -1,8 +1,10 @@
-//! Convert cheap speculatable diamonds to selects.
+//! Convert cheap conditional computations to boolean expressions and selects.
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use std::collections::HashMap;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{FuncBody, Inst, InstView, Successor, SuccessorData, Value};
+use veloc_mir::{
+    FuncBody, Inst, InstView, Opcode, ScalarConst, Successor, SuccessorData, Type, Value,
+};
 pub struct IfConversionPass;
 impl FunctionPass for IfConversionPass {
     fn reuse_key(&self) -> Option<core::any::TypeId> {
@@ -14,23 +16,128 @@ impl FunctionPass for IfConversionPass {
     fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         let f = am.function_mut();
         let blocks: Vec<_> = f.layout().block_order().collect();
-        let mut changed = 0;
+        let mut conditions = 0;
+        let mut diamonds = 0;
         for block in blocks {
             let Some(last) = f.layout().last_inst(block) else {
                 continue;
             };
+            if common_destination(f, last) {
+                conditions += 1;
+            }
             if diamond(f, last) {
-                changed += 1;
+                diamonds += 1;
             }
         }
-        metrics.count("if_conversion.diamonds", changed);
-        if changed == 0 {
+        metrics.count("if_conversion.conditions", conditions);
+        metrics.count("if_conversion.diamonds", diamonds);
+        if conditions + diamonds == 0 {
             PassOutcome::Unchanged
         } else {
             PassOutcome::Changed
         }
     }
 }
+
+/// Merge two branches sharing a complete edge. The budget allows one extra
+/// comparison to execute unconditionally; algebraic simplification follows in
+/// ExpressionPass and does not decide whether speculation is worthwhile.
+fn common_destination(f: &mut FuncBody, branch: Inst) -> bool {
+    let InstView::Br {
+        condition,
+        then_dest,
+        else_dest,
+    } = f.dfg().inst(branch)
+    else {
+        return false;
+    };
+    let edges = [
+        SuccessorData::new(then_dest.block, then_dest.args),
+        SuccessorData::new(else_dest.block, else_dest.args),
+    ];
+    let parent = f.layout().inst_block(branch).unwrap();
+    for common_index in 0..2 {
+        let common = &edges[common_index];
+        let next = &edges[1 - common_index];
+        if next.block == parent
+            || next.block == common.block
+            || !next.args.is_empty()
+            || f.cfg().preds(next.block) != [parent]
+        {
+            continue;
+        }
+        let (compare, tail) = {
+            let mut body = f.layout().block_insts(next.block);
+            let (Some(compare), Some(tail), None) = (body.next(), body.next(), body.next()) else {
+                continue;
+            };
+            (compare, tail)
+        };
+        let view = f.dfg().inst(compare);
+        if !matches!(
+            view,
+            InstView::IntCompare { .. } | InstView::FloatCompare { .. }
+        ) || !view.can_speculate()
+        {
+            continue;
+        }
+        let InstView::Br {
+            condition: other,
+            then_dest,
+            else_dest,
+        } = f.dfg().inst(tail)
+        else {
+            continue;
+        };
+        if f.dfg().value_inst(other) != Some(compare)
+            || f.dfg().uses(other).any(|site| site.inst() != tail)
+        {
+            continue;
+        }
+        let (other_index, miss) = if common.as_view() == then_dest {
+            (0, else_dest)
+        } else if common.as_view() == else_dest {
+            (1, then_dest)
+        } else {
+            continue;
+        };
+        let miss = SuccessorData::new(miss.block, miss.args);
+        // The sole predecessor and absence of block parameters make the
+        // comparison's inputs available here. Moving keeps any edge uses valid.
+        f.edit().move_before(compare, branch);
+        let mut rhs = other;
+        if common_index != other_index {
+            let yes = f.edit().constant(ScalarConst::from(true).into());
+            let inverted = f.edit().insert_before(
+                branch,
+                |w| w.binary(Opcode::IXor, [rhs, yes]),
+                &[Type::BOOL],
+            );
+            rhs = f.dfg().first_result(inverted).unwrap();
+        }
+        let opcode = if common_index == 0 {
+            Opcode::IOr
+        } else {
+            Opcode::IAnd
+        };
+        let combined = f.edit().insert_before(
+            branch,
+            |w| w.binary(opcode, [condition, rhs]),
+            &[Type::BOOL],
+        );
+        let condition = f.dfg().first_result(combined).unwrap();
+        let (yes, no) = if common_index == 0 {
+            (common, &miss)
+        } else {
+            (&miss, common)
+        };
+        f.edit()
+            .replace_inst(branch, |w| w.br(condition, yes.as_view(), no.as_view()));
+        return true;
+    }
+    false
+}
+
 fn diamond(f: &mut FuncBody, branch: Inst) -> bool {
     let InstView::Br {
         condition,

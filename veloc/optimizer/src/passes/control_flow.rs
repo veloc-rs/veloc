@@ -1,5 +1,5 @@
-//! Schedule branch rewrites and structural cleanup at the existing pipeline
-//! boundaries. Iterate because each transformation can expose another's input.
+//! Iterate branch threading and structural cleanup at pipeline boundaries.
+//! Speculative condition merging runs separately before expression optimization.
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use veloc_analyzer::AnalysisManager;
 
@@ -17,21 +17,13 @@ impl FunctionPass for ControlFlowPass {
         config: &OptConfig,
         metrics: &Profile,
     ) -> PassOutcome {
-        use super::{
-            branch_patterns::BranchPatternsPass, cfg::CfgPass, if_conversion::IfConversionPass,
-            threading::BypassPass,
-        };
+        use super::{cfg::CfgPass, threading::BypassPass};
         let mut changed = am.function_mut().edit().remove_unreachable();
         loop {
             let mut round = false;
             // Keep specialization before merging: merging can hide a small
             // comparison/dispatch block that could have been bypassed.
-            for pass in [
-                &BranchPatternsPass as &dyn FunctionPass,
-                &BypassPass,
-                &IfConversionPass,
-                &CfgPass,
-            ] {
+            for pass in [&BypassPass as &dyn FunctionPass, &CfgPass] {
                 let scope = metrics.scope(pass.name(), 0);
                 round |= pass.run(am, config, metrics).changed();
                 scope.success();
@@ -228,7 +220,14 @@ block3(v4: i32):
         let converted = run(source, &IfConversionPass);
         assert_eq!(count(&converted, Opcode::Br), 0);
         assert_eq!(count(&converted, Opcode::Select), 1);
-        let mut combined = run(source, &ControlFlowPass);
+        let mut combined = converted;
+        let body = combined.body_mut(FuncId(0)).unwrap();
+        ControlFlowPass.run(
+            &mut AnalysisManager::new(body),
+            &OptConfig::default(),
+            &Profile::default(),
+        );
+        combined.validate().unwrap();
         let body = combined.body_mut(FuncId(0)).unwrap();
         assert_eq!(body.layout().block_order().count(), 1);
         assert_eq!(

@@ -4,7 +4,7 @@
 use crate::rewrite::{Fact, Fold, Successors};
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile, rewrite};
 use cranelift_entity::SecondaryMap;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::function::EdgeRef;
 use veloc_mir::{Block, FuncBody, Inst, Opcode, Value, ValueDef};
@@ -14,6 +14,9 @@ pub struct SccpPass;
 #[derive(Default)]
 struct Solver {
     facts: SecondaryMap<Value, Fact>,
+    parameter_extensions: SecondaryMap<Value, usize>,
+    edges: HashSet<EdgeRef>,
+    incoming: SecondaryMap<Block, usize>,
     executable: SecondaryMap<Block, bool>,
     queued: SecondaryMap<Inst, bool>,
     work: VecDeque<Inst>,
@@ -43,7 +46,22 @@ impl Solver {
         }
     }
     fn update(&mut self, f: &FuncBody, value: Value, fact: Fact) {
-        let next = self.facts[value].join(fact);
+        let old = self.facts[value];
+        let mut next = old.join(fact);
+        if let ValueDef::BlockParam(block) = f.dfg().value_def(value) {
+            // Loop feedback passes through block parameters. Allow one extension
+            // per executable incoming edge, plus one repeat; new predecessors
+            // therefore get room to contribute without a fixed global cap.
+            let incoming = self.incoming[block];
+            let extensions = &mut self.parameter_extensions[value];
+            if next != old && matches!(next, Fact::Range(_)) {
+                if *extensions >= incoming + 1 {
+                    next = Fact::Varying;
+                } else {
+                    *extensions += 1;
+                }
+            }
+        }
         if next != self.facts[value] {
             self.facts[value] = next;
             self.updates += 1;
@@ -74,6 +92,12 @@ impl Solver {
                 if matches!(choice, Successors::All)
                     || matches!(choice, Successors::One(i) if i == index)
                 {
+                    if self.edges.insert(EdgeRef {
+                        inst,
+                        index: index as u32,
+                    }) {
+                        self.incoming[edge.block] += 1;
+                    }
                     self.activate(f, edge.block);
                     for (&param, &arg) in dfg.block_params(edge.block).iter().zip(edge.args) {
                         self.update(f, param, self.fact(f, arg));
@@ -107,7 +131,7 @@ impl Solver {
         } else if args.iter().any(|&v| self.fact(f, v) == Fact::Unknown) {
             Fact::Unknown
         } else {
-            Fact::Varying
+            crate::range::evaluate(dfg, inst, |v| self.fact(f, v)).unwrap_or(Fact::Varying)
         };
         for &value in results {
             self.update(f, value, fact);
@@ -163,8 +187,8 @@ impl FunctionPass for SccpPass {
                         .iter()
                         .all(|&v| matches!(solver.facts[v], Fact::Constant(_)))
                 {
-                    // The shared evaluator only produces these facts for
-                    // supported operations, proving absence of traps.
+                    // Concrete and range evaluation only establish constants
+                    // when the operation is free of effects and traps.
                     folded.push(inst);
                 }
             }

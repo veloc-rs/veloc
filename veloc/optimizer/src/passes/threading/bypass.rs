@@ -1,10 +1,15 @@
-//! Bypass dispatch blocks using facts specific to each incoming edge.
-//! This does not clone instructions or specialize general block bodies.
-use crate::rewrite::{self, Fact, Successors};
+//! Fold small blocks under incoming parameter bindings and branch conditions.
+//! Only the incoming edge changes; other predecessors keep the original body.
+use crate::path_facts::PathFacts;
+use crate::rewrite::{self, Fold, Successors};
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
-use std::collections::HashSet;
+use hashbrown::HashSet;
+use smallvec::{SmallVec, smallvec};
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{Block, FuncBody, Inst, InstView, SuccessorData, function::EdgeRef};
+use veloc_mir::{Block, FuncBody, Inst, InstView, ScalarConst, SuccessorData, function::EdgeRef};
+
+const MAX_PATH_INSTS: usize = 32;
+
 pub struct BypassPass;
 impl FunctionPass for BypassPass {
     fn reuse_key(&self) -> Option<core::any::TypeId> {
@@ -37,68 +42,28 @@ fn bypass(f: &mut FuncBody, block: Block, last: Inst) -> u64 {
     f.dfg()
         .inst(last)
         .visit_successors(|e| edges.push(SuccessorData::new(e.block, e.args)));
-    for (index, mut edge) in edges.into_iter().enumerate() {
+    'edges: for (index, mut edge) in edges.into_iter().enumerate() {
         let original = edge.block;
-        let mut seen = HashSet::from([block]);
-        while seen.insert(edge.block) {
-            if let Some(next) = thread_comparison(f, last, index, &edge) {
-                if seen.contains(&next.block) {
-                    break;
-                }
-                edge = next;
-                continue;
-            }
-            if let Some(next) = crate::passes::cfg::forward_successor(f, &edge) {
-                if seen.contains(&next.block) {
-                    break;
-                }
-                edge = next;
-                continue;
-            }
-            let Some(inst) = f.layout().first_inst(edge.block) else {
-                break;
-            };
-            if f.layout().last_inst(edge.block) != Some(inst) {
-                break;
-            }
-            let params = f.dfg().block_params(edge.block);
-            let view = f.dfg().inst(inst);
-            let Successors::One(chosen) = rewrite::successors(view, |value| {
-                let mapped = params
-                    .iter()
-                    .position(|&p| p == value)
-                    .map_or(value, |i| edge.args[i]);
-                f.dfg()
-                    .as_scalar_const(mapped)
-                    .map_or(Fact::Varying, Fact::Constant)
-            }) else {
-                break;
-            };
-            let dest = view.successor(chosen).expect("selected successor");
-            if f.dfg()
-                .block_params(edge.block)
-                .iter()
-                .any(|&p| f.dfg().uses(p).any(|site| site.inst() != inst))
-            {
-                break;
-            }
-            if seen.contains(&dest.block) {
-                break;
-            }
-            let params = f.dfg().block_params(edge.block);
-            let args = dest
-                .args
-                .iter()
-                .map(|v| {
-                    params
-                        .iter()
-                        .position(|p| p == v)
-                        .map_or(*v, |i| edge.args[i])
-                })
-                .collect::<Vec<_>>();
-            edge = SuccessorData::new(dest.block, &args);
+        let mut seen = HashSet::<Block>::from([block]);
+        let mut bindings = PathFacts::default();
+        if let InstView::Br { condition, .. } = f.dfg().inst(last)
+            && !bindings.assume(f, condition, index == 0)
+        {
+            continue;
         }
-        if edge.block != original {
+        let mut remaining = MAX_PATH_INSTS;
+        while seen.insert(edge.block) {
+            let Some(next) = fold_successor(f, &edge, &mut bindings, &mut remaining) else {
+                break;
+            };
+            if seen.contains(&next.block) {
+                // Do not advance partway around a constant loop on every CFG round.
+                continue 'edges;
+            }
+            edge = next;
+        }
+        // A cycle longer than the budget must not become incremental loop peeling.
+        if remaining != 0 && edge.block != original {
             f.edit().redirect_edge(
                 EdgeRef {
                     inst: last,
@@ -112,80 +77,82 @@ fn bypass(f: &mut FuncBody, block: Block, last: Inst) -> u64 {
     }
     changed
 }
-/// Bypass a comparison-only block when the incoming branch already proves
-/// its outcome. Relational outcome sets avoid ad hoc signed/unsigned cases.
-fn thread_comparison(
-    f: &FuncBody,
-    source: Inst,
-    edge_index: usize,
+fn fold_successor(
+    f: &mut FuncBody,
     edge: &SuccessorData,
+    bindings: &mut PathFacts,
+    remaining: &mut usize,
 ) -> Option<SuccessorData> {
-    let InstView::Br { condition, .. } = f.dfg().inst(source) else {
-        return None;
-    };
-    let source_cmp = f.dfg().value_inst(condition)?;
-    let InstView::IntCompare {
-        kind: source_kind,
-        args: source_args,
-    } = f.dfg().inst(source_cmp)
-    else {
-        return None;
-    };
-    let insts: Vec<_> = f.layout().block_insts(edge.block).collect();
-    let [compare, branch] = insts.as_slice() else {
-        return None;
-    };
-    let InstView::IntCompare { kind, args } = f.dfg().inst(*compare) else {
-        return None;
-    };
-    let result = f.dfg().first_result(*compare)?;
-    let InstView::Br {
-        condition,
-        then_dest,
-        else_dest,
-    } = f.dfg().inst(*branch)
-    else {
-        return None;
-    };
-    if condition != result || f.dfg().uses(result).any(|u| u.inst() != *branch) {
-        return None;
-    }
-    let params = f.dfg().block_params(edge.block);
-    if params.iter().any(|&v| {
+    // A redirected edge cannot supply definitions used directly in other
+    // blocks. Values passed explicitly as successor arguments can be remapped.
+    let escapes = |f: &FuncBody, value| {
         f.dfg()
-            .uses(v)
-            .any(|u| u.inst() != *compare && u.inst() != *branch)
-    }) {
+            .uses(value)
+            .any(|site| f.layout().inst_block(site.inst()) != Some(edge.block))
+    };
+    if f.dfg()
+        .block_params(edge.block)
+        .iter()
+        .any(|&v| escapes(f, v))
+    {
         return None;
     }
-    let mapped = |v| {
-        params
+    for (&param, &arg) in f.dfg().block_params(edge.block).iter().zip(&edge.args) {
+        bindings.bind(param, arg);
+    }
+    let mut cursor = f.layout().first_inst(edge.block);
+    while let Some(inst) = cursor {
+        *remaining = remaining.checked_sub(1)?;
+        let view = f.dfg().inst(inst);
+        if view.is_terminator() {
+            let chosen = if matches!(view, InstView::Jump { .. }) {
+                0
+            } else {
+                let Successors::One(chosen) =
+                    rewrite::successors(view, |v| bindings.fact(f.dfg(), v))
+                else {
+                    return None;
+                };
+                chosen
+            };
+            let dest = view.successor(chosen).unwrap();
+            return Some(SuccessorData {
+                block: dest.block,
+                args: dest.args.iter().map(|&v| bindings.resolve(v)).collect(),
+            });
+        }
+
+        let results: SmallVec<[_; 2]> = f.dfg().inst_results(inst).into();
+        if results.iter().any(|&v| escapes(f, v)) {
+            return None;
+        }
+        let types: SmallVec<[_; 2]> = results.iter().map(|&v| f.dfg().value_type(v)).collect();
+        let args: SmallVec<[_; 4]> = f
+            .dfg()
+            .operands(inst)
             .iter()
-            .position(|&p| p == v)
-            .map_or(v, |i| edge.args[i])
-    };
-    let args = [mapped(args[0]), mapped(args[1])];
-    let kind = if args == [source_args[1], source_args[0]] {
-        kind.swap()
-    } else if args == *source_args {
-        kind
-    } else {
-        return None;
-    };
-    let known = if edge_index == 1 {
-        source_kind.complement()
-    } else {
-        source_kind
-    };
-    let dest = if known.implies(kind)? {
-        then_dest
-    } else {
-        else_dest
-    };
-    // The comparison's result cannot become an argument on the new edge.
-    if dest.args.contains(&result) {
-        return None;
+            .map(|&v| bindings.resolve(v))
+            .collect();
+        let folds = rewrite::fold(f.dfg().inst_fields(inst), &args, &types, |v| {
+            bindings.fact(f.dfg(), v).constant()
+        })
+        .or_else(|| {
+            let InstView::IntCompare { kind, .. } = view else {
+                return None;
+            };
+            let truth = bindings.comparison(f.dfg(), kind, [args[0], args[1]])?;
+            Some(smallvec![Fold::Constant(ScalarConst::from(truth))])
+        })?;
+        // Successful folding proves these operations have no effects or traps
+        // under this edge's inputs. Keep their replacements local to the trace.
+        for (result, fold) in results.into_iter().zip(folds) {
+            let value = match fold {
+                Fold::Operand(index) => args[index],
+                Fold::Constant(value) => f.edit().constant(value.into()),
+            };
+            bindings.bind(result, value);
+        }
+        cursor = f.layout().next_inst(inst);
     }
-    let args: Vec<_> = dest.args.iter().map(|&v| mapped(v)).collect();
-    Some(SuccessorData::new(dest.block, &args))
+    None
 }

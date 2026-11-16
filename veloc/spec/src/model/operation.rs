@@ -102,7 +102,6 @@ pub(super) fn parse(
         })
         .transpose()?;
     let text = fields.optional("text");
-    let control = fields.optional("control");
     let mut meta_node = fields.take("meta")?;
     expressions.metadata(source, &mut meta_node, vocabulary)?;
     let meta = crate::model::metadata::Pending::new(source, meta_node, data)?;
@@ -166,11 +165,7 @@ pub(super) fn parse(
         identity,
         absorbing,
         semantics,
-        control: None,
     };
-    op.control = control
-        .map(|node| super::control::parse(source, node, &op))
-        .transpose()?;
     op.constraints = expressions.verify(
         source,
         constraints,

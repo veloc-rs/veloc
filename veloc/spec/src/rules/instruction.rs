@@ -76,7 +76,7 @@ pub(super) fn generate(
             .entry(root_op.name.clone())
             .or_default()
             .push(function.clone());
-        if root_op.control.is_some() || target.control.is_some() {
+        if has_successors(root_op) || has_successors(target) {
             let body = compiler.control_replacement(root_op, target, args, replacement.offset)?;
             emit_rule(&mut functions, &function, &body);
             continue;
@@ -187,6 +187,12 @@ fn emit_rule(out: &mut String, name: &str, body: &str) {
     writeln!(out, "#[allow(unused_variables, unused_parens)]\nfn {name}(func: &FuncBody, inst: Inst) -> Option<InstRewrite> {{\nlet dfg = func.dfg();\n{body}\n}}\n").unwrap();
 }
 
+fn has_successors(op: &Op) -> bool {
+    op.params
+        .iter()
+        .any(|p| matches!(p.kind, ParamKind::Successor | ParamKind::Successors))
+}
+
 struct Compiler<'a, 'e> {
     source: &'a Source,
     defs: &'a Definitions,
@@ -196,10 +202,32 @@ struct Compiler<'a, 'e> {
     generics: &'e BTreeMap<String, crate::types::TypeSet>,
     bound_types: BTreeMap<String, String>,
     bindings: BTreeMap<String, (Node, String)>,
-    edges: BTreeMap<String, (usize, String)>,
+    edges: BTreeMap<String, EdgeCapture>,
     next: usize,
     code: String,
 }
+
+#[derive(Clone)]
+enum EdgeIndex {
+    Fixed(usize),
+    Dynamic(String),
+}
+
+impl EdgeIndex {
+    fn expression(&self) -> String {
+        match self {
+            Self::Fixed(index) => format!("{index}usize"),
+            Self::Dynamic(expression) => expression.clone(),
+        }
+    }
+}
+
+struct EdgeCapture {
+    index: EdgeIndex,
+    value: String,
+    multiple: bool,
+}
+
 impl<'a> Compiler<'a, '_> {
     fn check_type(&mut self, node: &Node, actual: &str, bind: bool) -> Result<(), SourceError> {
         let expected = match &node.kind {
@@ -266,16 +294,18 @@ impl<'a> Compiler<'a, '_> {
 
     fn capture_edge(
         &mut self,
-        op: &Op,
-        param: &crate::model::Param,
         arg: &Node,
         prefix: &str,
-        index: usize,
+        capture: EdgeCapture,
     ) -> Result<(), SourceError> {
         let Kind::Name(name) = &arg.kind else {
             return Err(self.fail(arg.offset, "successors must be captured whole"));
         };
-        if prefix != "root" || !super::identifier(name) || self.bindings.contains_key(name) {
+        if prefix != "root"
+            || !super::identifier(name)
+            || self.bindings.contains_key(name)
+            || self.generics.contains_key(name)
+        {
             return Err(self.fail(
                 arg.offset,
                 "successor captures belong to the root and cannot shadow values",
@@ -284,14 +314,93 @@ impl<'a> Compiler<'a, '_> {
         if name == "_" {
             return Ok(());
         }
-        let value = op.inputs[&param.name].emit(&|f| format!("{prefix}_{f}"), &|v| format!("{v}?"));
-        if let Some((_, previous)) = self.edges.get(name) {
+        if let Some(previous) = self.edges.get(name) {
+            if previous.multiple != capture.multiple {
+                return Err(self.fail(
+                    arg.offset,
+                    "successor and successor-list captures cannot share a name",
+                ));
+            }
             // Equality includes both destination and the complete argument slice.
-            writeln!(self.code, "if {value} != {previous} {{ return None; }}").unwrap();
+            let value = &capture.value;
+            let previous = &previous.value;
+            let equal = if capture.multiple {
+                format!("{value}.iter().eq({previous}.iter())")
+            } else {
+                format!("{value} == {previous}")
+            };
+            writeln!(self.code, "if !({equal}) {{ return None; }}").unwrap();
         } else {
-            self.edges.insert(name.clone(), (index, value));
+            self.edges.insert(name.clone(), capture);
         }
         Ok(())
+    }
+
+    fn edge(&self, node: &Node) -> Result<&EdgeCapture, SourceError> {
+        if let Kind::Name(name) = &node.kind
+            && let Some(edge) = self.edges.get(name)
+        {
+            return Ok(edge);
+        }
+        Err(self.fail(
+            node.offset,
+            "replacement successors must be captured root edges",
+        ))
+    }
+
+    /// Carry original edge indices through selection; never rebuild successors.
+    fn selected_edge(&mut self, node: &Node) -> Result<EdgeIndex, SourceError> {
+        match &node.kind {
+            Kind::Method(receiver, method, args) if method == "unwrap_or" && args.len() == 1 => {
+                let optional = self.optional_edge(receiver)?;
+                let fallback = self.selected_edge(&args[0])?.expression();
+                Ok(EdgeIndex::Dynamic(format!(
+                    "({optional}).unwrap_or({fallback})"
+                )))
+            }
+            Kind::Try(receiver) => Ok(EdgeIndex::Dynamic(format!(
+                "({})?",
+                self.optional_edge(receiver)?
+            ))),
+            _ => {
+                let edge = self.edge(node)?;
+                if edge.multiple {
+                    return Err(self.fail(node.offset, "select one successor with get(index)"));
+                }
+                Ok(edge.index.clone())
+            }
+        }
+    }
+
+    fn optional_edge(&mut self, node: &Node) -> Result<String, SourceError> {
+        if let Kind::Method(receiver, method, args) = &node.kind
+            && method == "get"
+            && let [index] = args.as_slice()
+        {
+            let edge = self.edge(receiver)?;
+            if !edge.multiple {
+                return Err(self.fail(receiver.offset, "get requires a captured successor list"));
+            }
+            let start = edge.index.clone();
+            let list = edge.value.clone();
+            let value = self.expression(index, "u64")?;
+            let index = format!("edge_index_{}", self.next);
+            self.next += 1;
+            // A missing constant rejects the rule before an out-of-range lookup
+            // can fall back to the default edge. Compare before narrowing to usize.
+            writeln!(self.code, "let {index} = {value};").unwrap();
+            let selected = match start {
+                EdgeIndex::Fixed(0) => format!("{index} as usize"),
+                start => format!("{} + {index} as usize", start.expression()),
+            };
+            return Ok(format!(
+                "({index} < {list}.len() as u64).then(|| {selected})"
+            ));
+        }
+        Err(self.fail(
+            node.offset,
+            "expected a successor-list get(index) selection",
+        ))
     }
 
     fn control_replacement(
@@ -301,27 +410,32 @@ impl<'a> Compiler<'a, '_> {
         args: &[Node],
         at: usize,
     ) -> Result<String, SourceError> {
-        use crate::model::control::Control;
-        if !matches!(root.control, Some(Control::Branch)) {
+        if !matches!(root.name.as_str(), "Br" | "BrTable") {
             return Err(self.fail(at, "control rewrites require a conditional root"));
         }
         let edge = |arg: &Node| -> Result<usize, SourceError> {
-            if let Kind::Name(name) = &arg.kind
-                && let Some((index, _)) = self.edges.get(name)
+            let capture = self.edge(arg)?;
+            if !capture.multiple
+                && let EdgeIndex::Fixed(index) = capture.index
             {
-                return Ok(*index);
+                return Ok(index);
             }
             Err(self.fail(
                 arg.offset,
                 "replacement successors must be captured root edges",
             ))
         };
-        let rewrite = match target.control {
-            Some(Control::Jump) => {
-                let index = edge(&args[0])?;
+        let rewrite = match target.name.as_str() {
+            "Jump" => {
+                let index = match self.selected_edge(&args[0])? {
+                    EdgeIndex::Fixed(index) => index.to_string(),
+                    EdgeIndex::Dynamic(index) => {
+                        format!("({index}).try_into().expect(\"too many successors\")")
+                    }
+                };
                 format!("Some(InstRewrite::SelectEdge({index}))")
             }
-            Some(Control::Branch) if target.name == root.name => {
+            "Br" if target.name == root.name => {
                 let yes = edge(&args[1])?;
                 let no = edge(&args[2])?;
                 let swap_edges = match (yes, no) {
@@ -377,10 +491,8 @@ impl<'a> Compiler<'a, '_> {
             at,
         )
         .map_err(|error| self.source.locate(error))?;
-        if op.control.is_some() {
-            if matches!(op.control, Some(crate::model::control::Control::Table)) {
-                return Err(self.fail(at, "branch rewrites require fixed captured successors"));
-            }
+        if has_successors(op) {
+            self.check_control(op, at)?;
             return Ok(op);
         }
         if !self.eligible.contains(&op.name)
@@ -403,6 +515,66 @@ impl<'a> Compiler<'a, '_> {
         }
         Ok(op)
     }
+
+    /// These rules lower to MIR editor operations. Check their signatures and
+    /// storage order here so selected indices still name the original edges.
+    fn check_control(&self, op: &Op, at: usize) -> Result<(), SourceError> {
+        use crate::model::{Binding, Pattern, Projection, TypeList};
+        use ParamKind::{Successor, Successors, Value};
+        let (kinds, selector): (&[_], _) = match op.name.as_str() {
+            "Jump" => (&[Successor], None),
+            "Br" => (&[Value, Successor, Successor], Some("Type::BOOL")),
+            "BrTable" => (&[Value, Successors, Successor], Some("Type::I32")),
+            _ => return Err(self.fail(at, "control rewrites support Jump, Br and BrTable")),
+        };
+        let operands_match = match (&op.signature.operands, selector) {
+            (TypeList::Variadic(patterns), Some(selector)) => {
+                matches!(patterns.as_slice(), [Pattern::Exact(ty)] if ty == selector)
+            }
+            (TypeList::Variadic(patterns), None) => patterns.is_empty(),
+            _ => false,
+        };
+        if !operands_match
+            || op.signature.results.patterns() != Some(&[][..])
+            || !op.params.iter().map(|p| &p.kind).eq(kinds.iter())
+            || op.params.iter().any(|p| p.moves)
+            || !op.constraints.is_empty()
+        {
+            return Err(self.fail(
+                at,
+                "control rewrite requires the MIR jump signature without additional constraints",
+            ));
+        }
+        let Projection::Packed(bindings) = &op.projection else {
+            return Err(self.fail(at, "control rewrites require packed MIR storage"));
+        };
+        let layout = self
+            .defs
+            .storage
+            .formats
+            .iter()
+            .find(|f| f.name == op.format)
+            .unwrap();
+        let mut order = Vec::new();
+        for field in &layout.fields {
+            match bindings.get(&field.name) {
+                Some(Binding::Name(name)) => order.push(name.as_str()),
+                Some(Binding::Table { cases, default }) => {
+                    order.push(cases);
+                    order.push(default);
+                }
+                _ => return Err(self.fail(at, "control storage must preserve parameter order")),
+            }
+        }
+        if !order
+            .into_iter()
+            .eq(op.params.iter().map(|p| p.name.as_str()))
+        {
+            return Err(self.fail(at, "control storage must preserve parameter order"));
+        }
+        Ok(())
+    }
+
     fn pattern(&mut self, op: &Op, args: &[Node], inst: &str) -> Result<(), SourceError> {
         let id = self.next;
         self.next += 1;
@@ -436,11 +608,39 @@ impl<'a> Compiler<'a, '_> {
             op.format
         )
         .unwrap();
-        let mut edge_index = 0;
+        let mut edge_index = EdgeIndex::Fixed(0);
         for (param, arg) in op.params.iter().zip(args) {
-            if param.kind == ParamKind::Successor {
-                self.capture_edge(op, param, arg, &prefix, edge_index)?;
-                edge_index += 1;
+            let mut value =
+                op.inputs[&param.name].emit(&|f| format!("{prefix}_{f}"), &|v| format!("{v}?"));
+            if matches!(param.kind, ParamKind::Successor | ParamKind::Successors) {
+                let multiple = param.kind == ParamKind::Successors;
+                if multiple {
+                    let list = format!("edges_{id}");
+                    writeln!(self.code, "let {list} = {value};").unwrap();
+                    value = list;
+                }
+                self.capture_edge(
+                    arg,
+                    &prefix,
+                    EdgeCapture {
+                        index: edge_index.clone(),
+                        value: value.clone(),
+                        multiple,
+                    },
+                )?;
+                edge_index = match (multiple, edge_index) {
+                    (false, EdgeIndex::Fixed(index)) => EdgeIndex::Fixed(index + 1),
+                    (true, EdgeIndex::Fixed(0)) => EdgeIndex::Dynamic(format!("{value}.len()")),
+                    (multiple, index) => EdgeIndex::Dynamic(format!(
+                        "({}) + {}",
+                        index.expression(),
+                        if multiple {
+                            format!("{value}.len()")
+                        } else {
+                            "1".into()
+                        }
+                    )),
+                };
                 continue;
             }
             let ty = match &param.kind {
@@ -448,8 +648,6 @@ impl<'a> Compiler<'a, '_> {
                 ParamKind::Property(ty) => ty,
                 _ => unreachable!(),
             };
-            let value =
-                op.inputs[&param.name].emit(&|f| format!("{prefix}_{f}"), &|v| format!("{v}?"));
             let mut arg = arg;
             while let Kind::Typed(inner, types) = &arg.kind {
                 arg = inner;
@@ -463,6 +661,15 @@ impl<'a> Compiler<'a, '_> {
                 self.check_type(annotation, &format!("dfg.value_type({value})"), true)?;
             }
             if let Kind::Name(name) = &arg.kind {
+                if param.kind == ParamKind::Value && matches!(name.as_str(), "true" | "false") {
+                    let negate = if name == "true" { "!" } else { "" };
+                    writeln!(
+                        self.code,
+                        "if {negate}dfg.as_scalar_const({value})?.as_bool()? {{ return None; }}"
+                    )
+                    .unwrap();
+                    continue;
+                }
                 if self.generics.contains_key(name) {
                     return Err(self.fail(arg.offset, "value shadows a type parameter"));
                 }

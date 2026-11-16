@@ -139,7 +139,6 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
             identity: None,
             absorbing: None,
             semantics: None,
-            control: None,
         },
         Format {
             name: alt.name.clone(),
