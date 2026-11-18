@@ -175,6 +175,27 @@ block3():
     }
 
     #[test]
+    fn table_bypass_binds_only_explicit_cases() {
+        let source = "local function dispatch(v0: i32) -> i32
+block0():
+  br-table v0, [block1(), block1()], block1()
+block1():
+  v1: bool = icmp eq v0, i32(0)
+  br v1, block2(), block3()
+block2():
+  return i32(11)
+block3():
+  return i32(22)
+";
+        let module = run(source, &BypassPass);
+        let body = module.function(FuncId(0)).body.unwrap();
+        let entry = body.layout().last_inst(body.entry_block()).unwrap();
+        let table = body.dfg().inst(entry);
+        let targets = [0, 1, 2].map(|i| table.successor(i).unwrap().block);
+        assert_eq!(targets, [2, 3, 1].map(veloc_mir::Block));
+    }
+
+    #[test]
     fn comparison_bypass_uses_the_taken_edge_predicate() {
         let module = run(
             "local function compare(v0: i32, v1: i32) -> i32

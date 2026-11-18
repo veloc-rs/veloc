@@ -46,10 +46,28 @@ fn bypass(f: &mut FuncBody, block: Block, last: Inst) -> u64 {
         let original = edge.block;
         let mut seen = HashSet::<Block>::from([block]);
         let mut bindings = PathFacts::default();
-        if let InstView::Br { condition, .. } = f.dfg().inst(last)
-            && !bindings.assume(f, condition, index == 0)
-        {
-            continue;
+        match f.dfg().inst(last) {
+            InstView::Br { condition, .. } => {
+                if !bindings.assume(f, condition, index == 0) {
+                    continue;
+                }
+            }
+            // The final successor is the default and has no single index value.
+            InstView::BrTable {
+                index: selector,
+                table,
+            } if index < table.len() - 1 => {
+                let case = ScalarConst::from(index as u32);
+                if let Some(known) = f.dfg().as_scalar_const(selector) {
+                    if known != case {
+                        continue;
+                    }
+                } else {
+                    let literal = f.edit().constant(case.into());
+                    bindings.bind(selector, literal);
+                }
+            }
+            _ => {}
         }
         let mut remaining = MAX_PATH_INSTS;
         while seen.insert(edge.block) {
