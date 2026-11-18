@@ -20,13 +20,13 @@ impl FunctionPass for BypassPass {
     }
     fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         let f = am.function_mut();
-        let blocks: Vec<_> = f.layout().block_order().collect();
         let mut changed = 0;
-        for block in blocks {
-            let Some(last) = f.layout().last_inst(block) else {
-                continue;
-            };
-            changed += bypass(f, block, last);
+        let mut next = f.layout().block_order().next();
+        while let Some(block) = next {
+            if let Some(last) = f.layout().last_inst(block) {
+                changed += bypass(f, block, last);
+            }
+            next = f.layout().next_block(block);
         }
         metrics.count("threading.bypassed", changed);
         if changed == 0 {
@@ -36,65 +36,72 @@ impl FunctionPass for BypassPass {
         }
     }
 }
+
 fn bypass(f: &mut FuncBody, block: Block, last: Inst) -> u64 {
     let mut changed = 0;
     let mut edges = Vec::new();
     f.dfg()
         .inst(last)
         .visit_successors(|e| edges.push(SuccessorData::new(e.block, e.args)));
-    'edges: for (index, mut edge) in edges.into_iter().enumerate() {
-        let original = edge.block;
-        let mut seen = HashSet::<Block>::from([block]);
-        let mut bindings = PathFacts::default();
-        match f.dfg().inst(last) {
-            InstView::Br { condition, .. } => {
-                if !bindings.assume(f, condition, index == 0) {
-                    continue;
-                }
-            }
-            // The final successor is the default and has no single index value.
-            InstView::BrTable {
-                index: selector,
-                table,
-            } if index < table.len() - 1 => {
-                let case = ScalarConst::from(index as u32);
-                if let Some(known) = f.dfg().as_scalar_const(selector) {
-                    if known != case {
-                        continue;
-                    }
-                } else {
-                    let literal = f.edit().constant(case.into());
-                    bindings.bind(selector, literal);
-                }
-            }
-            _ => {}
-        }
-        let mut remaining = MAX_PATH_INSTS;
-        while seen.insert(edge.block) {
-            let Some(next) = fold_successor(f, &edge, &mut bindings, &mut remaining) else {
-                break;
-            };
-            if seen.contains(&next.block) {
-                // Do not advance partway around a constant loop on every CFG round.
-                continue 'edges;
-            }
-            edge = next;
-        }
-        // A cycle longer than the budget must not become incremental loop peeling.
-        if remaining != 0 && edge.block != original {
-            f.edit().redirect_edge(
-                EdgeRef {
-                    inst: last,
-                    index: index as u32,
-                },
-                edge.block,
-                &edge.args,
-            );
+    for (index, dest) in edges.into_iter().enumerate() {
+        let edge = EdgeRef {
+            inst: last,
+            index: index as u32,
+        };
+        if let Some(target) = trace_edge(f, block, edge, dest) {
+            f.edit().redirect_edge(edge, target.block, &target.args);
             changed += 1;
         }
     }
     changed
 }
+
+fn trace_edge(
+    f: &mut FuncBody,
+    source: Block,
+    edge: EdgeRef,
+    mut dest: SuccessorData,
+) -> Option<SuccessorData> {
+    let mut bindings = PathFacts::default();
+    match f.dfg().inst(edge.inst) {
+        InstView::Br { condition, .. } => {
+            if !bindings.assume(f, condition, edge.index == 0) {
+                return None;
+            }
+        }
+        // The final successor is the default and has no single index value.
+        InstView::BrTable { index, table } if (edge.index as usize) < table.len() - 1 => {
+            let case = ScalarConst::from(edge.index);
+            if let Some(known) = f.dfg().as_scalar_const(index) {
+                if known != case {
+                    return None;
+                }
+            } else {
+                let literal = f.edit().constant(case.into());
+                bindings.bind(index, literal);
+            }
+        }
+        _ => {}
+    }
+
+    let original = dest.block;
+    let mut seen = HashSet::<Block>::from([source]);
+    let mut remaining = MAX_PATH_INSTS;
+    while seen.insert(dest.block) {
+        let next = fold_successor(f, &dest, &mut bindings, &mut remaining);
+        // An exhausted trace may still be inside a cycle. Redirecting its
+        // prefix could peel the loop on every CFG round.
+        if remaining == 0 {
+            return None;
+        }
+        let Some(next) = next else {
+            return (dest.block != original).then_some(dest);
+        };
+        dest = next;
+    }
+    None
+}
+
 fn fold_successor(
     f: &mut FuncBody,
     edge: &SuccessorData,

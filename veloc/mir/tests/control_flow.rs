@@ -108,6 +108,23 @@ fn example() -> veloc_mir::Module {
 }
 
 #[test]
+fn add_param_supplies_each_incoming_edge() {
+    let mut module = example();
+    let func = module.body_mut(veloc_mir::FuncId(0)).unwrap();
+    let inst = func.layout().last_inst(Block(0)).unwrap();
+    let block = Block(1);
+    let param = func.edit().add_param(block, veloc_mir::Type::I32, |edge| {
+        assert_eq!(edge.inst, inst);
+        [Value(2), Value(1)][edge.index as usize]
+    });
+    assert_eq!(func.dfg().block_params(block), [Value(3), param]);
+    let branch = func.dfg().inst(inst);
+    assert_eq!(branch.successor(0).unwrap().args, [Value(1), Value(2)]);
+    assert_eq!(branch.successor(1).unwrap().args, [Value(2), Value(1)]);
+    module.validate().unwrap();
+}
+
+#[test]
 fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
     let mut module = example();
     module.validate().unwrap();

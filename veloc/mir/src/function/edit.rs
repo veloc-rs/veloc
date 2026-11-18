@@ -140,10 +140,12 @@ impl<'a> FuncEditor<'a> {
         for (param, arg) in params.into_iter().zip(args) {
             self.replace_all_uses(param, arg);
         }
-        self.erase_inst(last);
-        let insts: Vec<_> = self.body.layout.block_insts(next).collect();
-        for inst in insts {
-            self.move_to_end(inst, block);
+        // Rebuild the CFG once both layout edits are complete.
+        self.body.dfg.remove_insts(&[last]);
+        self.body.layout.detach_inst(last);
+        while let Some(inst) = self.body.layout.first_inst(next) {
+            self.body.layout.detach_inst(inst);
+            self.body.layout.append_inst(block, inst);
         }
         self.body.layout.remove_block(next);
         self.rebuild_cfg();
@@ -161,6 +163,47 @@ impl<'a> FuncEditor<'a> {
     /// Construction primitive: incoming arguments may be filled later.
     pub fn append_block_param(&mut self, block: Block, ty: Type) -> Value {
         self.body.dfg.append_block_param(block, ty)
+    }
+
+    /// Append a block parameter and supply its argument on every incoming edge.
+    /// The callback is called separately for repeated edges from one predecessor.
+    pub fn add_param(
+        &mut self,
+        block: Block,
+        ty: Type,
+        mut incoming: impl FnMut(EdgeRef) -> Value,
+    ) -> Value {
+        let arity = self.body.dfg.block_params(block).len();
+        let mut edits = Vec::new();
+        for &pred in self.body.cfg.preds(block) {
+            let inst = self
+                .body
+                .layout
+                .last_inst(pred)
+                .expect("terminated predecessor");
+            let mut index = 0;
+            self.body.dfg.inst(inst).visit_successors(|dest| {
+                let edge = EdgeRef { inst, index };
+                index += 1;
+                if dest.block == block {
+                    assert_eq!(dest.args.len(), arity, "incoming argument count mismatch");
+                    let value = incoming(edge);
+                    assert_eq!(
+                        self.body.dfg.value_type(value),
+                        ty,
+                        "argument type mismatch"
+                    );
+                    let mut args = dest.args.to_vec();
+                    args.push(value);
+                    edits.push((edge, args));
+                }
+            });
+        }
+        let param = self.body.dfg.append_block_param(block, ty);
+        for (edge, args) in edits {
+            self.body.dfg.redirect_edge(edge, block, &args);
+        }
+        param
     }
 
     /// Extend the function inputs when constructing a new definition.
@@ -300,16 +343,15 @@ impl<'a> FuncEditor<'a> {
         else {
             panic!("conditional branch required");
         };
-        if old == condition && (!swap_edges || then_dest == else_dest) {
-            return false;
+        if !swap_edges || then_dest == else_dest {
+            if old == condition {
+                return false;
+            }
+            self.set_operand(inst, 0, condition);
+            return true;
         }
-        let (yes, no) = if swap_edges {
-            (else_dest, then_dest)
-        } else {
-            (then_dest, else_dest)
-        };
-        let yes = SuccessorData::new(yes.block, yes.args);
-        let no = SuccessorData::new(no.block, no.args);
+        let yes = SuccessorData::new(else_dest.block, else_dest.args);
+        let no = SuccessorData::new(then_dest.block, then_dest.args);
         self.replace_inst(inst, |w| w.br(condition, yes.as_view(), no.as_view()));
         true
     }
@@ -479,27 +521,13 @@ impl<'a> FuncEditor<'a> {
     }
 
     pub fn erase_insts(&mut self, insts: &[Inst]) {
+        let mut blocks = Vec::new();
         for &inst in insts {
-            assert!(
-                self.body.layout.inst_block(inst).is_some(),
-                "instruction not placed"
-            );
+            let block = self.body.layout.inst_block(inst).expect("instruction not placed");
+            if self.body.layout.last_inst(block) == Some(inst) {
+                blocks.push(block);
+            }
         }
-        let mut blocks: Vec<_> = insts
-            .iter()
-            .filter(|&&inst| {
-                self.body
-                    .layout()
-                    .inst_block(inst)
-                    .is_some_and(|b| self.body.layout().last_inst(b) == Some(inst))
-            })
-            .map(|&inst| {
-                self.body
-                    .layout()
-                    .inst_block(inst)
-                    .expect("instruction not in layout")
-            })
-            .collect();
         blocks.sort_unstable();
         blocks.dedup();
         self.body.dfg.remove_insts(insts);

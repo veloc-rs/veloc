@@ -211,6 +211,11 @@ impl DataFlowGraph {
         }
     }
 
+    /// View the instruction that defines this value, if any.
+    pub fn value_inst_view(&self, value: Value) -> Option<InstView<'_>> {
+        Some(self.inst(self.value_inst(value)?))
+    }
+
     /// Read a scalar literal without traversing expression graphs.
     pub fn as_scalar_const(&self, val: Value) -> Option<crate::ScalarConst> {
         self.as_const(val)?.as_scalar()

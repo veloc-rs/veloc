@@ -94,77 +94,74 @@ impl PathFacts {
         {
             return false;
         }
-        let comparison = f.dfg().value_inst(condition).and_then(|inst| {
-            if let InstView::IntCompare { kind, args } = f.dfg().inst(inst) {
-                Some((if truth { kind } else { kind.complement() }, *args))
-            } else {
-                None
-            }
-        });
         let literal = f.edit().constant(ScalarConst::from(truth).into());
         self.bind(condition, literal);
-        let Some((kind, args)) = comparison else {
+
+        let dfg = f.dfg();
+        let Some(InstView::IntCompare { kind, args }) = dfg.value_inst_view(condition) else {
             return true;
         };
+        let kind = if truth { kind } else { kind.complement() };
         let args = args.map(|v| self.resolve(v));
-        if self.comparison(f.dfg(), kind, args) == Some(false) {
+        let [lhs, rhs] = args;
+        if self.comparison(dfg, kind, args) == Some(false) {
             return false;
         }
-        for (value, other, predicate) in [(args[0], args[1], kind), (args[1], args[0], kind.swap())]
-        {
-            if let Some(c) = self.fact(f.dfg(), other).constant()
+        for (value, other, predicate) in [(lhs, rhs, kind), (rhs, lhs, kind.swap())] {
+            if let Some(c) = self.fact(dfg, other).constant()
                 && let Some(allowed) = IntRange::constraint(predicate, c)
-                && !self.refine(f.dfg(), value, allowed)
+                && !self.refine(dfg, value, allowed)
             {
                 return false;
             }
         }
-        if kind == IntCC::Eq {
-            let [a, b] = args.map(|v| self.fact(f.dfg(), v).range(f.dfg().value_type(v)));
-            let common = a.zip(b).map(|(a, b)| a.intersect(&b));
-            if common.as_ref().is_some_and(IntRange::is_empty) {
-                return false;
-            }
-            let (value, replacement) = if f.dfg().as_scalar_const(args[0]).is_some() {
-                (args[1], args[0])
-            } else if f.dfg().as_scalar_const(args[1]).is_some() || args[1] < args[0] {
-                (args[0], args[1])
-            } else {
-                (args[1], args[0])
-            };
-            self.bind(value, replacement);
-            if let Some(common) = common {
-                self.refine(f.dfg(), replacement, common);
-            }
+        if kind == IntCC::Eq && !self.bind_equal(dfg, lhs, rhs) {
+            return false;
         }
         self.comparisons.push((kind, args));
         self.undo.push(Undo::Comparison);
         true
     }
 
+    fn bind_equal(&mut self, dfg: &DataFlowGraph, lhs: Value, rhs: Value) -> bool {
+        let [a, b] = [lhs, rhs].map(|v| self.fact(dfg, v).range(dfg.value_type(v)));
+        let common = a.zip(b).map(|(a, b)| a.intersect(&b));
+        if common.as_ref().is_some_and(IntRange::is_empty) {
+            return false;
+        }
+
+        // Prefer a constant as the representative, otherwise use the smaller value ID.
+        let (value, representative) = if dfg.as_scalar_const(lhs).is_some() {
+            (rhs, lhs)
+        } else if dfg.as_scalar_const(rhs).is_some() || rhs < lhs {
+            (lhs, rhs)
+        } else {
+            (rhs, lhs)
+        };
+        self.bind(value, representative);
+        if let Some(common) = common {
+            self.refine(dfg, representative, common);
+        }
+        true
+    }
+
     pub(crate) fn restore(&mut self, checkpoint: usize) {
         while self.undo.len() > checkpoint {
             match self.undo.pop().unwrap() {
-                Undo::Value(value, old) => match old {
-                    Some(old) => {
-                        self.values.insert(value, old);
-                    }
-                    None => {
-                        self.values.remove(&value);
-                    }
-                },
-                Undo::Range(value, old) => match old {
-                    Some(old) => {
-                        self.ranges.insert(value, old);
-                    }
-                    None => {
-                        self.ranges.remove(&value);
-                    }
-                },
+                Undo::Value(value, old) => restore_entry(&mut self.values, value, old),
+                Undo::Range(value, old) => restore_entry(&mut self.ranges, value, old),
                 Undo::Comparison => {
                     self.comparisons.pop();
                 }
             }
         }
+    }
+}
+
+fn restore_entry<T>(map: &mut HashMap<Value, T>, value: Value, old: Option<T>) {
+    if let Some(old) = old {
+        map.insert(value, old);
+    } else {
+        map.remove(&value);
     }
 }

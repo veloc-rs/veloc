@@ -35,7 +35,7 @@ impl FuncBody {
     /// Normalize constant byte offsets without claiming allocation provenance.
     pub fn address(&self, mut ptr: Value, mut offset: i64) -> Option<Address> {
         for _ in 0..64 {
-            match self.dfg().value_inst(ptr).map(|i| self.dfg().inst(i)) {
+            match self.dfg().value_inst_view(ptr) {
                 Some(crate::InstView::PtrOffset {
                     ptr: base,
                     offset: delta,

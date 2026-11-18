@@ -3,7 +3,7 @@
 //! observe every write. No type-based alias assumption is required.
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use veloc_analyzer::{AnalysisManager, graph::LoopInfo};
-use veloc_mir::{InstView, ValueDef, function::EdgeRef};
+use veloc_mir::{InstView, ValueDef};
 
 pub struct LoopMemoryPass;
 impl FunctionPass for LoopMemoryPass {
@@ -69,6 +69,7 @@ impl FunctionPass for LoopMemoryPass {
             }
             let mut safe = true;
             let mut loads = 0;
+            let mut last_stored = value;
             for &inst in &insts {
                 let view = f.dfg().inst(inst);
                 if view.has_volatile_access() {
@@ -82,6 +83,7 @@ impl FunctionPass for LoopMemoryPass {
                         value: v,
                         ..
                     } => {
+                        last_stored = v;
                         if f.address(p, i64::from(o)) != Some(address)
                             || f.dfg().value_type(v) != ty
                         {
@@ -133,7 +135,14 @@ impl FunctionPass for LoopMemoryPass {
             let Some(initial) = initial else {
                 continue;
             };
-            let param = f.edit().append_block_param(header, ty);
+            let entry_jump = f.layout().last_inst(entry).unwrap();
+            let param = f.edit().add_param(header, ty, |edge| {
+                if edge.inst == entry_jump {
+                    initial
+                } else {
+                    last_stored
+                }
+            });
             let mut current = param;
             for inst in insts {
                 match f.dfg().inst(inst) {
@@ -147,23 +156,6 @@ impl FunctionPass for LoopMemoryPass {
                         changed += 1;
                     }
                     _ => {}
-                }
-            }
-            for (block, value) in [(entry, initial), (latch, current)] {
-                let inst = f.layout().last_inst(block).unwrap();
-                let mut edges = Vec::new();
-                let mut index = 0;
-                f.dfg().inst(inst).visit_successors(|s| {
-                    if s.block == header {
-                        let mut args = s.args.to_vec();
-                        args.push(value);
-                        edges.push((index, args));
-                    }
-                    index += 1;
-                });
-                for (index, args) in edges {
-                    f.edit()
-                        .redirect_edge(EdgeRef { inst, index }, header, &args);
                 }
             }
         }
