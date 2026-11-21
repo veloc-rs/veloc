@@ -1,4 +1,4 @@
-//! Fold small blocks under incoming parameter bindings and branch conditions.
+//! Forward edges through jumps and blocks that fold under incoming path facts.
 //! Only the incoming edge changes; other predecessors keep the original body.
 use crate::path_facts::PathFacts;
 use crate::rewrite::{self, Fold, Successors};
@@ -7,8 +7,6 @@ use hashbrown::HashSet;
 use smallvec::{SmallVec, smallvec};
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{Block, FuncBody, Inst, InstView, ScalarConst, SuccessorData, function::EdgeRef};
-
-const MAX_PATH_INSTS: usize = 32;
 
 pub struct BypassPass;
 impl FunctionPass for BypassPass {
@@ -86,15 +84,9 @@ fn trace_edge(
 
     let original = dest.block;
     let mut seen = HashSet::<Block>::from([source]);
-    let mut remaining = MAX_PATH_INSTS;
+    // Discard a cyclic trace rather than redirecting partway around a loop.
     while seen.insert(dest.block) {
-        let next = fold_successor(f, &dest, &mut bindings, &mut remaining);
-        // An exhausted trace may still be inside a cycle. Redirecting its
-        // prefix could peel the loop on every CFG round.
-        if remaining == 0 {
-            return None;
-        }
-        let Some(next) = next else {
+        let Some(next) = fold_successor(f, &dest, &mut bindings) else {
             return (dest.block != original).then_some(dest);
         };
         dest = next;
@@ -106,7 +98,6 @@ fn fold_successor(
     f: &mut FuncBody,
     edge: &SuccessorData,
     bindings: &mut PathFacts,
-    remaining: &mut usize,
 ) -> Option<SuccessorData> {
     // A redirected edge cannot supply definitions used directly in other
     // blocks. Values passed explicitly as successor arguments can be remapped.
@@ -127,7 +118,6 @@ fn fold_successor(
     }
     let mut cursor = f.layout().first_inst(edge.block);
     while let Some(inst) = cursor {
-        *remaining = remaining.checked_sub(1)?;
         let view = f.dfg().inst(inst);
         if view.is_terminator() {
             let chosen = if matches!(view, InstView::Jump { .. }) {
@@ -141,10 +131,20 @@ fn fold_successor(
                 chosen
             };
             let dest = view.successor(chosen).unwrap();
-            return Some(SuccessorData {
-                block: dest.block,
-                args: dest.args.iter().map(|&v| bindings.resolve(v)).collect(),
-            });
+            let mut target = SuccessorData::new(dest.block, &[]);
+            for &arg in dest.args {
+                let value = bindings.resolve(arg);
+                // A skipped instruction cannot supply a value on the new edge.
+                if f.dfg()
+                    .value_inst(value)
+                    .and_then(|i| f.layout().inst_block(i))
+                    == Some(edge.block)
+                {
+                    return None;
+                }
+                target.args.push(value);
+            }
+            return Some(target);
         }
 
         let results: SmallVec<[_; 2]> = f.dfg().inst_results(inst).into();
@@ -167,7 +167,14 @@ fn fold_successor(
             };
             let truth = bindings.comparison(f.dfg(), kind, [args[0], args[1]])?;
             Some(smallvec![Fold::Constant(ScalarConst::from(truth))])
-        })?;
+        });
+        cursor = f.layout().next_inst(inst);
+        let Some(folds) = folds else {
+            if view.can_erase() {
+                continue;
+            }
+            return None;
+        };
         // Successful folding proves these operations have no effects or traps
         // under this edge's inputs. Keep their replacements local to the trace.
         for (result, fold) in results.into_iter().zip(folds) {
@@ -177,7 +184,6 @@ fn fold_successor(
             };
             bindings.bind(result, value);
         }
-        cursor = f.layout().next_inst(inst);
     }
     None
 }

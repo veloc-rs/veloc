@@ -1,9 +1,9 @@
-//! Structural CFG cleanup: local rewrites, forwarding blocks and block merges.
+//! Structural CFG cleanup: terminator rewrites, block merges and unreachable block removal.
 //! No abstract interpretation, path predicates or speculative execution.
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use std::collections::{HashSet, VecDeque};
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{Block, FuncBody, Inst, InstView, SuccessorData, ValueDef, function::EdgeRef};
+use veloc_mir::{Block, FuncBody, InstView};
 
 pub struct CfgPass;
 
@@ -23,19 +23,6 @@ impl Worklist {
         self.queued.remove(&block);
         Some(block)
     }
-    fn neighborhood(&mut self, f: &FuncBody, block: Block) {
-        self.push(block);
-        for &pred in f.cfg().preds(block) {
-            self.push(pred);
-        }
-        for &succ in f.cfg().succs(block) {
-            self.push(succ);
-            // Losing an incoming edge can enable another predecessor to merge.
-            for &pred in f.cfg().preds(succ) {
-                self.push(pred);
-            }
-        }
-    }
 }
 
 impl FunctionPass for CfgPass {
@@ -49,84 +36,22 @@ impl FunctionPass for CfgPass {
         let f = am.function_mut();
         let mut changed = u64::from(f.edit().remove_unreachable());
         let mut work = Worklist::default();
-        for block in f.layout().block_order() {
-            work.push(block);
-        }
         let mut visits = 0;
         loop {
+            for block in f.layout().block_order() {
+                work.push(block);
+            }
             while let Some(block) = work.pop() {
-                if !f.layout().contains_block(block) {
-                    continue;
-                }
-                visits += 1;
-                let Some(last) = f.layout().last_inst(block) else {
-                    continue;
-                };
-                let old_successors = f.cfg().succs(block).to_vec();
-                let mut parameter_blocks: Vec<_> = f
-                    .dfg()
-                    .operands(last)
-                    .iter()
-                    .filter_map(|&v| match f.dfg().value_def(v) {
-                        ValueDef::BlockParam(block) => Some(block),
-                        _ => None,
-                    })
-                    .collect();
-                let mut edited = false;
-                if let Some(rewrite) = crate::rewrite::find_rewrite(f, last) {
-                    rewrite.apply(f, last);
-                    edited = true;
-                }
-                edited |= forward_edges(f, block, last);
-                // Merging substitutes block parameters, including uses in blocks
-                // other than the merged pair. Revisit those users as well.
-                loop {
-                    let tail = f.layout().last_inst(block).expect("terminated block");
-                    let users = merge_users(f, tail);
-                    let definitions: Vec<_> = f
-                        .dfg()
-                        .operands(tail)
-                        .iter()
-                        .filter_map(|&v| match f.dfg().value_def(v) {
-                            ValueDef::BlockParam(block) => Some(block),
-                            _ => None,
-                        })
-                        .collect();
-                    if !f.edit().merge_successor(block) {
-                        break;
-                    }
-                    edited = true;
-                    parameter_blocks.extend(definitions);
-                    for user in users {
-                        work.push(user);
-                    }
-                }
-                if edited {
-                    changed += 1;
-                    work.neighborhood(f, block);
-                    // Removing an escaping parameter use can make its defining
-                    // block eligible for forwarding, even outside this neighborhood.
-                    for defining in parameter_blocks {
-                        if f.layout().contains_block(defining) {
-                            work.neighborhood(f, defining);
-                        }
-                    }
-                    for successor in old_successors {
-                        if f.layout().contains_block(successor) {
-                            work.neighborhood(f, successor);
-                        }
-                    }
+                if f.layout().contains_block(block) {
+                    visits += 1;
+                    changed += u64::from(simplify_block(f, block, &mut work));
                 }
             }
-            // Reachability remains a phase-level graph walk. Deleting blocks
-            // can remove escaping SSA uses anywhere, so reseed after deletion.
+            // Deleting unreachable predecessors can enable more merges.
             if !f.edit().remove_unreachable() {
                 break;
             }
             changed += 1;
-            for block in f.layout().block_order() {
-                work.push(block);
-            }
         }
         metrics.count("cfg.simplified", changed);
         metrics.count("cfg.block_visits", visits);
@@ -138,74 +63,44 @@ impl FunctionPass for CfgPass {
     }
 }
 
-fn forward_edges(f: &mut FuncBody, block: Block, inst: Inst) -> bool {
-    let mut edges = Vec::new();
-    f.dfg()
-        .inst(inst)
-        .visit_successors(|e| edges.push(SuccessorData::new(e.block, e.args)));
-    let mut changed = false;
-    for (index, mut edge) in edges.into_iter().enumerate() {
-        let original = edge.block;
-        let mut seen = HashSet::from([block]);
-        while seen.insert(edge.block) {
-            let Some(next) = forward_successor(f, &edge) else {
-                break;
-            };
-            if seen.contains(&next.block) {
-                break;
+fn simplify_block(f: &mut FuncBody, block: Block, work: &mut Worklist) -> bool {
+    let mut edited = false;
+    while let Some(tail) = f.layout().last_inst(block) {
+        if let Some(rewrite) = crate::rewrite::find_rewrite(f, tail) {
+            let old_successors = f.cfg().succs(block).to_vec();
+            rewrite.apply(f, tail);
+            edited = true;
+            // A former successor can now merge into its sole remaining predecessor.
+            for successor in old_successors {
+                if let &[pred] = f.cfg().preds(successor)
+                    && pred != block
+                {
+                    work.push(pred);
+                }
             }
-            edge = next;
+            continue;
         }
-        if edge.block != original {
-            f.edit().redirect_edge(
-                EdgeRef {
-                    inst,
-                    index: index as u32,
-                },
-                edge.block,
-                &edge.args,
-            );
-            changed = true;
+
+        let InstView::Jump { dest } = f.dfg().inst(tail) else {
+            break;
+        };
+        // A merge substitutes the successor's parameters even in other blocks.
+        let users = merge_users(f, dest.block);
+        if !f.edit().merge_successor(block) {
+            break;
+        }
+        edited = true;
+        for user in users {
+            work.push(user);
         }
     }
-    changed
+
+    edited
 }
 
-/// Map an incoming edge through a jump-only block without leaving parameter uses behind.
-fn forward_successor(f: &FuncBody, edge: &SuccessorData) -> Option<SuccessorData> {
-    let only = f.layout().first_inst(edge.block)?;
-    if f.layout().last_inst(edge.block) != Some(only) {
-        return None;
-    }
-    let InstView::Jump { dest } = f.dfg().inst(only) else {
-        return None;
-    };
-    let params = f.dfg().block_params(edge.block);
-    if params
-        .iter()
-        .any(|&p| f.dfg().uses(p).any(|u| u.inst() != only))
-    {
-        return None;
-    }
-    let args: Vec<_> = dest
-        .args
-        .iter()
-        .map(|v| {
-            params
-                .iter()
-                .position(|p| p == v)
-                .map_or(*v, |i| edge.args[i])
-        })
-        .collect();
-    Some(SuccessorData::new(dest.block, &args))
-}
-
-fn merge_users(f: &FuncBody, inst: Inst) -> Vec<Block> {
-    let InstView::Jump { dest } = f.dfg().inst(inst) else {
-        return Vec::new();
-    };
+fn merge_users(f: &FuncBody, successor: Block) -> Vec<Block> {
     f.dfg()
-        .block_params(dest.block)
+        .block_params(successor)
         .iter()
         .flat_map(|&param| {
             f.dfg()
