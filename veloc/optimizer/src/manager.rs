@@ -43,7 +43,7 @@ impl PassManager {
         pm.add_module_pass(crate::passes::affine::AffinePass);
         pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
         pm.add_function_pass(crate::SimplifyPass);
-        pm.add_function_pass(crate::passes::control_flow::ControlFlowPass);
+        pm.add_function_pass(crate::passes::simplify_cfg::SimplifyCfgPass);
         pm.add_function_pass(crate::SimplifyPass);
         pm.add_module_pass(crate::passes::inline::InlinePass);
         pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
@@ -65,7 +65,7 @@ impl PassManager {
         pm.add_function_pass(crate::passes::sccp::SccpPass);
         pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
         pm.add_function_pass(crate::SimplifyPass);
-        pm.add_function_pass(crate::passes::control_flow::ControlFlowPass);
+        pm.add_function_pass(crate::passes::simplify_cfg::SimplifyCfgPass);
         pm.add_function_pass(crate::passes::MemoryPass);
         pm.add_function_pass(crate::passes::promote::PromotePass);
         pm.add_function_pass(crate::passes::sccp::SccpPass);
@@ -73,7 +73,7 @@ impl PassManager {
         // Expose boolean expressions before spending the equality-search budget.
         pm.add_function_pass(crate::passes::if_conversion::IfConversionPass);
         pm.add_function_pass(crate::ExpressionPass { budget });
-        pm.add_function_pass(crate::passes::control_flow::ControlFlowPass);
+        pm.add_function_pass(crate::passes::simplify_cfg::SimplifyCfgPass);
         pm.add_function_pass(crate::passes::licm::LicmPass);
         pm.add_function_pass(crate::passes::strength::StrengthPass);
         pm.add_function_pass(crate::SimplifyPass);
@@ -89,7 +89,7 @@ impl PassManager {
         pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
         pm.add_function_pass(crate::SimplifyPass);
         pm.add_function_pass(dce::DcePass);
-        pm.add_function_pass(crate::passes::control_flow::ControlFlowPass);
+        pm.add_function_pass(crate::passes::simplify_cfg::SimplifyCfgPass);
         pm.add_function_pass(crate::SimplifyPass);
         pm.add_function_pass(dce::DcePass);
         pm

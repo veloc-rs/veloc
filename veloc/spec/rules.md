@@ -299,31 +299,31 @@ constructing new successors, editing their arguments, and matching across blocks
 are rejected. All directed rules share the `find_rewrite` entry point. Branch
 plans carry an original edge index or a new condition and edge order; applying
 them uses `FuncEditor::fold_to_edge` or `rewrite_branch` for the complete edit.
-`CfgPass` matches and applies the generated terminator rules, including
-constant branch and table selection. SCCP and threading use the fact-based
+`SimplifyCfgPass` applies the generated terminator rules before tracing outgoing
+edges, including constant branch and table selection. SCCP and threading use the fact-based
 `successors` query without editing IR during analysis.
 Callers choose which instructions to rewrite: Simplify skips terminators, while
-CFG cleanup processes terminators. Expression e-graphs do not acquire CFG rewriting.
+branch threading simplifies terminators. Expression e-graphs do not acquire CFG rewriting.
 
 `IfConversionPass` merges branches with a common complete successor into boolean
 `IOr`/`IAnd` expressions, optionally negating the second condition. It speculates
 only a single safe comparison in a block with one predecessor and no parameters.
 It also converts cheap diamonds to selects. These transformations run before
 `ExpressionPass`, whose spec rules simplify the resulting expressions, followed
-by `ControlFlowPass` for threading and structural cleanup. The CFG layer chooses
+by `SimplifyCfgPass` for threading and structural cleanup. The CFG layer chooses
 whether to speculate; expression extraction only costs the resulting computation.
 The masked comparison rules in `bitwise.spec` therefore also apply to boolean
 expressions that did not originate from branches.
 
-`BypassPass` specializes incoming edges using the already simplified IR. It
+`SimplifyCfgPass` specializes incoming edges using the already simplified IR. It
 binds block parameters to that edge's arguments, substitutes operands, and calls
 `fold` in instruction order. The incoming branch also supplies its known truth
 value and integer comparison predicate. Folded results can become arguments on
-the redirected edge. A block is bypassed only when every ordinary instruction
-folds and none of its definitions have direct uses in other blocks. This keeps
+the redirected edge. An unfolded instruction must be safe to erase, and its results must be
+unneeded on the selected edge. Block-local definitions must have no direct
+uses in other blocks. This keeps
 effects, traps and SSA availability intact without cloning instructions. Tracing
-stops at an unknown branch. A cycle or an exhausted instruction budget discards
-the trace to avoid repeatedly peeling constant loops. Other incoming edges retain
+stops at an unknown branch. Encountering a cycle discards the trace to avoid repeatedly peeling constant loops. Other incoming edges retain
 the original block. No SCCP fact table or fixed-point solver is needed for these
 local substitutions.
 

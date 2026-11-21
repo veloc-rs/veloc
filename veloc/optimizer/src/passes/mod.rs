@@ -2,8 +2,6 @@
 
 pub mod affine;
 pub mod bits;
-pub mod cfg;
-pub mod control_flow;
 pub mod cse;
 pub mod dce;
 pub mod expression;
@@ -21,6 +19,7 @@ pub mod promote;
 pub mod rotate;
 pub mod sccp;
 pub mod simplify;
+pub mod simplify_cfg;
 pub mod strength;
 pub mod threading;
 

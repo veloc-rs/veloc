@@ -1,9 +1,7 @@
 //! Specialize small dispatch paths on constant incoming block arguments.
 //! Only closed, constant-fed parameter networks of branch tables seed the
 //! transformation. Ordinary induction variables do not trigger loop unrolling.
-mod bypass;
 mod ssa;
-pub use bypass::BypassPass;
 
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile, rewrite};
 use hashbrown::{HashMap, HashSet};

@@ -79,3 +79,24 @@ block1():
   jump block2(v2)
 block2(v3: i32):
   return v3
+
+// ----- inverted-branch-edge-arguments
+// run: execute
+// check: returned: [0xb, 0x17]
+local function main() -> (i32, i32)
+block0():
+  v0: i32 = call choose(bool(false)) : (bool) -> i32
+  v1: i32 = call choose(bool(true)) : (bool) -> i32
+  return v0, v1
+
+local function choose(v0: bool) -> i32
+block0():
+  v1: bool = select v0, bool(false), bool(true)
+  br v1, block1(i32(11)), block1(i32(22))
+block1(v2: i32):
+  br v0, block2(v2), block3(v2)
+block2(v3: i32):
+  v4: i32 = iadd v3, i32(1)
+  return v4
+block3(v5: i32):
+  return v5
