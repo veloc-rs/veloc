@@ -22,15 +22,12 @@ impl BlockWrites {
         end: usize,
         func: &FuncBody,
         location: Option<Location>,
-        layout: Option<&DataLayout>,
+        layout: &DataLayout,
     ) -> bool {
         self.prefix[start] != self.prefix[end]
             || self.stores.iter().any(|&(at, store)| {
                 (start..end).contains(&at)
-                    && match (location, layout) {
-                        (Some(load), Some(layout)) => func.may_alias(load, store, layout),
-                        _ => true,
-                    }
+                    && location.is_none_or(|load| func.may_alias(load, store, layout))
             })
     }
     fn end(&self) -> usize {
@@ -49,6 +46,7 @@ impl FunctionPass for LoadCsePass {
         config: &OptConfig,
         metrics: &Profile,
     ) -> PassOutcome {
+        let layout = &config.data_layout;
         let dom = am.take_dominators();
         let func = am.function_mut();
         let order = func.cfg().compute_post_order(func.entry_block());
@@ -63,10 +61,7 @@ impl FunctionPass for LoadCsePass {
                 let effect = view.memory_effect();
                 let mut barrier = effect.may_free() || view.has_volatile_access();
                 if effect.may_write() {
-                    let location = config
-                        .data_layout
-                        .as_ref()
-                        .and_then(|layout| func.memory_location(inst, layout));
+                    let location = func.memory_location(inst, layout);
                     if !barrier && let Some(location) = location {
                         stores.push((index, location));
                     } else {
@@ -91,10 +86,7 @@ impl FunctionPass for LoadCsePass {
                 let Some(address) = func.address(ptr, i64::from(offset)) else {
                     continue;
                 };
-                let location = config
-                    .data_layout
-                    .as_ref()
-                    .and_then(|layout| func.memory_location(inst, layout));
+                let location = func.memory_location(inst, layout);
                 let result = func.dfg().first_result(inst).expect("load result");
                 let ty = func.dfg().value_type(result);
                 let candidates = available.entry((address, ty)).or_default();
@@ -107,7 +99,7 @@ impl FunctionPass for LoadCsePass {
                             (definition, start + 1),
                             positions[&inst],
                             location,
-                            config.data_layout.as_ref(),
+                            layout,
                         )
                 });
                 if let Some(old) = previous {
@@ -134,7 +126,7 @@ fn preserved(
     (definition, start): (Block, usize),
     (use_block, end): (Block, usize),
     location: Option<Location>,
-    layout: Option<&DataLayout>,
+    layout: &DataLayout,
 ) -> bool {
     if definition == use_block {
         return !writes[&definition].between(start, end, func, location, layout);

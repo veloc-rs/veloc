@@ -53,7 +53,7 @@ impl FunctionPass for ExpressionPass {
             am,
             self.budget,
             &GenericCost,
-            config.data_layout,
+            Some(config.data_layout),
             config.is_debug_enabled("simplify"),
             metrics,
         ) {
@@ -594,7 +594,7 @@ block1():
         assert!(super::run(f, Budget::DEFAULT, false, &Profile::default()));
         crate::DcePass.run(
             &mut AnalysisManager::new(f),
-            &OptConfig::default(),
+            &OptConfig::new(veloc_interpreter::DATA_LAYOUT),
             &Profile::default(),
         );
         assert_eq!(f.layout().inst_block(load), load_block);
@@ -764,7 +764,7 @@ block0():
         assert_eq!(changed, 1);
         crate::DcePass.run(
             &mut AnalysisManager::new(body),
-            &OptConfig::default(),
+            &OptConfig::new(veloc_interpreter::DATA_LAYOUT),
             &Profile::default(),
         );
         let mut multiply = None;

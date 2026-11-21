@@ -32,10 +32,7 @@ impl FunctionPass for BitsPass {
             .block_order()
             .flat_map(|b| f.layout().block_insts(b))
             .collect();
-        let mut changed = if config
-            .data_layout
-            .is_some_and(|layout| layout.little_endian)
-        {
+        let mut changed = if config.data_layout.little_endian {
             memory::narrow_stores(f, &insts)
         } else {
             0
@@ -92,12 +89,7 @@ impl FunctionPass for BitsPass {
             };
             let Some(ty) = narrowed else { continue };
             // Low bits occupy the first bytes only on little-endian targets.
-            // The pipeline supplies the target layout; absent layout is unknown.
-            if !config
-                .data_layout
-                .as_ref()
-                .is_some_and(|layout| layout.little_endian)
-            {
+            if !config.data_layout.little_endian {
                 continue;
             }
             let load = f

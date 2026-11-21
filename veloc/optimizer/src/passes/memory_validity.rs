@@ -17,9 +17,7 @@ impl FunctionPass for MemoryValidityPass {
         config: &OptConfig,
         metrics: &Profile,
     ) -> PassOutcome {
-        let Some(layout) = config.data_layout.as_ref() else {
-            return PassOutcome::Unchanged;
-        };
+        let layout = &config.data_layout;
         let f = am.function_mut();
         let mut dead = Vec::new();
         for block in f.layout().block_order() {

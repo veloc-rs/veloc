@@ -387,9 +387,7 @@ impl ModulePass for AffinePass {
         "AffinePass"
     }
     fn run(&self, module: &mut Module, config: &OptConfig, metrics: &Profile) -> PassOutcome {
-        let Some(layout) = config.data_layout else {
-            return PassOutcome::Unchanged;
-        };
+        let layout = config.data_layout;
         let mut transforms = Vec::new();
         for (id, func) in module.functions() {
             let Some(body) = func.body else {

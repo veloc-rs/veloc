@@ -26,9 +26,7 @@ impl FunctionPass for PromotePass {
         config: &OptConfig,
         metrics: &Profile,
     ) -> PassOutcome {
-        let Some(layout) = config.data_layout else {
-            return PassOutcome::Unchanged;
-        };
+        let layout = config.data_layout;
         let f = am.function_mut();
         let entry = f.entry_block();
         let blocks: Vec<_> = f.layout().block_order().collect();

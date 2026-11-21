@@ -1012,6 +1012,7 @@ dependencies = [
  "smallvec",
  "veloc-analyzer",
  "veloc-bytecode",
+ "veloc-interpreter",
  "veloc-mir",
  "veloc-policy",
  "veloc-profile",

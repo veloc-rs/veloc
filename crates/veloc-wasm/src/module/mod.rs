@@ -429,7 +429,7 @@ impl Module {
                 .iter()
                 .map(|s| s.as_str())
                 .collect();
-            let config = OptConfig::with_debug_tags(&tags)?;
+            let config = OptConfig::new(engine.data_layout()).with_debug_tags(&tags)?;
 
             let mut pm = PassManager::o1(
                 config,
@@ -441,7 +441,6 @@ impl Module {
             );
 
             pm = pm
-                .with_layout(engine.data_layout())
                 .with_policy(engine.config().codegen.policy.clone())
                 .with_profile(profile.clone());
             pm.run_on_module(&mut ir);

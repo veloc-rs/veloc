@@ -41,10 +41,10 @@ pub trait ModulePass {
 }
 
 /// 优化配置。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct OptConfig {
-    /// None disables optimizations that depend on target memory representation.
-    pub data_layout: Option<veloc_types::DataLayout>,
+    /// Memory representation of the compilation target.
+    pub data_layout: veloc_types::DataLayout,
     /// Optional learned profitability decisions; passes still enforce legality.
     pub policy: Option<std::sync::Arc<veloc_policy::Policy>>,
     /// 调试标签系统，用于控制细粒度的输出，如 "dce", "liveness" 等
@@ -52,14 +52,20 @@ pub struct OptConfig {
 }
 
 impl OptConfig {
-    /// 创建配置并批量添加调试标签
-    /// 如果发现未知标签，直接返回错误
-    pub fn with_debug_tags(tags: &[&str]) -> Result<Self> {
-        let mut config = Self::default();
-        for tag in tags {
-            config.add_debug_tag(tag)?;
+    pub fn new(data_layout: veloc_types::DataLayout) -> Self {
+        Self {
+            data_layout,
+            policy: None,
+            debug_tags: HashSet::new(),
         }
-        Ok(config)
+    }
+
+    /// 批量启用调试标签，遇到未知标签时返回错误。
+    pub fn with_debug_tags(mut self, tags: &[&str]) -> Result<Self> {
+        for tag in tags {
+            self.add_debug_tag(tag)?;
+        }
+        Ok(self)
     }
 
     /// 检查指定的调试标签是否已启用

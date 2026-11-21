@@ -20,4 +20,5 @@ cranelift-entity = { workspace = true }
 veloc-spec = { workspace = true }
 
 [dev-dependencies]
+veloc-interpreter.workspace = true
 veloc-semantics = { workspace = true }

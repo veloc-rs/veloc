@@ -231,7 +231,7 @@ fn execute(mode: &str, source: &str) -> Result<String> {
             module.validate().map_err(|error| error.to_string())?;
             let module = match mode {
                 "simplify" => simplify(module)?,
-                "o1" => optimize(&module),
+                "o1" => optimize(&module, veloc_codegen::target::x86_64::DATA_LAYOUT),
                 "lower-error" => {
                     return rejected(
                         veloc_codegen::translate::IRTranslator::new(
@@ -242,7 +242,7 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                     );
                 }
                 "execute" => {
-                    let optimized = optimize(&module);
+                    let optimized = optimize(&module, veloc_interpreter::DATA_LAYOUT);
                     optimized.validate().map_err(|error| error.to_string())?;
                     let before = interpret(module)?;
                     let after = interpret(optimized)?;
@@ -283,11 +283,9 @@ fn execute(mode: &str, source: &str) -> Result<String> {
     }
 }
 
-fn optimize(module: &Module) -> Module {
+fn optimize(module: &Module, layout: veloc_types::DataLayout) -> Module {
     let mut data = module.clone();
-    PassManager::new_o1()
-        .with_layout(veloc_codegen::target::x86_64::DATA_LAYOUT)
-        .run_on_module(&mut data);
+    PassManager::new_o1(layout).run_on_module(&mut data);
     data
 }
 
@@ -363,7 +361,7 @@ fn roundtrip(module: &Module) -> Result<String> {
 
 fn simplify(module: Module) -> Result<Module> {
     let mut data = module;
-    let mut passes = PassManager::new(OptConfig::default());
+    let mut passes = PassManager::new(OptConfig::new(veloc_codegen::target::x86_64::DATA_LAYOUT));
     passes.add_function_pass(ExpressionPass {
         budget: expression::Budget::DEFAULT,
     });

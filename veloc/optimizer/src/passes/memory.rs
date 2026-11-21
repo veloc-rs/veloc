@@ -21,9 +21,7 @@ impl FunctionPass for MemoryPass {
         config: &OptConfig,
         metrics: &Profile,
     ) -> PassOutcome {
-        let Some(layout) = config.data_layout.as_ref() else {
-            return PassOutcome::Unchanged;
-        };
+        let layout = &config.data_layout;
         if run_memory(am.function_mut(), layout, metrics) {
             PassOutcome::Changed
         } else {

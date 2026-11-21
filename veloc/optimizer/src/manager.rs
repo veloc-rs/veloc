@@ -27,9 +27,9 @@ impl PassManager {
         }
     }
 
-    pub fn new_o1() -> Self {
+    pub fn new_o1(layout: veloc_types::DataLayout) -> Self {
         Self::o1(
-            OptConfig::default(),
+            OptConfig::new(layout),
             crate::passes::expression::Budget::DEFAULT,
         )
     }
@@ -37,8 +37,7 @@ impl PassManager {
     /// Native object pipeline. Immutable synthesized data and direct calls bind
     /// within this module; runtimes without module data support use `o1`.
     pub fn native_o1(layout: veloc_types::DataLayout) -> Self {
-        let mut config = OptConfig::default();
-        config.data_layout = Some(layout);
+        let config = OptConfig::new(layout);
         let mut pm = Self::new(config.clone());
         pm.add_module_pass(crate::passes::affine::AffinePass);
         pm.add_function_pass(crate::passes::params::SimplifyParamsPass);
@@ -93,11 +92,6 @@ impl PassManager {
         pm.add_function_pass(crate::SimplifyPass);
         pm.add_function_pass(dce::DcePass);
         pm
-    }
-
-    pub fn with_layout(mut self, layout: veloc_types::DataLayout) -> Self {
-        self.config.data_layout = Some(layout);
-        self
     }
 
     pub fn with_profile(mut self, profile: Profile) -> Self {
