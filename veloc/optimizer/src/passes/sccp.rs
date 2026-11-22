@@ -31,7 +31,7 @@ impl Solver {
                 .dfg()
                 .as_scalar_const(value)
                 .map_or(Fact::Varying, Fact::Constant),
-            ValueDef::FunctionParam(_) => Fact::Varying,
+            ValueDef::StackSlot { .. } | ValueDef::FunctionParam(_) => Fact::Varying,
             _ => self.facts[value],
         }
     }

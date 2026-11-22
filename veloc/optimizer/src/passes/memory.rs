@@ -1,4 +1,4 @@
-//! Bounded block-local forwarding and dead-store elimination for entry objects.
+//! Bounded block-local forwarding and dead-store elimination for stack slots.
 //! Unknown aliases, lifetime effects and volatile accesses are barriers.
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use hashbrown::HashSet;
@@ -31,7 +31,7 @@ impl FunctionPass for MemoryPass {
 }
 
 struct Cell {
-    object: Inst,
+    object: Value,
     offset: u32,
     bytes: u32,
     ty: Type,
@@ -41,26 +41,26 @@ struct Cell {
 }
 
 impl Cell {
-    fn overlaps(&self, object: Inst, offset: u32, bytes: u32) -> bool {
+    fn overlaps(&self, object: Value, offset: u32, bytes: u32) -> bool {
         self.object == object && self.offset < offset + bytes && offset < self.offset + self.bytes
     }
 }
 
-fn escaped_allocas(func: &FuncBody) -> HashSet<Inst> {
+fn escaped_slots(func: &FuncBody) -> HashSet<Value> {
     let mut escaped = HashSet::new();
     let mut visited = HashSet::new();
     let mut mark_escape = |mut value| {
         // Follow derived pointers to their allocation regardless of chain length.
         while visited.insert(value) {
-            let Some(inst) = func.dfg().value_inst(value) else {
+            if matches!(
+                func.dfg().value_def(value),
+                veloc_mir::ValueDef::StackSlot { .. }
+            ) {
+                escaped.insert(value);
                 break;
-            };
-            match func.dfg().inst(inst) {
-                InstView::PtrOffset { ptr, .. } => value = ptr,
-                InstView::Alloca { .. } => {
-                    escaped.insert(inst);
-                    break;
-                }
+            }
+            match func.dfg().value_inst_view(value) {
+                Some(InstView::PtrOffset { ptr, .. }) => value = ptr,
                 _ => break,
             }
         }
@@ -82,8 +82,8 @@ fn escaped_allocas(func: &FuncBody) -> HashSet<Inst> {
     escaped
 }
 
-/// A nonvolatile load or store wholly inside an entry allocation.
-fn stack_access(func: &FuncBody, inst: Inst, layout: &DataLayout) -> Option<(Inst, u32, u32)> {
+/// A nonvolatile load or store wholly inside a stack slot.
+fn stack_access(func: &FuncBody, inst: Inst, layout: &DataLayout) -> Option<(Value, u32, u32)> {
     let flags = func.dfg().inst(inst).memory_flags()?;
     if flags.is_volatile() {
         return None;
@@ -94,7 +94,7 @@ fn stack_access(func: &FuncBody, inst: Inst, layout: &DataLayout) -> Option<(Ins
 }
 
 pub fn run_memory(func: &mut FuncBody, layout: &DataLayout, metrics: &Profile) -> bool {
-    let escaped = escaped_allocas(func);
+    let escaped = escaped_slots(func);
     let mut dead = HashSet::new();
     let mut next = func.layout().block_order().next();
     while let Some(block) = next {

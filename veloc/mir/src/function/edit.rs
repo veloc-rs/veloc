@@ -206,6 +206,35 @@ impl<'a> FuncEditor<'a> {
         param
     }
 
+    /// Declare a fresh fixed stack object and return its function-wide pointer.
+    pub fn stack_slot(&mut self, size: u32, align: u32) -> Value {
+        assert!(
+            size > 0 && align.is_power_of_two(),
+            "invalid stack slot layout"
+        );
+        let value = self.body.dfg.values.push(crate::types::ValueData {
+            ty: Type::PTR,
+            def: crate::ValueDef::StackSlot { size, align },
+        });
+        self.body.stack_slots.push(value);
+        value
+    }
+
+    pub(crate) fn bind_stack_slot(&mut self, value: Value, size: u32, align: u32) {
+        self.body.dfg.values[value] = crate::types::ValueData {
+            ty: Type::PTR,
+            def: crate::ValueDef::StackSlot { size, align },
+        };
+        self.body.stack_slots.push(value);
+    }
+
+    pub fn remove_unused_stack_slots(&mut self) -> usize {
+        let old_len = self.body.stack_slots.len();
+        let dfg = &self.body.dfg;
+        self.body.stack_slots.retain(|&v| !dfg.use_empty(v));
+        old_len - self.body.stack_slots.len()
+    }
+
     /// Extend the function inputs when constructing a new definition.
     /// The containing module must give this body a matching signature.
     pub fn append_function_param(&mut self, ty: Type) -> Value {

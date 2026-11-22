@@ -131,12 +131,21 @@ block1(x: i32):
 
 ---
 
-#### `Alloca`
+#### `stack-slot`
 
-Creates a fresh local object with positive `size: u32` and power-of-two
-`align: u32`, returning `PTR`. Access it with ordinary `Load` and `Store`.
-Current backends require entry-block placement. See [memory contracts](../../MEMORY.md)
-for lifetime, resource-exhaustion and optimization rules.
+A `stack-slot` declaration between the function header and its first block
+defines a function-wide pointer to an uninitialized local object. Each slot
+has a positive byte size and a power-of-two alignment. Each invocation gets
+its own object for each declaration. Use ordinary `Load` and `Store` to access it.
+
+```text
+local function example() -> i32
+stack-slot buf, size=4, align=4
+block0():
+  store i32(42), buf, offset=0
+  v1: i32 = load buf, offset=0
+  return v1
+```
 
 ---
 

@@ -1,16 +1,16 @@
-//! Promote initialized scalar cells in nonescaping entry allocations to SSA.
+//! Promote initialized scalar cells in nonescaping stack slots to SSA.
 //! Aggregate fields are independent cells when their byte ranges do not overlap.
 //! Unknown/dynamic addressing, escaping pointers and volatile accesses retain
 //! memory. Block parameters are pruned by the ordinary parameter/DCE passes.
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use std::collections::{BTreeMap, HashSet};
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{Inst, InstView, Type, function::EdgeRef};
+use veloc_mir::{Inst, InstView, Type, Value, function::EdgeRef};
 
 pub struct PromotePass;
 #[derive(Clone)]
 struct Cell {
-    object: Inst,
+    object: Value,
     offset: u32,
     bytes: u32,
     ty: Type,
@@ -34,15 +34,11 @@ impl FunctionPass for PromotePass {
             .iter()
             .flat_map(|&b| f.layout().block_insts(b))
             .collect();
-        // Follow every use of each allocation. Bounded address recognition must
-        // never turn failure into a proof of nonescape.
+        // Follow derived pointers so every use of each slot is accounted for.
         let mut escaped = HashSet::new();
-        for &allocation in &insts {
-            if !matches!(f.dfg().inst(allocation), InstView::Alloca { .. }) {
-                continue;
-            }
+        for &allocation in f.stack_slots() {
             let mut seen = HashSet::new();
-            let mut pending = vec![f.dfg().first_result(allocation).unwrap()];
+            let mut pending = vec![allocation];
             while let Some(pointer) = pending.pop() {
                 if !seen.insert(pointer) {
                     continue;
@@ -73,7 +69,7 @@ impl FunctionPass for PromotePass {
                 }
             }
         }
-        let mut cells = BTreeMap::<(Inst, u32), Cell>::new();
+        let mut cells = BTreeMap::<(Value, u32), Cell>::new();
         for &inst in &insts {
             let (ty, flags) = match f.dfg().inst(inst) {
                 InstView::Load { flags, .. } => (

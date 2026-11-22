@@ -251,6 +251,18 @@ impl<'a> FuncPrinter<'a> {
         let Some(body) = self.func.body else {
             return Ok(());
         };
+        let printer = InstPrinter::new(body.dfg(), Some(self.module));
+        for &value in body.stack_slots() {
+            let (size, align) = body
+                .dfg()
+                .stack_slot_layout(value)
+                .ok_or(core::fmt::Error)?;
+            writeln!(
+                f,
+                "stack-slot {}, size={size}, align={align}",
+                printer.vf(value)
+            )?;
+        }
         for block in body.layout().block_order() {
             self.fmt_block(f, body, block)?;
         }

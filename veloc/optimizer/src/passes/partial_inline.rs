@@ -5,8 +5,7 @@
 use crate::{ModulePass, OptConfig, PassOutcome, Profile};
 use std::collections::{HashMap, HashSet};
 use veloc_mir::{
-    Block, FuncBody, FuncId, Inst, InstView, Linkage, Module, Opcode, Signature, SuccessorData,
-    Value,
+    Block, FuncBody, FuncId, Inst, InstView, Linkage, Module, Signature, SuccessorData, Value,
 };
 
 pub struct PartialInlinePass;
@@ -117,10 +116,7 @@ fn shape(f: &FuncBody) -> Option<Shape> {
         .block_order()
         .flat_map(|b| f.layout().block_insts(b))
         .collect();
-    if all.len() <= 32
-        || all.len() > 500
-        || all.iter().any(|&i| f.dfg().opcode(i) == Opcode::Alloca)
-    {
+    if all.len() <= 32 || all.len() > 500 || f.used_stack_slots().next().is_some() {
         return None;
     }
     let mut needed: HashSet<Value> = entry_insts

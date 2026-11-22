@@ -1175,6 +1175,10 @@ pub(crate) fn compile_function(
     // values moved or returned without going through a typed opcode dispatch.
     for value in func.dfg().values().keys() {
         let ty = func.dfg().value_type(value);
+        // Explicit SSA numbers in text can leave unused slots in the value arena.
+        if ty == Type::INVALID && func.dfg().use_empty(value) {
+            continue;
+        }
         if !ty.is_scalar() && !ty.is_callable() {
             return Err(crate::Error::UnsupportedValueType {
                 module: module_id,
@@ -1216,6 +1220,13 @@ impl<'a> Compiler<'a> {
             self.param_indices.push(self.mapper.reg(param));
         }
 
+        for (value, _, _) in self.func.used_stack_slots() {
+            emit::StackAddr(
+                &mut self.code,
+                self.mapper.reg(value),
+                self.stack.offsets[value],
+            );
+        }
         for &block in rpo {
             self.block_to_pc[block] = self.code.len() as u32;
             for inst in self.func.layout().block_insts(block) {
@@ -1368,11 +1379,6 @@ impl<'a> Compiler<'a> {
             InstView::Binary { opcode, args } => self.emit_binary(inst, *opcode, args)?,
             InstView::IntCompare { kind, args, .. } => self.emit_icmp(inst, *kind, args)?,
             InstView::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args)?,
-            InstView::Alloca { .. } => {
-                let res = self.func.dfg().first_result(inst).unwrap();
-                let dst = self.mapper.reg(res);
-                emit::StackAddr(&mut self.code, dst, self.stack.offsets[inst]);
-            }
             InstView::Load { ptr, offset, flags } => {
                 if !flags.is_volatile()
                     && let Some(location) = self.func.memory_location(inst, &crate::DATA_LAYOUT)

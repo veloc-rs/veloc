@@ -43,11 +43,6 @@ struct Store {
     offset: u32,
     flags: MemFlags,
 }
-struct Alloca {
-    size: u32,
-    align: u32,
-}
-
 struct GlobalAddr { global: GlobalId, }
 struct FuncAddr { func_id: FuncId, }
 struct PtrOffset {

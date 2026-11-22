@@ -103,7 +103,9 @@ impl FunctionPass for LicmPass {
                             .operands(inst)
                             .iter()
                             .all(|&v| match f.dfg().value_def(v) {
-                                ValueDef::FunctionParam(_) | ValueDef::Const(_) => true,
+                                ValueDef::StackSlot { .. }
+                                | ValueDef::FunctionParam(_)
+                                | ValueDef::Const(_) => true,
                                 ValueDef::BlockParam(b) => {
                                     !members.contains(&b) && dom.dominates(b, preheader)
                                 }

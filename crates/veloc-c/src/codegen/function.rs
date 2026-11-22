@@ -124,9 +124,8 @@ impl<'a, 'b> Function<'a, 'b> {
             || matches!(ty, CType::Volatile(_))
         {
             let (size, align) = self.types.layout(&ty)?;
-            let entry = self.builder.func().entry_block();
             Location::Memory(
-                self.builder.at_start(entry).alloca(
+                self.builder.stack_slot(
                     u32::try_from(size.max(1))
                         .map_err(|_| Error::semantic("object too large", 0, 0))?,
                     align as u32,

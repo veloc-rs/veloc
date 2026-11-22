@@ -18,8 +18,7 @@ pub(super) fn generate(ir: &mut veloc::mir::ModuleBuilder, meta: &WasmMetadata) 
         let mut builder = ir.define(id);
         let params = builder.func().params().to_vec();
         let slots = (sig.params.len() + 1).max(sig.results.len());
-        let entry = builder.func().entry_block();
-        let buffer = builder.at_start(entry).alloca((slots * 8) as u32, 8);
+        let buffer = builder.stack_slot((slots * 8) as u32, 8);
         let mut ins = builder.ins();
         // Every slot is a complete InterpreterValue, including zeroed high bits
         // for narrow arguments. Slot zero carries the current instance context.

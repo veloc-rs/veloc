@@ -577,21 +577,6 @@ op FuncAddr(func_id: FuncId) -> Value<Type::PTR> {
     }
 }
 
-// A fresh, uninitialized local object, valid until the invocation returns.
-// Physical resource exhaustion is outside MIR equivalence: unused objects may
-// be eliminated, but distinct live objects must not be merged or speculated.
-op Alloca(size: u32, align: u32) -> Value<Type::PTR> {
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::ALLOCATE) };
-    mnemonic = "alloca";
-    storage = Alloca { size, align };
-    text = "size={size}, align={align}";
-
-    verify {
-        require(size > 0, "alloca size must be positive");
-        require(is_power_of_two(align), "alloca alignment must be a power of two");
-    }
-}
-
 op PtrOffset(ptr: Value<Type::PTR>, offset: i32) -> Value<Type::PTR> {
     meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "ptr-offset";

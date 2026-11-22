@@ -186,11 +186,7 @@ impl ModulePass for InlinePass {
                     .sum::<usize>();
                 // Legality and the caller growth limit apply to every policy.
                 if growth + size > (original * 4).max(256).min(2000)
-                    || source
-                        .layout()
-                        .block_order()
-                        .flat_map(|b| source.layout().block_insts(b))
-                        .any(|i| matches!(source.dfg().opcode(i), Opcode::Alloca))
+                    || source.used_stack_slots().next().is_some()
                 {
                     continue;
                 }

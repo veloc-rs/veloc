@@ -210,6 +210,7 @@ fn parse_module(source: &str) -> ParseResult<Module> {
                 symbols: Symbols::default(),
                 block: None,
                 params: header.params,
+                slots: Vec::new(),
             });
         } else if input.is("global") && input.peek_kind(1) == Kind::Word {
             if current.is_some() {
@@ -243,6 +244,27 @@ struct FunctionParser {
     symbols: Symbols,
     block: Option<Block>,
     params: Vec<(String, Location)>,
+    slots: Vec<(String, Location, u32, u32)>,
+}
+
+fn slot_layout(input: &mut Cursor<'_>) -> ParseResult<(u32, u32)> {
+    fn field(input: &mut Cursor<'_>, name: &str) -> ParseResult<u32> {
+        input.keyword(name)?;
+        input.expect(Kind::Equal)?;
+        input.atom(|text| {
+            text.parse::<u32>()
+                .map_err(|_| format!("invalid {name} `{text}`"))
+        })
+    }
+    if input.is("align") {
+        let align = field(input, "align")?;
+        input.expect(Kind::Comma)?;
+        Ok((field(input, "size")?, align))
+    } else {
+        let size = field(input, "size")?;
+        input.expect(Kind::Comma)?;
+        Ok((size, field(input, "align")?))
+    }
 }
 
 impl FunctionParser {
@@ -252,6 +274,18 @@ impl FunctionParser {
         functions: &mut Functions,
         module: &mut Module,
     ) -> ParseResult<()> {
+        if input.is("stack-slot") && input.peek_kind(1) == Kind::Word {
+            if self.func.is_some() {
+                return Err(input.error("declare stack slots before the first block"));
+            }
+            input.keyword("stack-slot")?;
+            let location = input.location();
+            let name = input.word()?.to_string();
+            input.expect(Kind::Comma)?;
+            let (size, align) = slot_layout(input)?;
+            self.slots.push((name, location, size, align));
+            return Ok(());
+        }
         if self.func.is_none() {
             let entry = input
                 .text()
@@ -271,6 +305,10 @@ impl FunctionParser {
                 let value = func.params()[index];
                 self.symbols
                     .define_function_param(name, value, &mut func, *location)?;
+            }
+            for (name, location, size, align) in self.slots.drain(..) {
+                let value = self.symbols.define(&name, &mut func, location)?;
+                func.edit().bind_stack_slot(value, size, align);
             }
             self.func = Some(func);
         }
@@ -294,6 +332,9 @@ impl FunctionParser {
     }
 
     fn finish(self, module: &mut Module) -> ParseResult<()> {
+        if let Some((_, location, _, _)) = self.slots.first() {
+            return Err(location.error("function with stack slots requires an entry block"));
+        }
         self.symbols.finish()?;
         module.bodies[self.id] = self.func;
         Ok(())
@@ -483,6 +524,21 @@ pub(super) struct OperandParser<'a> {
 impl OperandParser<'_> {
     fn instruction(&mut self, input: &mut Cursor<'_>, block: Block) -> ParseResult<()> {
         let results = self.parse_results(input)?;
+        // Entry allocas in older MIR denote exactly one object per invocation.
+        if input.is("alloca") {
+            if block != self.func.entry_block() {
+                return Err(
+                    input.error("non-entry alloca cannot be converted to a fixed stack slot")
+                );
+            }
+            let [(value, Type::PTR)] = results.as_slice() else {
+                return Err(input.error("alloca requires one pointer result"));
+            };
+            input.keyword("alloca")?;
+            let (size, align) = slot_layout(input)?;
+            self.func.edit().bind_stack_slot(*value, size, align);
+            return Ok(());
+        }
         let (opcode, flags) = parse_instruction_header(input)?;
         let inst = self.parse(opcode, flags, input, results.first().map(|(_, ty)| *ty))?;
         self.func.edit().finish_parsed_inst(block, inst, &results);

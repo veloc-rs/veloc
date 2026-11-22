@@ -152,6 +152,17 @@ impl<'a> FuncTranslator<'a> {
         for &value in func.params() {
             self.mfunc.editor().append_param(self.value_map[value]);
         }
+        let mentry = self.mfunc.entry_block();
+        for (value, size, align) in func.used_stack_slots() {
+            let slot =
+                self.mfunc
+                    .editor()
+                    .alloc_stack_object(veloc_lir::StackObject::Local, size, align);
+            self.mfunc
+                .editor()
+                .at_end(mentry)
+                .stack_addr(self.value_map[value], slot);
+        }
         for block_id in order() {
             let mblock = self.block_map[block_id].unwrap();
             for &value in func.dfg().block_params(block_id) {
@@ -285,23 +296,6 @@ impl<'a> FuncTranslator<'a> {
             InstView::TailCall { .. } => Err(Error::translate(
                 "tail calls require tail-call lowering before native code generation",
             )),
-            InstView::Alloca { size, align } => {
-                if mblock != self.block_map[self.func.entry_block()].unwrap() {
-                    return Err(Error::translate(
-                        "non-entry alloca requires dynamic stack lowering",
-                    ));
-                }
-                let slot = self.mfunc.editor().alloc_stack_object(
-                    veloc_lir::StackObject::Local,
-                    *size,
-                    *align,
-                );
-                Ok(self
-                    .mfunc
-                    .editor()
-                    .at_end(mblock)
-                    .stack_addr(result(), slot))
-            }
             InstView::IntCompare { kind, args } => {
                 let src0 = self.value_map[args[0]];
                 let src1 = self.value_map[args[1]];

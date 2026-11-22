@@ -32,8 +32,8 @@ block3(v8: i32):
 // check: returned: [0x2a]
 local function main() -> i32
 
+stack-slot ss0, size=16, align=8
 block0():
-  ss0: ptr = alloca size=16, align=8
   store i32(42), ss0, offset=4
   v1: i32 = load ss0, offset=4
   return v1

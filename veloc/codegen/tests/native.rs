@@ -385,8 +385,8 @@ block0():
 import function fill(ptr, i64) -> void
 export function address(v0: i64) -> i64
 
+stack-slot ss0, size=16, align=8
 block0():
-  ss0: ptr = alloca size=16, align=8
   v1: ptr = ptr-offset ss0, 0
   call fill(v1, v0) : (ptr, i64) -> void
   v2: i64 = load ss0, offset=8
@@ -789,8 +789,8 @@ block3(v8: i64):
 
 export function memory(v0: i64) -> i64
 
+stack-slot ss0, size=16, align=8
 block0():
-  ss0: ptr = alloca size=16, align=8
   store v0, ss0, offset=8
   v1: i64 = load ss0, offset=8
   return v1

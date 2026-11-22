@@ -702,7 +702,7 @@ impl Planner<'_> {
             return false;
         };
         match self.body.dfg().value_def(value) {
-            ValueDef::FunctionParam(_) | ValueDef::Const(_) => true,
+            ValueDef::StackSlot { .. } | ValueDef::FunctionParam(_) | ValueDef::Const(_) => true,
             ValueDef::BlockParam(block) => {
                 let use_block = self
                     .body

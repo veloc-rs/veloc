@@ -1,12 +1,12 @@
 // ----- scalar-promotion
 // run: o1
+// not: stack-slot
 // check: return i32(42)
-// not: alloca
 // not: load
 // not: store
 local function main() -> i32
+stack-slot p, size=8, align=8
 block0():
-  p: ptr = alloca size=8, align=8
   q: ptr = ptr-offset p, 4
   store i32(42), q, offset=0
   y: i32 = load p, offset=4
@@ -18,8 +18,8 @@ block0():
 // check: = load
 import function mutate(ptr) -> void
 local function main() -> i32
+stack-slot p, size=4, align=4
 block0():
-  p: ptr = alloca size=4, align=4
   store i32(1), p, offset=0
   call mutate(p) : (ptr) -> void
   y: i32 = load p, offset=0
@@ -30,8 +30,8 @@ block0():
 // check: store.volatile
 // check: load.volatile
 local function main() -> i32
+stack-slot p, size=4, align=4
 block0():
-  p: ptr = alloca size=4, align=4
   store.volatile i32(1), p, offset=0
   y: i32 = load.volatile p, offset=0
   return y
@@ -40,8 +40,8 @@ block0():
 // run: o1
 // check: : i32 = load
 local function main() -> i32
+stack-slot p, size=4, align=4
 block0():
-  p: ptr = alloca size=4, align=4
   store i32(1), p, offset=0
   store i8(2), p, offset=1
   y: i32 = load p, offset=0
@@ -52,17 +52,17 @@ block0():
 // check: store
 // check: load
 local function main() -> i32
+stack-slot p, size=4, align=4
 block0():
-  p: ptr = alloca size=4, align=4
   store i32(1), p, offset=4
   y: i32 = load p, offset=4
   return y
 
 // ----- unused-object-is-removable
 // run: o1
+// not: stack-slot
 // check: return
-// not: alloca
 local function main() -> void
+stack-slot p, size=4096, align=64
 block0():
-  p: ptr = alloca size=4096, align=64
   return

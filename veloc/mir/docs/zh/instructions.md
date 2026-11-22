@@ -128,11 +128,20 @@ block1(x: i32):
 
 ---
 
-#### `Alloca`
+#### `stack-slot`
 
-以正数 `size: u32` 和二的幂 `align: u32` 创建新的局部对象，返回 `PTR`。
-使用普通 `Load`、`Store` 访问。当前后端要求分配位于入口块；生命周期、
-资源耗尽和优化规则见[内存契约](../../MEMORY.md)。
+在函数头和第一个基本块之间声明 `stack-slot`，得到整个函数内可用的指针。
+每次调用都为每个槽提供独立的、未初始化的局部对象。大小以字节计且必须为正，
+对齐必须是二的幂。使用普通的 `Load` 和 `Store` 即可访问。
+
+```text
+local function example() -> i32
+stack-slot buf, size=4, align=4
+block0():
+  store i32(42), buf, offset=0
+  v1: i32 = load buf, offset=0
+  return v1
+```
 
 ---
 

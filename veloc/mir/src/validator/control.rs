@@ -74,7 +74,9 @@ impl Structure {
                 for &value in body.dfg().operands(inst) {
                     let definition = body.dfg().value_def(value);
                     let (owner, source) = match definition {
-                        ValueDef::FunctionParam(_) | ValueDef::Const(_) => continue,
+                        ValueDef::StackSlot { .. }
+                        | ValueDef::FunctionParam(_)
+                        | ValueDef::Const(_) => continue,
                         ValueDef::BlockParam(owner) => (owner, None),
                         ValueDef::Inst(source) => {
                             (body.layout().inst_block(source).unwrap(), Some(source))
@@ -150,6 +152,24 @@ impl Checker<'_> {
                 param,
                 ValueDef::FunctionParam(crate::ParamIndex(index as u32)),
             )?;
+        }
+        for &value in body.stack_slots() {
+            let Some(data) = dfg.values().get(value) else {
+                return func.fail(format!("unknown stack slot {value}"));
+            };
+            let ValueDef::StackSlot { size, align } = data.def else {
+                return func.fail(format!("{value} is not a stack slot"));
+            };
+            self.define(value, data.def)?;
+            if data.ty != crate::Type::PTR {
+                return func.fail(format!("stack slot {value} must have pointer type"));
+            }
+            if size == 0 {
+                return func.fail("stack slot size must be positive".into());
+            }
+            if !align.is_power_of_two() {
+                return func.fail("stack slot alignment must be a power of two".into());
+            }
         }
         for (value, data) in dfg.values() {
             if let ValueDef::Const(_) = data.def {

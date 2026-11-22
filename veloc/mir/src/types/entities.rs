@@ -25,6 +25,8 @@ pub struct ValueData {
 pub enum ValueDef {
     /// Value is defined by an instruction.
     Inst(crate::Inst),
+    /// Base address of a distinct, uninitialized object in this invocation.
+    StackSlot { size: u32, align: u32 },
     /// An input supplied by the caller, available throughout the function.
     FunctionParam(ParamIndex),
     /// A value supplied by incoming control-flow edges.

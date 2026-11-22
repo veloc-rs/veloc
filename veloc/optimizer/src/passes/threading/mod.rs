@@ -135,10 +135,9 @@ impl FunctionPass for ThreadingPass {
             }
             let insts: Vec<_> = f.layout().block_insts(block).collect();
             if insts.len() > MAX_BLOCK_INSTS
-                || insts.iter().any(|&i| {
-                    let op = f.dfg().inst(i).opcode();
-                    op.transfers_ownership() || matches!(f.dfg().inst(i), InstView::Alloca { .. })
-                })
+                || insts
+                    .iter()
+                    .any(|&i| f.dfg().opcode(i).transfers_ownership())
             {
                 continue;
             }
@@ -227,7 +226,9 @@ fn duplicate(
                 values.get(v).copied().unwrap_or_else(|| {
                     debug_assert!(matches!(
                         f.dfg().value_def(*v),
-                        ValueDef::Const(_) | ValueDef::FunctionParam(_)
+                        ValueDef::Const(_)
+                            | ValueDef::StackSlot { .. }
+                            | ValueDef::FunctionParam(_)
                     ));
                     *v
                 })

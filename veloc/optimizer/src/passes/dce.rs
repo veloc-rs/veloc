@@ -62,9 +62,11 @@ impl FunctionPass for DcePass {
             }
         }
         func.edit().erase_insts(&dead);
+        let removed_slots = func.edit().remove_unused_stack_slots();
+        metrics.count("dce.removed_slots", removed_slots as u64);
         metrics.count("dce.removed_params", removed_params as u64);
         metrics.count("dce.removed_insts", dead.len() as u64);
-        if dead.is_empty() && removed_params == 0 {
+        if dead.is_empty() && removed_params == 0 && removed_slots == 0 {
             PassOutcome::Unchanged
         } else {
             PassOutcome::Changed
@@ -108,7 +110,7 @@ impl Liveness {
                         live.mark_value(arg);
                     }
                 }
-                ValueDef::FunctionParam(_) | ValueDef::Const(_) => {}
+                ValueDef::StackSlot { .. } | ValueDef::FunctionParam(_) | ValueDef::Const(_) => {}
             }
         }
         live

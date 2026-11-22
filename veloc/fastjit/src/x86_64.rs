@@ -480,32 +480,24 @@ fn compile_function<'a>(
         }
     }
     let first_temp = dfg.values().len();
-    let mut objects = vec![None; first_temp];
+    let mut objects = Vec::new();
     let mut local_bytes = first_temp
         .checked_add(max_edge_args)
         .and_then(|n| n.checked_mul(8))
         .ok_or_else(|| unsupported("stack frame too large"))?;
-    for &block in &blocks {
-        for inst in body.layout().block_insts(block) {
-            if let InstView::Alloca { size, align } = dfg.inst(inst) {
-                let [result] = dfg.inst_results(inst) else {
-                    return Err(unsupported("alloca result arity"));
-                };
-                let align = align as usize;
-                if align == 0 || !align.is_power_of_two() || align > 16 {
-                    return Err(unsupported("alloca alignment"));
-                }
-                local_bytes = local_bytes
-                    .checked_add(size as usize)
-                    .and_then(|n| n.checked_add(align - 1))
-                    .map(|n| n & !(align - 1))
-                    .ok_or_else(|| unsupported("stack frame too large"))?;
-                objects[result.0 as usize] = Some(
-                    -i32::try_from(local_bytes)
-                        .map_err(|_| unsupported("stack frame too large"))?,
-                );
-            }
+    for (value, size, align) in body.used_stack_slots() {
+        let align = align as usize;
+        if !align.is_power_of_two() || align > 16 {
+            return Err(unsupported("stack slot alignment"));
         }
+        local_bytes = local_bytes
+            .checked_add(size as usize)
+            .and_then(|n| n.checked_add(align - 1))
+            .map(|n| n & !(align - 1))
+            .ok_or_else(|| unsupported("stack frame too large"))?;
+        let offset =
+            i32::try_from(local_bytes).map_err(|_| unsupported("stack frame too large"))?;
+        objects.push((value, -offset));
     }
     let mut max_outgoing = 0;
     for &block in &blocks {
@@ -558,6 +550,11 @@ fn compile_function<'a>(
         }
     }
 
+    for (value, offset) in objects {
+        emit_one(&mut asm, &ADDR_RBP, offset)?;
+        emit_one(&mut asm, &STORE_RAX, slot(value)?)?;
+    }
+
     let mut returned = false;
     let mut literal_blocks = vec![None; dfg.values().len()];
     for &block in &blocks {
@@ -579,15 +576,6 @@ fn compile_function<'a>(
             }
             let results_of_inst = dfg.inst_results(inst);
             match dfg.inst(inst) {
-                InstView::Alloca { .. } => {
-                    let [result] = results_of_inst else {
-                        return Err(unsupported("alloca result arity"));
-                    };
-                    let offset =
-                        objects[result.0 as usize].expect("placed alloca has stack object");
-                    emit_one(&mut asm, &ADDR_RBP, offset)?;
-                    emit_one(&mut asm, &STORE_RAX, slot(*result)?)?;
-                }
                 InstView::Load { ptr, offset, .. } => {
                     let [result] = results_of_inst else {
                         return Err(unsupported("load result arity"));

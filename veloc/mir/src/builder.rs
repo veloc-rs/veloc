@@ -116,6 +116,10 @@ impl<'a> SsaBuilder<'a> {
         self.current_block
     }
 
+    pub fn stack_slot(&mut self, size: u32, align: u32) -> Value {
+        self.edit().stack_slot(size, align)
+    }
+
     pub fn func(&self) -> &FuncBody {
         self.function
     }

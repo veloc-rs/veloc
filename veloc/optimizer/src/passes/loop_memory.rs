@@ -62,7 +62,9 @@ impl FunctionPass for LoopMemoryPass {
             let owner = match f.dfg().value_def(ptr) {
                 ValueDef::Inst(i) => f.layout().inst_block(i),
                 ValueDef::BlockParam(b) => Some(b),
-                ValueDef::FunctionParam(_) | ValueDef::Const(_) => None,
+                ValueDef::StackSlot { .. } | ValueDef::FunctionParam(_) | ValueDef::Const(_) => {
+                    None
+                }
             };
             if owner.is_some_and(|b| !dom.dominates(b, entry)) {
                 continue;

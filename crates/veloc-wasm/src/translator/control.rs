@@ -266,13 +266,8 @@ impl<'a> WasmTranslator<'a> {
                 args.reverse();
                 let results = &sig.results;
                 let multi_ret_slot = if results.len() > 1 {
-                    let entry = self.builder.func().entry_block();
-                    let slot = self
-                        .builder
-                        .at_start(entry)
-                        .alloca((results.len() * 8) as u32, 8);
-                    let result_ptr = slot;
-                    args.push(result_ptr);
+                    let slot = self.builder.stack_slot((results.len() * 8) as u32, 8);
+                    args.push(slot);
                     Some(slot)
                 } else {
                     None
@@ -428,13 +423,8 @@ impl<'a> WasmTranslator<'a> {
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
                 let multi_ret_slot = if results.len() > 1 {
-                    let entry = self.builder.func().entry_block();
-                    let slot = self
-                        .builder
-                        .at_start(entry)
-                        .alloca((results.len() * 8) as u32, 8);
-                    let result_ptr = slot;
-                    args.push(result_ptr);
+                    let slot = self.builder.stack_slot((results.len() * 8) as u32, 8);
+                    args.push(slot);
                     Some(slot)
                 } else {
                     None
@@ -482,13 +472,8 @@ impl<'a> WasmTranslator<'a> {
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
                 let multi_ret_slot = if results.len() > 1 {
-                    let entry = self.builder.func().entry_block();
-                    let slot = self
-                        .builder
-                        .at_start(entry)
-                        .alloca((results.len() * 8) as u32, 8);
-                    let result_ptr = slot;
-                    args.push(result_ptr);
+                    let slot = self.builder.stack_slot((results.len() * 8) as u32, 8);
+                    args.push(slot);
                     Some(slot)
                 } else {
                     None

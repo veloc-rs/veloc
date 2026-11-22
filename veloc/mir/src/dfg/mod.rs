@@ -204,10 +204,17 @@ impl DataFlowGraph {
         self.values[val].def
     }
 
+    pub fn stack_slot_layout(&self, value: Value) -> Option<(u32, u32)> {
+        match self.value_def(value) {
+            ValueDef::StackSlot { size, align } => Some((size, align)),
+            _ => None,
+        }
+    }
+
     pub fn value_inst(&self, val: Value) -> Option<Inst> {
         match self.value_def(val) {
             ValueDef::Inst(inst) => Some(inst),
-            ValueDef::FunctionParam(_) | ValueDef::BlockParam(_) | ValueDef::Const(_) => None,
+            _ => None,
         }
     }
 

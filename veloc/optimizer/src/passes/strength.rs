@@ -166,7 +166,7 @@ fn available(
     dom: &DominatorTree<veloc_mir::Block>,
 ) -> bool {
     match f.dfg().value_def(v) {
-        ValueDef::FunctionParam(_) | ValueDef::Const(_) => true,
+        ValueDef::StackSlot { .. } | ValueDef::FunctionParam(_) | ValueDef::Const(_) => true,
         ValueDef::BlockParam(b) => dom.dominates(b, at),
         ValueDef::Inst(i) => f
             .layout()

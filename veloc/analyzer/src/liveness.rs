@@ -102,6 +102,10 @@ pub fn analyze_liveness(func: &FuncBody) -> Liveness {
         def_block[param] = Some(entry);
     }
 
+    for (slot, _, _) in func.used_stack_slots() {
+        def_block[slot] = Some(entry);
+    }
+
     // 1. Pass: Assign PC and collect Defs/Uses
     for &block in &rpo {
         block_starts[block] = inst_pc;

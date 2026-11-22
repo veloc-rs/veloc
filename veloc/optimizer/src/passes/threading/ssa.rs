@@ -96,7 +96,7 @@ fn read(
     assert!(block != f.entry_block() && !f.cfg().preds(block).is_empty());
     debug_assert!(!matches!(
         f.dfg().value_def(original),
-        ValueDef::Const(_) | ValueDef::FunctionParam(_)
+        ValueDef::Const(_) | ValueDef::StackSlot { .. } | ValueDef::FunctionParam(_)
     ));
     let ty = f.dfg().value_type(original);
     let param = f.edit().append_block_param(block, ty);

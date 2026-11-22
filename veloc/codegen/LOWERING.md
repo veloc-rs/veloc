@@ -32,8 +32,8 @@ and validation, while the translator owns the semantic mapping.
 
 Translation requires valid MIR; validation is a separate, optional stage, not a
 partial per-opcode check inside lowering. Each instruction lowering appends its
-complete LIR sequence in order. Static entry-block allocations reserve stack
-slots when encountered; value/register identities are still allocated up front
+complete LIR sequence in order. Each referenced MIR stack slot reserves a local frame object. Its address is
+materialized at function entry. Value/register identities are allocated up front
 to support forward references and loop edges.
 
 Address calculations use the target pointer width (32 or 64 bits). `PtrIndex`

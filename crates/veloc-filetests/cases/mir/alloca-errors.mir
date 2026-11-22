@@ -1,23 +1,55 @@
 // ----- zero-size
 // run: validate-error
-// check: alloca size must be positive
+// check: stack slot size must be positive
 local function bad() -> void
+stack-slot p, size=0, align=8
 block0():
-  p: ptr = alloca size=0, align=8
   return
 
 // ----- zero-alignment
 // run: validate-error
-// check: alloca alignment must be a power of two
+// check: stack slot alignment must be a power of two
 local function bad() -> void
+stack-slot p, size=4, align=0
 block0():
-  p: ptr = alloca size=4, align=0
   return
 
 // ----- non-power-of-two-alignment
 // run: validate-error
-// check: alloca alignment must be a power of two
+// check: stack slot alignment must be a power of two
+local function bad() -> void
+stack-slot p, size=4, align=3
+block0():
+  return
+
+// ----- dynamic-legacy-alloca
+// run: parse-error
+// check: non-entry alloca cannot be converted to a fixed stack slot
 local function bad() -> void
 block0():
-  p: ptr = alloca size=4, align=3
+  jump block1()
+block1():
+  p: ptr = alloca size=4, align=4
+  jump block1()
+
+// ----- legacy-entry-roundtrip
+// run: roundtrip
+// check: stack-slot p.v0, size=4, align=4
+// nextln: block7():
+local function old() -> i32
+block7():
+  p: ptr = alloca align=4, size=4
+  store i32(1), p, offset=0
+  x: i32 = load p, offset=0
+  return x
+
+// ----- declared-slots-roundtrip
+// run: roundtrip
+// check: stack-slot first.v0, size=4, align=4
+// nextln: stack-slot second.v1, size=4, align=4
+// nextln: block3():
+local function declared() -> void
+stack-slot first, size=4, align=4
+stack-slot second, size=4, align=4
+block3():
   return

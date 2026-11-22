@@ -19,7 +19,12 @@ fn multi_results_and_unused_arguments_cross_the_entry_abi() {
     "#,
     )
     .unwrap();
-    for strategy in [Strategy::Interpreter, Strategy::Jit] {
+    for strategy in [
+        Strategy::Interpreter,
+        Strategy::Jit,
+        #[cfg(target_arch = "x86_64")]
+        Strategy::FastJit,
+    ] {
         let engine = Engine::with_config(Config {
             strategy,
             ..Config::default()

@@ -41,6 +41,7 @@ pub struct FuncBody {
     cfg: ControlFlowGraph,
     entry_block: Block,
     params: alloc::vec::Vec<Value>,
+    stack_slots: alloc::vec::Vec<Value>,
 }
 
 impl Default for FuncBody {
@@ -69,6 +70,7 @@ impl FuncBody {
             cfg: ControlFlowGraph::new([entry_block]),
             entry_block,
             params: alloc::vec::Vec::new(),
+            stack_slots: alloc::vec::Vec::new(),
         };
         for &ty in params {
             body.edit().append_function_param(ty);
@@ -92,6 +94,26 @@ impl FuncBody {
     pub fn entry_block(&self) -> Block {
         self.entry_block
     }
+    /// Stack object declarations in source or builder order.
+    pub fn stack_slots(&self) -> &[Value] {
+        &self.stack_slots
+    }
+
+    /// Only referenced slots need space in the frame.
+    pub fn used_stack_slots(&self) -> impl Iterator<Item = (Value, u32, u32)> + '_ {
+        self.stack_slots
+            .iter()
+            .copied()
+            .filter(|&value| !self.dfg.use_empty(value))
+            .map(|value| {
+                let (size, align) = self
+                    .dfg
+                    .stack_slot_layout(value)
+                    .expect("declared stack slot");
+                (value, size, align)
+            })
+    }
+
     pub fn params(&self) -> &[Value] {
         &self.params
     }
