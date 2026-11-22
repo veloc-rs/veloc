@@ -1,7 +1,6 @@
 //! Module type structure and restrictions on where types may be used.
 use crate::{CallableKind, Module, Result, Type};
 use alloc::format;
-use veloc_types::TypeInfo;
 
 pub(super) fn validate(module: &Module) -> Result<()> {
     for (id, sig) in module.signatures().iter() {

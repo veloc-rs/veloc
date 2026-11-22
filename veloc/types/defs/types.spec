@@ -17,7 +17,6 @@ type I16X8 = vector(I16, 8);
 // Rust representation and method interface are declared together.
 // Methods without bodies bind same-named Rust methods; defs bodies expand normally.
 type Type = rust("veloc_types::Type") {
-    trait = rust("veloc_types::traits::TypeInfo");
     const fn signature(self) -> optional(SigId);
     const fn element_type(self) -> optional(Type);
     const fn element_bits(self) -> optional(u32);
@@ -48,9 +47,8 @@ type TypeBits = rust("veloc_types::TypeBits");
 type Shape = rust("veloc_types::Shape");
 type SigId = rust("veloc_types::SigId");
 
-// Rust owns the representation; declarations are checked by generated traits.
+// Rust owns the representation; the DSL uses its inherent constants and methods.
 type OpTraits = rust("veloc_types::OpTraits") {
-    trait = rust("veloc_types::traits::OpTraits");
     analysis = traits;
     const TERMINATOR: Self;
     const COMMUTATIVE: Self;
@@ -60,10 +58,9 @@ type OpTraits = rust("veloc_types::OpTraits") {
     const ABORT: Self;
     const fn empty() -> Self;
     const fn union(self, other: Self) -> Self;
-    const fn contains(self, other: Self) -> bool;
+    const fn contains(&self, other: Self) -> bool;
 }
 type MemoryEffects = rust("veloc_types::MemoryEffects") {
-    trait = rust("veloc_types::traits::MemoryEffects");
     const READ: Self;
     const WRITE: Self;
     const ALLOCATE: Self;
@@ -72,7 +69,6 @@ type MemoryEffects = rust("veloc_types::MemoryEffects") {
     const fn union(self, other: Self) -> Self;
 }
 type MemoryEffect = rust("veloc_types::MemoryEffect") {
-    trait = rust("veloc_types::traits::MemoryEffect");
     analysis = memory(MemoryEffect::NONE);
     const NONE: Self;
     const UNKNOWN: Self;
@@ -83,7 +79,6 @@ type MemFlags = rust("veloc_types::MemFlags");
 
 // Rust owns condition codes and their finite outcome semantics.
 type IntCC = rust("veloc_types::IntCC") {
-    trait = rust("veloc_types::traits::IntCCInfo");
     const Eq: Self;
     const Ne: Self;
     const LtS: Self;
@@ -102,7 +97,6 @@ type IntCC = rust("veloc_types::IntCC") {
     const fn test(self, bits: u16, lhs: u128, rhs: u128) -> bool;
 }
 type FloatCC = rust("veloc_types::FloatCC") {
-    trait = rust("veloc_types::traits::FloatCCInfo");
     const Eq: Self;
     const Ne: Self;
     const Lt: Self;

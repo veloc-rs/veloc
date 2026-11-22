@@ -4,14 +4,6 @@
 #![feature(const_trait_impl, const_cmp, derive_const)]
 
 extern crate alloc;
-extern crate self as veloc_types;
-
-/// Defs-declared contracts, implemented explicitly by the owning Rust types.
-#[allow(non_upper_case_globals)]
-pub mod traits {
-    include!(concat!(env!("OUT_DIR"), "/traits.rs"));
-}
-pub use traits::TypeInfo;
 
 mod comparison;
 pub use comparison::{FloatCC, IntCC};

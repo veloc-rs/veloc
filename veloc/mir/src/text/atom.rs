@@ -5,7 +5,6 @@
 use super::lexer::{Cursor, Kind};
 use super::parser::{self, OperandParser, ParseError};
 use super::printer::InstPrinter;
-use crate::TypeInfo;
 use crate::type_methods::VectorConstInfo;
 use crate::{
     Float, FloatCC, FuncId, Int, IntCC, Intrinsic, ScalarConst, SigId, SuccessorData, Type, Value,

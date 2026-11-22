@@ -2,7 +2,6 @@
 //! not use counts: two mutually exclusive branches can move the same value.
 use crate::{Block, FunctionRef, Inst, Result, Successor, Value};
 use alloc::{collections::BTreeSet, vec::Vec};
-use veloc_types::TypeInfo;
 
 /// Owned values that remain available at a program point.
 type Owned = BTreeSet<Value>;

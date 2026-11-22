@@ -32,6 +32,6 @@ pub use module::{DataRelocation, Global, GlobalData, Linkage, Module};
 pub use text::{ModuleParser, ParseError};
 pub use types::{
     Block, CallConv, CallableKind, ConstId, FuncId, GlobalId, ModuleId, ParamIndex, ScalarType,
-    SigId, Signature, SuccessorData, Type, TypeBits, TypeInfo, TypeSize, Value, ValueDef,
+    SigId, Signature, SuccessorData, Type, TypeBits, TypeSize, Value, ValueDef,
     ValueList, Variable, VectorType,
 };

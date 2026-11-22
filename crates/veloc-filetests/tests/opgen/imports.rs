@@ -109,10 +109,10 @@ op Example(n: u32) -> () {
     files.write("consumer.spec", consumer);
     let source = files.load("consumer.spec").unwrap();
     let generated = source.compile().unwrap();
-    assert!(generated[veloc_spec::Emit::Instructions].contains("pub trait Numbers"));
+    assert!(!generated[veloc_spec::Emit::Instructions].contains("pub trait Numbers"));
     assert_eq!(
         generated[veloc_spec::Emit::Validator]
-            .matches("crate::type_methods::Numbers>::next")
+            .matches("crate::host::Numbers::next")
             .count(),
         2
     );

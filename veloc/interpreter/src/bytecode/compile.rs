@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 use veloc_analyzer::{LiveInterval, analyze_liveness};
 use veloc_mir::{
     Block, FuncBody, FuncId, Inst, InstView, Intrinsic, ModuleId, Opcode as IrOpcode, Successor,
-    Type, TypeInfo, Value,
+    Type, Value,
 };
 
 macro_rules! unary_dispatch_op {

@@ -318,7 +318,7 @@ effect CUSTOM { reads = true; }
 // check: pub enum Policy
 // check: pub meta: crate::inst::Tuning
 // check: const fn meta(self)
-// check: MemoryEffects>::union
+// check: MemoryEffects::union
 enum Policy { variants = [Automatic, Prefer(MemoryEffects)]; }
 struct Tuning { policy: Policy, budget: u32 }
 struct Work {  }
@@ -329,7 +329,7 @@ op Work() -> () {
 
 // ----- metadata/nested-records-and-explicit-values
 // run: opgen
-// check: crate::inst::Settings { enabled: true, mask: <veloc_types::MemoryEffects as veloc_types::traits::MemoryEffects>::READ }
+// check: crate::inst::Settings { enabled: true, mask: veloc_types::MemoryEffects::READ }
 struct Settings { enabled: bool, mask: MemoryEffects }
 enum Policy { variants = [Automatic, Configured(Settings)]; }
 struct Tuning { policy: Policy, fallback: optional(Policy) }

@@ -43,6 +43,13 @@ pub enum MemoryEffect {
 }
 
 impl MemoryEffect {
+    pub const NONE: Self = Self::Known(MemoryEffects::empty());
+    pub const UNKNOWN: Self = Self::Unknown;
+
+    pub const fn known(effects: MemoryEffects) -> Self {
+        Self::Known(effects)
+    }
+
     pub const fn is_unknown(self) -> bool {
         matches!(self, Self::Unknown)
     }
@@ -186,47 +193,5 @@ impl MemFlags {
 
     pub const fn with_region(self, region: Region) -> Self {
         Self((self.0 & 0xff) | ((region.0 as u16) << 8))
-    }
-}
-
-const impl crate::traits::OpTraits for OpTraits {
-    const TERMINATOR: Self = Self::TERMINATOR;
-    const COMMUTATIVE: Self = Self::COMMUTATIVE;
-    const ASSOCIATIVE: Self = Self::ASSOCIATIVE;
-    const IDEMPOTENT: Self = Self::IDEMPOTENT;
-    const MAY_TRAP: Self = Self::MAY_TRAP;
-    const ABORT: Self = Self::ABORT;
-    fn empty() -> Self {
-        Self::empty()
-    }
-    fn union(self, other: Self) -> Self {
-        self.union(other)
-    }
-    fn contains(self, other: Self) -> bool {
-        Self::contains(&self, other)
-    }
-}
-
-const impl crate::traits::MemoryEffects for MemoryEffects {
-    const READ: Self = Self::READ;
-    const WRITE: Self = Self::WRITE;
-    const ALLOCATE: Self = Self::ALLOCATE;
-    const FREE: Self = Self::FREE;
-    fn empty() -> Self {
-        Self::empty()
-    }
-    fn union(self, other: Self) -> Self {
-        self.union(other)
-    }
-}
-
-const impl crate::traits::MemoryEffect for MemoryEffect {
-    const NONE: Self = Self::Known(MemoryEffects::empty());
-    const UNKNOWN: Self = Self::Unknown;
-    fn known(effects: MemoryEffects) -> Self {
-        Self::Known(effects)
-    }
-    fn is_none(self) -> bool {
-        self.is_none()
     }
 }

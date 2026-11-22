@@ -34,9 +34,8 @@ record Legacy {}
 
 // ----- host/arbitrary-host-methods-are-declaration-driven
 // run: opgen
-// check: pub trait Numbers
-// check: fn next(&self, n: u32) -> Option<u32>
-// check: <crate::host::Numbers as crate::type_methods::Numbers>::next(_context, *_f0)
+// not: pub trait Numbers
+// check: crate::host::Numbers::next(_context, *_f0)
 type Numbers = rust("crate::host::Numbers") {
     fn next(&self, n: u32) -> optional(u32);
 }
@@ -91,7 +90,8 @@ context query {}
 
 // ----- host/unused-host-needs-no-adapter
 // run: opgen
-// check: pub trait Unused
+// check: Opcode::Example
+// not: pub trait Unused
 // not: let _host
 type Unused = rust("crate::host::Unused") { fn number(&self) -> u32; }
 struct Data { n: u32 }
@@ -106,7 +106,7 @@ op Example(n: u32) -> () {
 // check: Some(crate::tokens::Token)
 // check: fn read(&self, value: crate::tokens::Token) -> Option<crate::tokens::Token>
 type Token = rust("crate::tokens::Token");
-type Tokens = rust("crate::host::Tokens") { fn read(&self, value: Token) -> optional(Token); }
+type Tokens = rust("crate::host::Tokens") { trait = rust("crate::type_methods::Tokens"); fn read(&self, value: Token) -> optional(Token); }
 struct Entry { value: Token }
 enum EntryResult { variants = [Some(Token), None]; }
 
@@ -173,9 +173,9 @@ type Tokens = rust("crate::host::Tokens") { fn read(&self, value: Undeclared) ->
 
 // ----- type-methods/methods-share-the-type-declaration-and-expand-defs-bodies
 // run: opgen
-// check: pub trait Token: Sized
+// not: pub trait Token: Sized
 // not: impl Token for
-// check: crate::type_methods::Token>::number
+// check: crate::tokens::Token::number
 // check: checked_mul
 type Token = rust("crate::tokens::Token") {
     fn number(self) -> u32;
@@ -218,7 +218,7 @@ op Check(arg: Value<Type::I8>) -> (result: Value<Type::I16>) {
 
 // ----- type-methods/result-only-generic-has-a-concrete-slot
 // run: opgen
-// check: veloc_types::traits::TypeInfo>::element_bits(results[0])
+// check: veloc_types::Type::element_bits(results[0])
 struct Empty {}
 op Check<T: Integer>() -> (result: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "check"; storage = Empty {};
@@ -271,7 +271,7 @@ op Check<T: Integer>(arg: Value<T>) -> Value<T> {
 
 // ----- type-methods/type-methods-can-be-used-in-constant-metadata
 // run: opgen
-// check: veloc_types::traits::TypeInfo>::element_bits(crate::types::I64)
+// check: veloc_types::Type::element_bits(crate::types::I64)
 struct Info { count: u32, memory: MemoryEffect }
 struct Empty {}
 op Check() -> () {
@@ -304,7 +304,7 @@ fn wrong() -> bool { rust = default; }
 
 // ----- type-methods/postfix-fields-and-methods-use-the-same-grammar
 // run: opgen
-// check: crate::type_methods::Token>::number
+// check: crate::tokens::Token::number
 type Token = rust("crate::tokens::Token") {
     fn number(self) -> u32;
 }
@@ -319,7 +319,7 @@ op Check(number: u32) -> () {
 
 // ----- type-methods/constant-projections-share-the-typed-evaluator
 // run: opgen
-// check: MemoryEffect>::NONE
+// check: MemoryEffect::NONE
 struct Pair { lhs: u32, rhs: u32 }
 fn same(pair: Pair) -> bool { value = (pair).lhs == pair.rhs; }
 struct Empty {}
@@ -343,7 +343,7 @@ fn narrow(token: Token, value: Value(Type::I32)) -> Value(Type::I32) {
 // check: pub trait Handle: Sized
 // check: fn count(self) -> u32
 // not: impl Handle for
-type Handle = rust("crate::handles::Handle") { fn count(self) -> u32; }
+type Handle = rust("crate::handles::Handle") { trait = rust("crate::type_methods::Handle"); fn count(self) -> u32; }
 
 // ----- type-methods/non-type-methods-must-also-be-declared
 // run: opgen-error
@@ -353,8 +353,8 @@ fn count(handle: Handle) -> u32 { value = handle.count(); }
 
 // ----- type-methods/foreign-const-metadata-needs-no-offline-registration
 // run: opgen
-// check: pub const trait Token: Sized
-// check: crate::type_methods::Token>::number(crate::tokens::new(7u32))
+// not: pub const trait Token: Sized
+// check: crate::tokens::Token::number(crate::tokens::new(7u32))
 type Token = rust("crate::tokens::Token") {
     const fn number(self) -> u32;
 }

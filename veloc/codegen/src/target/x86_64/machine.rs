@@ -1,7 +1,7 @@
 //! Target facts used by scheduling and allocation, not by generic algorithms.
 use super::inst::TargetInst;
 use veloc_lir::{InstId, MachineOpcode, Reg};
-use veloc_mir::{Type, TypeInfo};
+use veloc_mir::Type;
 
 pub(super) fn spill_instruction(
     writer: veloc_lir::InstWriter<'_>,

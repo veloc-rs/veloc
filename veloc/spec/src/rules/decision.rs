@@ -602,13 +602,12 @@ impl Expressions<'_> {
         {
             return Err(fail());
         }
-        let interface = self.bindings.method_trait(owner, "host", true);
-        let interface = interface.strip_prefix("host::").unwrap_or(&interface);
-        Ok(format!(
-            "<{} as {}>::{member}",
-            self.bindings.0.get(owner).ok_or_else(fail)?.path,
-            interface
-        ))
+        Ok(self
+            .bindings
+            .0
+            .get(owner)
+            .ok_or_else(fail)?
+            .member(member, true, "host::"))
     }
     fn action(&self, node: &Node) -> Result<String, Error> {
         match &node.kind {

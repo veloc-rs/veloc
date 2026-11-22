@@ -3,7 +3,7 @@ use std::string::String;
 use std::string::ToString;
 use std::vec::Vec;
 use veloc_lir::RegisterBank;
-use veloc_mir::{Type, TypeInfo};
+use veloc_mir::Type;
 use veloc_types::DataLayout;
 
 /// 目标架构标识

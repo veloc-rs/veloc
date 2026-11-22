@@ -4,6 +4,6 @@ mod entities;
 
 pub use entities::*;
 pub use veloc_types::{CallConv, SigId, Signature};
-pub use veloc_types::{CallableKind, ScalarType, Shape, Type, TypeBits, TypeInfo, TypeSize, VectorType};
+pub use veloc_types::{CallableKind, ScalarType, Shape, Type, TypeBits, TypeSize, VectorType};
 
 include!(concat!(env!("OUT_DIR"), "/types.rs"));

@@ -5,7 +5,6 @@ use crate::{ModulePass, OptConfig, PassOutcome, Profile};
 use std::collections::{HashMap, HashSet};
 use veloc_analyzer::{Dominators, graph::LoopInfo};
 use veloc_mir::{Block, FuncBody, FuncId, Inst, InstView, Module, Opcode, Successor};
-use veloc_types::TypeInfo;
 
 veloc_policy::feature_set!(InlineFeatures {
     callee_insts,

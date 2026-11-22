@@ -6,7 +6,7 @@ use hashbrown::{HashMap, HashSet};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use veloc_bytecode::{Reader, equivalence::Instruction as Op};
-use veloc_mir::{Opcode, Type, TypeInfo};
+use veloc_mir::{Opcode, Type};
 
 use super::{
     Limit,

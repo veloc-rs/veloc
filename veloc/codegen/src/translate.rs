@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 use std::format;
 use veloc_lir::InstBuild;
 use veloc_lir::{BlockId, CallInfo, MachineFunction, MachineModule, Reg};
-use veloc_mir::{InstView, Module, Opcode, TypeInfo, Value};
+use veloc_mir::{InstView, Module, Opcode, Value};
 
 /// Machine IR and source identities recorded together during translation.
 pub struct TranslatedModule {

@@ -411,7 +411,6 @@ pub(crate) struct RustCall {
     pub constant: bool,
     is_const: bool,
     path: String,
-    method: Option<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -1349,14 +1348,12 @@ impl Checker<'_> {
                             "method requires a Rust-bound type",
                         ));
                     }
-                    format!(
-                        "{}::{}",
-                        self.data.rust.rust(owner),
-                        name.rsplit("::").next().unwrap()
-                    )
+                    self.data
+                        .rust
+                        .member(owner, name.rsplit("::").next().unwrap(), is_const)
                 };
-                super::records::rust_path(self.source, offset, &path)?;
                 if owner.is_none() {
+                    super::records::rust_path(self.source, offset, &path)?;
                     use std::fmt::Write;
                     writeln!(
                         self.library.bindings,
@@ -1382,16 +1379,6 @@ impl Checker<'_> {
                             constant,
                             is_const,
                             path,
-                            method: owner.map(|owner| {
-                                (
-                                    format!(
-                                        "<{} as {}>",
-                                        self.data.rust.rust(owner),
-                                        self.data.rust.method_trait(owner, is_const)
-                                    ),
-                                    name.rsplit("::").next().unwrap().into(),
-                                )
-                            }),
                         },
                         args,
                     ),
@@ -2084,15 +2071,12 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Try(e) => self.required(format!("({})", self.term(e))),
             ExprKind::Rust(binding, args) => {
-                let path = binding.method.as_ref().map_or_else(
-                    || binding.path.clone(),
-                    |(owner, method)| format!("{owner}::{method}"),
-                );
                 if binding.constant {
-                    path
+                    binding.path.clone()
                 } else {
                     format!(
-                        "{path}({})",
+                        "{}({})",
+                        binding.path,
                         args.iter()
                             .map(|arg| self.term(arg))
                             .collect::<Vec<_>>()

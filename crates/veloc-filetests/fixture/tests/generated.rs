@@ -1,6 +1,5 @@
 //! Compile and execute generated APIs against the real MIR implementation.
 //! File tests cover text/diagnostics; these cover APIs text cannot exercise.
-use veloc_types::TypeInfo;
 extern crate alloc;
 extern crate veloc_test_mir as veloc_mir;
 

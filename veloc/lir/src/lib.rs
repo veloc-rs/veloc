@@ -18,7 +18,7 @@ pub use module::*;
 pub use register::*;
 pub use symbol::*;
 pub use veloc_bytecode::OperandRef;
-pub use veloc_types::{Type, TypeBits, TypeInfo};
+pub use veloc_types::{Type, TypeBits};
 
 pub mod types {
     include!(concat!(env!("OUT_DIR"), "/types.rs"));

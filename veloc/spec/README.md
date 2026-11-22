@@ -70,11 +70,11 @@ IR containers and `veloc-types` (including test dependencies); `veloc-mir/build.
 for a future structured representation. The machine-facing IR is LIR, in
 `veloc-lir`; bytecode is a separate execution format.
 
-Rust methods are declared on their types. A `trait: rust("owner::traits::TypeInfo")`
-binding selects the owning trait; `Source::interfaces(namespace)` emits its
-signature, never a forwarding implementation. The owning crate uses Spec in
-its build script and writes the Rust implementation itself. Free functions may
-still bind a Rust path directly; methods use their declared trait.
+Rust-bound types declare the methods and associated constants available to defs.
+By default generated code accesses members on the concrete Rust type.
+An explicit `trait = rust("owner::traits::Interface");` selects a trait.
+`Source::interfaces(namespace)` emits the declarations for explicit traits
+owned by that namespace. The owning crate supplies their implementations.
 
 Spec never loads a runtime type catalog or calls a foreign Rust function.
 Logical scalar/vector domains are declared in ops. Associated constants and
@@ -269,9 +269,9 @@ type Type = rust("crate::Type") {
 }
 ```
 
-A declaration without a body binds the same-named method in the generated trait.
+A declaration without a body binds the same-named Rust method.
 A defs body is checked and inlined into the shared expression tree. Free functions
-can use `= rust("crate::path::function");`; methods use the type's trait binding.
+can use `= rust("crate::path::function");`.
 There is no separate `impl` or `intrinsic` declaration mechanism.
 `Value`, `Int`, `Float` and `VectorConst` declare `ty()` in their type blocks.
 Their defs bodies use the fundamental `type(self)` query: SSA values need a DFG
@@ -282,15 +282,14 @@ grammatical uses and remain unchanged.
 
 Every method must be declared, for every Rust-bound type, not just `Type`.
 Calls are resolved by the nominal receiver type, not a global method-name whitelist.
-Rust-bound method declarations generate per-type traits in `type_methods`, unless
-an explicit trait path selects another owner. The Rust owner implements these
-traits explicitly; opgen does not generate forwarding implementations. Rust
-checks every declared signature, including unused methods. Defs-body methods
-expand normally and need no external implementation; data-only types need no
-empty trait.
+For inherent methods, rustc checks the generated calls against the concrete
+type. For an explicit trait binding, rustc checks the Rust implementation
+against every trait member, including unused members. Defs-body methods
+expand directly into the calling expression.
 
-`const fn` methods generate a `pub const trait`; the owner supplies a `const impl`
-and enables nightly `const_trait_impl`. If a type also has runtime-only methods,
+An explicitly bound trait with `const fn` methods generates a `pub const trait`.
+Its owner supplies a `const impl` and enables nightly `const_trait_impl`.
+If a type also has runtime-only methods,
 they remain in the ordinary trait and the constant methods use a separate trait
 with a `Const` suffix. This avoids requiring runtime methods to be const. Free
 functions also accept `const fn ... = rust("...");`.
@@ -312,14 +311,12 @@ Associated constants use `Type::BOOL` or `MemoryEffect::NONE`; `.` never resolve
 an associated member.
 Parentheses and whitespace do not change name resolution.
 Bound functions are trusted pure, deterministic, read-only operations. Contexts
-use the same Rust-bound type declarations and generated traits as other data.
+use the same Rust-bound type declarations as other data.
 Declaring methods does not execute Rust code inside the definition compiler.
 
 The no_std `veloc-types` crate owns the shared `Type`, checked scalar/vector
-views, physical encoding and size queries. MIR re-exports these types. Its build
-script uses opgen to generate interface declarations without needing a type
-catalog. The logical definitions are shared with IR generation; opgen itself does
-not link the runtime type crate.
+views, physical encoding and size queries. MIR re-exports these types. IR
+generators read the logical definitions and call the public inherent methods.
 
 Signature stores are context-local and append-only. Each signature stores its
 parameters and returns in one buffer; the interning index stores only IDs.
@@ -438,7 +435,7 @@ Operations declare trap behavior with `traps` and mark terminators in metadata.
 Condition codes are ordinary Rust-bound types declared in `veloc/types/defs/types.spec`.
 Rust owns `IntCC` and `FloatCC` in veloc-types; the definition language has no
 special comparison declaration. Associated constants and methods use the same
-generated trait contracts as other Rust-bound types.
+inherent Rust bindings as other shared types.
 
 Predicates encode accepted less/equal/greater/unordered outcomes. Rust const
 methods derive swap and complement from these sets. Float `complement()`
@@ -472,7 +469,7 @@ Unlike flag sets, packed structs do not expose `union` or `contains`.
 Shared contracts `MemFlags`, `OpTraits`, `MemoryEffects` and `MemoryEffect` are
 defined in `veloc-types` and explicitly bound in `types.spec`. Their representation,
 display and behavioral rules live together in Rust. Ops declare the constants and
-methods they use, and generated traits enforce this interface. Opgen never reads
+methods they use, and generated code accesses those members directly. Opgen never reads
 `bitflags::Flags::FLAGS` or interprets a Rust enum. Each operation declares its
 traits and memory behavior through ordinary typed expressions.
 
@@ -618,7 +615,6 @@ Shared flags are Rust `bitflags` types. Their interfaces are ordinary declaratio
 
 ```text
 type MemoryEffects = rust("veloc_types::MemoryEffects") {
-    trait: rust("veloc_types::traits::MemoryEffects"),
     const READ: Self;
     const WRITE: Self;
     const fn empty() -> Self;
@@ -626,11 +622,9 @@ type MemoryEffects = rust("veloc_types::MemoryEffects") {
 }
 ```
 
-The Rust owner explicitly implements the generated const trait. Ops use
-`MemoryEffects::READ.union(MemoryEffects::WRITE)`. Associated constants and
-static methods are checked like instance methods; unused declarations still
-belong to the Rust trait contract. Repeating a flag in a union is legal and has
-the semantics of Rust's implementation.
+Ops use `MemoryEffects::READ.union(MemoryEffects::WRITE)`. Rust evaluates the
+shared type's constants and inherent methods in generated metadata. Repeating a
+flag in a union has the semantics of the Rust implementation.
 
 The explicit `analysis: traits` and `analysis: memory(MemoryEffect::NONE)`
 annotations select the operation-analysis interfaces. They are not value schemas:

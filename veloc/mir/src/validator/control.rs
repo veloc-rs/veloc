@@ -2,7 +2,6 @@
 //! Check handles before any type projection dereferences them.
 
 use super::ValidationError;
-use crate::TypeInfo;
 use crate::{Block, FunctionRef, Module, Result, Value, ValueDef};
 use alloc::vec::Vec;
 use veloc_collections::graph::DominatorTree;

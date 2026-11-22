@@ -1,8 +1,6 @@
 //! Vector IR Integration Tests
 
-use veloc_mir::{
-    CallConv, Linkage, Opcode, TypeInfo, VectorMemOptions, builder::ModuleBuilder, types::Type,
-};
+use veloc_mir::{CallConv, Linkage, Opcode, VectorMemOptions, builder::ModuleBuilder, types::Type};
 
 #[test]
 fn shuffle_uses_constant_operand() {

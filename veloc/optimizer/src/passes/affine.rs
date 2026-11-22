@@ -11,7 +11,7 @@ use std::{collections::BTreeMap, rc::Rc};
 use veloc_analyzer::graph::PostDominatorTree;
 use veloc_mir::{
     Block, FuncBody, FuncId, GlobalData, Inst, InstView, Int, IntCC, Linkage, MemFlags, Module,
-    Opcode, ScalarConst, Type, TypeInfo, Value,
+    Opcode, ScalarConst, Type, Value,
 };
 
 pub struct AffinePass;

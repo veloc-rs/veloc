@@ -1,7 +1,6 @@
 //! Exact constants. Scalar views add guarantees, not another representation tag.
 use crate::{ScalarType, Type, VectorType};
 use alloc::sync::Arc;
-use veloc_types::TypeInfo;
 
 /// A target-independent scalar bit pattern. Pointer constants are not modeled.
 /// Unused high bits are always zero; equality preserves NaN payloads and -0.

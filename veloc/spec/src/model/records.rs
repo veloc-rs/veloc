@@ -186,9 +186,8 @@ impl RustTypes {
             analysis: super::metadata::Analysis::compile(records, source)?,
         })
     }
-    pub fn method_trait(&self, name: &str, is_const: bool) -> String {
-        self.external
-            .method_trait(name, "crate::type_methods", is_const)
+    pub fn member(&self, owner: &str, name: &str, is_const: bool) -> String {
+        self.external.0[owner].member(name, is_const, "")
     }
     pub fn policy(&self, name: &str) -> Policy {
         self.policies.get(name).cloned().unwrap_or_default()

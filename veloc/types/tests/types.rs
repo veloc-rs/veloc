@@ -1,7 +1,6 @@
 //! Shared type encoding, checked views, and signature interning.
 use veloc_types::{
     CallConv, CallableKind, ScalarType, SigId, Signature, SignatureError, Type, TypeContext,
-    TypeInfo,
 };
 
 #[test]

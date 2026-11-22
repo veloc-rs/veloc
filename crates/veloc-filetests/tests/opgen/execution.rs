@@ -135,9 +135,11 @@ mod sequences_{index} {{
     }
     let ops = r#"
 type Arithmetic = rust("crate::host::Arithmetic") {
+    trait = rust("crate::type_methods::Arithmetic");
     fn snapshot(&self) -> &Snapshot;
 }
 type Snapshot = rust("crate::host::Snapshot") {
+    trait = rust("crate::type_methods::Snapshot");
     fn next(&self, n: u64) -> optional(u64);
     fn limit(&self) -> u64;
 }
@@ -614,6 +616,7 @@ fn rust_evaluates_foreign_const_metadata_without_a_query_catalog() {
     let fixture = Fixture::new();
     let defs = r#"
 type Token = rust("crate::Token") {
+    trait = rust("crate::type_methods::Token");
     const BASE: Self;
     const fn from_number(value: u32) -> Self;
     const fn number(self) -> optional(u32);

@@ -1,5 +1,5 @@
 //! Context-local, immutable signatures. The index owns IDs, never signature copies.
-use crate::{Type, TypeInfo};
+use crate::Type;
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt,

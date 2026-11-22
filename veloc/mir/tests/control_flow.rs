@@ -1,7 +1,7 @@
 //! Public editing and validation of the control-flow substrate. Text-only
 //! structural and dominance diagnostics live in the file-test corpus.
 use veloc_collections::graph::DominatorTree;
-use veloc_mir::{Block, EdgeRef, ModuleParser, TypeInfo, Value};
+use veloc_mir::{Block, EdgeRef, ModuleParser, Value};
 
 #[test]
 fn generated_callable_builders_share_ssa_storage_and_explicit_validation() {

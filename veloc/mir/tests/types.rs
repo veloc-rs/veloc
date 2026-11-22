@@ -1,7 +1,7 @@
 //! Generated type contracts across scalar, vector, and malformed IR.
 use veloc_mir::inst::TypeError;
 use veloc_mir::types::TypeBits;
-use veloc_mir::{Opcode, Type, TypeInfo};
+use veloc_mir::{Opcode, Type};
 
 #[test]
 fn logical_bits_are_independent_of_byte_storage() {

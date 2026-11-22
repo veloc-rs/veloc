@@ -371,7 +371,6 @@ mod tests {
     use crate::Profile;
     use veloc_mir::constant::ScalarConst;
     use veloc_mir::{Opcode as Op, Type, Value as MirValue};
-    use veloc_types::TypeInfo;
 
     #[test]
     fn local_folds_need_neither_memo_tombstones_nor_extraction_budget() {

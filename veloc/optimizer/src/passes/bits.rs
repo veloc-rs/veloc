@@ -6,7 +6,6 @@ use cranelift_entity::SecondaryMap;
 use std::collections::VecDeque;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{FuncBody, Inst, Opcode, ScalarConst, Value};
-use veloc_types::TypeInfo;
 mod facts;
 use facts::{KnownBits, fact, known_bits, known_bits_with_returns};
 mod memory;

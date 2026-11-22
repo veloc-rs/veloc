@@ -63,7 +63,6 @@ impl OpSpec {
 mod tests {
     use super::{MemoryEffect, MemoryEffects};
     use crate::{FloatCC, IntCC, Opcode, Type};
-    use veloc_types::TypeInfo;
 
     #[test]
     fn opcode_mnemonics_are_unique_and_round_trip() {

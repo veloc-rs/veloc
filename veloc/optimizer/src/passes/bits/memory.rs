@@ -1,6 +1,6 @@
 //! Narrow read/modify/write updates when the omitted bytes are unchanged.
 use super::{constant, fact, known_bits, width_mask};
-use veloc_mir::{FuncBody, FuncDecls, Inst, InstView, Opcode, Type, TypeInfo, Value};
+use veloc_mir::{FuncBody, FuncDecls, Inst, InstView, Opcode, Type, Value};
 
 /// Strip casts that retain the requested low bits.
 fn low_bits(f: &FuncBody, mut value: Value, bits: u32) -> Value {

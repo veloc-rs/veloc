@@ -67,7 +67,7 @@ pub fn check(generated: &veloc_spec::Artifacts) -> Result<Output, String> {
         .ok_or("missing veloc-types test dependency")?;
     let dir = Temp::new("veloc-contract").map_err(|e| e.to_string())?;
     let source = dir.join("check.rs");
-    fs::write(&source, format!("#![feature(const_trait_impl, const_cmp)]\n#![allow(dead_code, unused_imports, unused_parens, unused_variables, unreachable_code)]\npub use veloc_types::Type;\npub struct FuncId;\npub struct VectorConst;\nuse veloc_types::TypeInfo;\npub mod types {{ {} }}\n{}\n", generated[veloc_spec::Emit::Types], generated[veloc_spec::Emit::Checks])).map_err(|e| e.to_string())?;
+    fs::write(&source, format!("#![feature(const_trait_impl, const_cmp)]\n#![allow(dead_code, unused_imports, unused_parens, unused_variables, unreachable_code)]\npub use veloc_types::Type;\npub struct FuncId;\npub struct VectorConst;\npub mod types {{ {} }}\n{}\n", generated[veloc_spec::Emit::Types], generated[veloc_spec::Emit::Checks])).map_err(|e| e.to_string())?;
     Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
         .args([
             "--edition=2024",

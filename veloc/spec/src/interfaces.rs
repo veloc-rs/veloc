@@ -125,16 +125,25 @@ impl Bindings {
         }
         Ok(result)
     }
-    pub fn method_trait(&self, name: &str, namespace: &str, is_const: bool) -> String {
-        let binding = &self.0[name];
-        let mut path = binding
-            .interface
-            .clone()
-            .unwrap_or_else(|| format!("{namespace}::{name}"));
-        if is_const && binding.mixed {
+}
+
+impl Binding {
+    fn method_trait(&self, is_const: bool) -> Option<String> {
+        let mut path = self.interface.clone()?;
+        if is_const && self.mixed {
             path.push_str("Const");
         }
-        path
+        Some(path)
+    }
+
+    pub(crate) fn member(&self, name: &str, is_const: bool, local_prefix: &str) -> String {
+        match self.method_trait(is_const) {
+            Some(interface) => {
+                let interface = interface.strip_prefix(local_prefix).unwrap_or(&interface);
+                format!("<{} as {interface}>::{name}", self.path)
+            }
+            None => format!("{}::{name}", self.path),
+        }
     }
 }
 
@@ -260,7 +269,7 @@ pub fn declarations(records: &[Decl], source: &str, namespace: &str) -> Result<S
         ) {
             continue;
         }
-        let Some(_) = bindings.0.get(owner) else {
+        let Some(binding) = bindings.0.get(owner) else {
             return Err(Error::at(
                 source,
                 record.offset,
@@ -281,7 +290,7 @@ pub fn declarations(records: &[Decl], source: &str, namespace: &str) -> Result<S
             return Err(Error::at(
                 source,
                 record.offset,
-                "Rust methods use the type's trait binding; declare a free function for a direct Rust call",
+                "Rust methods use their declared name; declare a free function for a custom Rust path",
             ));
         }
         let (params, result, is_const, constant) =
@@ -331,7 +340,9 @@ pub fn declarations(records: &[Decl], source: &str, namespace: &str) -> Result<S
                 };
                 (params, result, signature.is_const, false)
             };
-        let path = bindings.method_trait(owner, namespace, is_const);
+        let Some(path) = binding.method_trait(is_const) else {
+            continue;
+        };
         if let Some(name) = path.strip_prefix(&format!("{namespace}::")) {
             if name.contains("::") {
                 return Err(Error::at(

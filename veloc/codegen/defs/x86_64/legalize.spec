@@ -2,10 +2,12 @@ import "../legalize.spec";
 
 // Instruction-local legality and concrete rewrite plans. Order is priority.
 type Instruction = rust("crate::target::x86_64::inst::TargetInst") {
+    trait = rust("host::Instruction");
     const POPCNT32: sequence(u64);
     const POPCNT64: sequence(u64);
 }
 type Target = rust("crate::target::x86_64::inst::FeatureSet") {
+    trait = rust("host::Target");
     fn words(&self) -> sequence(u64);
     fn supports(&self, features: sequence(u64)) -> bool = vm("features");
 }

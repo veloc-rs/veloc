@@ -4,7 +4,7 @@
 use crate::passes::expression::{ExprValue, Expressions};
 use crate::range::IntRange;
 use smallvec::SmallVec;
-use veloc_mir::{FuncBody, Inst, InstFields, InstView, Opcode, ScalarConst, Type, TypeInfo, Value};
+use veloc_mir::{FuncBody, Inst, InstFields, InstView, Opcode, ScalarConst, Type, Value};
 
 /// A replacement for one instruction result. Operand indices refer to the
 /// original argument order.
