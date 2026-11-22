@@ -1,6 +1,6 @@
 //! Narrow read/modify/write updates when the omitted bytes are unchanged.
 use super::{constant, fact, known_bits, width_mask};
-use veloc_mir::{FuncBody, Inst, InstView, Opcode, Type, TypeInfo, Value};
+use veloc_mir::{FuncBody, FuncDecls, Inst, InstView, Opcode, Type, TypeInfo, Value};
 
 /// Strip casts that retain the requested low bits.
 fn low_bits(f: &FuncBody, mut value: Value, bits: u32) -> Value {
@@ -22,20 +22,21 @@ fn low_bits(f: &FuncBody, mut value: Value, bits: u32) -> Value {
     value
 }
 
-pub(super) fn narrow_stores(f: &mut FuncBody, insts: &[Inst]) -> u64 {
+pub(super) fn narrow_stores(f: &mut FuncBody, decls: &FuncDecls, insts: &[Inst]) -> u64 {
     let facts = known_bits(f, insts);
     let mut changed = 0;
     for &store in insts {
+        let store_view = f.dfg().inst(store);
         let InstView::Store {
             ptr,
             offset,
             value,
             flags,
-        } = f.dfg().inst(store)
+        } = store_view
         else {
             continue;
         };
-        if flags.is_volatile() || !flags.is_notrap() {
+        if flags.is_volatile() || store_view.may_trap(decls) {
             continue;
         }
         let width = width_mask(f, value);
@@ -50,6 +51,7 @@ pub(super) fn narrow_stores(f: &mut FuncBody, insts: &[Inst]) -> u64 {
         let InstView::Binary {
             opcode: Opcode::IOr,
             args: [a, b],
+            ..
         } = f.dfg().inst(root)
         else {
             continue;
@@ -61,6 +63,7 @@ pub(super) fn narrow_stores(f: &mut FuncBody, insts: &[Inst]) -> u64 {
             let InstView::Binary {
                 opcode: Opcode::IAnd,
                 args: [a, b],
+                ..
             } = f.dfg().inst(and)
             else {
                 continue;
@@ -79,15 +82,16 @@ pub(super) fn narrow_stores(f: &mut FuncBody, insts: &[Inst]) -> u64 {
             let Some(load) = f.dfg().value_inst(original) else {
                 continue;
             };
+            let load_view = f.dfg().inst(load);
             let InstView::Load {
                 ptr: p,
                 offset: o,
                 flags: read_flags,
-            } = f.dfg().inst(load)
+            } = load_view
             else {
                 continue;
             };
-            if p != ptr || o != offset || read_flags.is_volatile() || !read_flags.is_notrap() {
+            if p != ptr || o != offset || read_flags.is_volatile() || load_view.may_trap(decls) {
                 continue;
             }
             // An intervening write could have changed an omitted byte. The
@@ -118,7 +122,7 @@ pub(super) fn narrow_stores(f: &mut FuncBody, insts: &[Inst]) -> u64 {
                 low < width && mask & width == high && fact(f, &facts, updated).zero & high == high
             });
             let Some(ty) = narrow else { continue };
-            let replacement = extract_load(f, updated, ty).unwrap_or_else(|| {
+            let replacement = extract_load(f, decls, updated, ty).unwrap_or_else(|| {
                 if f.dfg().value_type(updated) == ty {
                     return updated;
                 }
@@ -138,7 +142,7 @@ pub(super) fn narrow_stores(f: &mut FuncBody, insts: &[Inst]) -> u64 {
 
 /// Reading an aligned byte slice at the original load's position avoids a
 /// wider read followed by shifts. Other users retain the original read.
-fn extract_load(f: &mut FuncBody, value: Value, ty: Type) -> Option<Value> {
+fn extract_load(f: &mut FuncBody, decls: &FuncDecls, value: Value, ty: Type) -> Option<Value> {
     let bits = ty.element_bits()?;
     let mask = u64::MAX >> (64 - bits);
     let mut value = low_bits(f, value, bits);
@@ -146,6 +150,7 @@ fn extract_load(f: &mut FuncBody, value: Value, ty: Type) -> Option<Value> {
         && let InstView::Binary {
             opcode: Opcode::IAnd,
             args: [a, b],
+            ..
         } = f.dfg().inst(inst)
     {
         if constant(f, *b).is_some_and(|c| c & mask == mask) {
@@ -158,6 +163,7 @@ fn extract_load(f: &mut FuncBody, value: Value, ty: Type) -> Option<Value> {
     let InstView::Binary {
         opcode: Opcode::IShrU | Opcode::IShrS,
         args: [input, amount],
+        ..
     } = f.dfg().inst(inst)
     else {
         return None;
@@ -172,10 +178,11 @@ fn extract_load(f: &mut FuncBody, value: Value, ty: Type) -> Option<Value> {
         return None;
     }
     let inst = f.dfg().value_inst(input)?;
-    let InstView::Load { ptr, offset, flags } = f.dfg().inst(inst) else {
+    let view = f.dfg().inst(inst);
+    let InstView::Load { ptr, offset, flags } = view else {
         return None;
     };
-    if flags.is_volatile() || !flags.is_notrap() {
+    if flags.is_volatile() || view.may_trap(decls) {
         return None;
     }
     let offset = offset.checked_add(amount / 8)?;

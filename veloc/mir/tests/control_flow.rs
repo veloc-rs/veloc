@@ -13,10 +13,10 @@ fn generated_callable_builders_share_ssa_storage_and_explicit_validation() {
     assert!(ty.as_vector().is_none());
     assert!(!ty.is_integer());
     assert_eq!(ty.bit_size(), None);
-    let body = module.declare_function("body".into(), sig, Linkage::Local);
+    let body = module.declare_function("body".into(), sig, Linkage::Local, false);
     let empty = module.make_signature(vec![], vec![], CallConv::Platform);
-    let cleanup = module.declare_function("cleanup".into(), empty, Linkage::Local);
-    let entry = module.declare_function("entry".into(), sig, Linkage::Local);
+    let cleanup = module.declare_function("cleanup".into(), empty, Linkage::Local, false);
+    let entry = module.declare_function("entry".into(), sig, Linkage::Local, false);
     {
         let mut f = module.define(body);
         let arg = f.func().params()[0];
@@ -188,7 +188,7 @@ fn validator_rejects_detached_targets_and_unknown_values_without_panicking() {
     // accepts handles and leaves this structural contract to validation.
     let mut builder = veloc_mir::ModuleBuilder::new();
     let sig = builder.make_signature(vec![], vec![], veloc_mir::CallConv::Platform);
-    let id = builder.declare_function("bad".into(), sig, veloc_mir::Linkage::Local);
+    let id = builder.declare_function("bad".into(), sig, veloc_mir::Linkage::Local, false);
     let mut f = builder.define(id);
     let detached = f.create_block();
     f.ins().jump(detached, &[]);
@@ -294,7 +294,7 @@ fn modules_share_types_but_detach_before_extending_them() {
     let signature = types.intern_signature(&[Type::I32], &[Type::I32], CallConv::Platform);
     let shared = Arc::new(types);
     let mut left = ModuleBuilder::with_types(shared.clone());
-    let id = left.declare_function("identity".into(), signature, Linkage::Local);
+    let id = left.declare_function("identity".into(), signature, Linkage::Local, false);
     {
         let mut f = left.define(id);
         let value = f.func().params()[0];

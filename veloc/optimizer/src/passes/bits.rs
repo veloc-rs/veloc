@@ -26,6 +26,7 @@ impl FunctionPass for BitsPass {
         config: &OptConfig,
         metrics: &Profile,
     ) -> PassOutcome {
+        let decls = am.decls();
         let f = am.function_mut();
         let mut insts: Vec<_> = f
             .layout()
@@ -33,7 +34,7 @@ impl FunctionPass for BitsPass {
             .flat_map(|b| f.layout().block_insts(b))
             .collect();
         let mut changed = if config.data_layout.little_endian {
-            memory::narrow_stores(f, &insts)
+            memory::narrow_stores(f, decls, &insts)
         } else {
             0
         };
@@ -66,10 +67,11 @@ impl FunctionPass for BitsPass {
             }
         }
         for &inst in &insts {
-            let veloc_mir::InstView::Load { ptr, offset, flags } = f.dfg().inst(inst) else {
+            let view = f.dfg().inst(inst);
+            let veloc_mir::InstView::Load { ptr, offset, flags } = view else {
                 continue;
             };
-            if flags.is_volatile() || !flags.is_notrap() {
+            if flags.is_volatile() || view.may_trap(decls) {
                 continue;
             }
             let result = f.dfg().first_result(inst).unwrap();

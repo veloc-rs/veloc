@@ -23,6 +23,7 @@ impl FunctionPass for StrengthPass {
             let InstView::Binary {
                 opcode: op @ (Opcode::IMul | Opcode::IAdd),
                 args: [a, b],
+                ..
             } = f.dfg().inst(inst)
             else {
                 continue;
@@ -85,10 +86,12 @@ impl FunctionPass for StrengthPass {
                                         InstView::Binary {
                                             opcode: Opcode::IAdd,
                                             args: [a, b],
+                                            ..
                                         } if *a == induction => Some(*b),
                                         InstView::Binary {
                                             opcode: Opcode::IAdd,
                                             args: [a, b],
+                                            ..
                                         } if *b == induction => Some(*a),
                                         _ => None,
                                     });

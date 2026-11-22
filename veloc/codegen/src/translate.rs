@@ -405,7 +405,7 @@ impl<'a> FuncTranslator<'a> {
                     .at_end(mblock)
                     .symbol_addr(result(), symbol))
             }
-            InstView::Call { func_id, args } => {
+            InstView::Call { func_id, args, .. } => {
                 let callee = &self.module.decls()[*func_id];
                 let symbol = self
                     .mmodule
@@ -421,7 +421,9 @@ impl<'a> FuncTranslator<'a> {
                     .call(&results, symbol, &args, info))
             }
 
-            InstView::CallIndirect { ptr, args, sig_id } => {
+            InstView::CallIndirect {
+                ptr, args, sig_id, ..
+            } => {
                 let info = self.call_info(*sig_id);
                 let results = self.values(results);
                 let args = self.values(args);

@@ -251,8 +251,7 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
         })
     }) {
         let params = layout
-            .fields
-            .iter()
+            .logical_fields()
             .filter(|f| f.access().is_none())
             .map(|f| format!("{}: {}", f.name, f.rust))
             .collect::<Vec<_>>()
@@ -261,7 +260,14 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
             out,
             "pub fn {}({params}) -> Self {{ {} }}",
             super::constructor_name(&layout.name),
-            encode(layout, records, |i| layout.fields[i].name.clone())
+            encode(layout, records, |i| {
+                let f = &layout.fields[i];
+                if matches!(f.ty, super::FieldType::Notrap) {
+                    "false".into()
+                } else {
+                    f.name.clone()
+                }
+            })
         )
         .unwrap();
     }

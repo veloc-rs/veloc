@@ -65,6 +65,7 @@ op ClosureShared(func_id: FuncId, captures: sequence(Value)) -> (result: Value<C
 }
 
 op TailCall(func_id: FuncId, move args: sequence(Value)) -> () {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP), memory: MemoryEffect::UNKNOWN };
     mnemonic = "tail-call";
     storage = TailCall { func_id, args };
@@ -79,6 +80,7 @@ op TailCall(func_id: FuncId, move args: sequence(Value)) -> () {
 }
 
 op TailCallValue(move callee: Value<Callable>, move args: sequence(Value)) -> () {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP), memory: MemoryEffect::UNKNOWN };
     mnemonic = "tail-call-value";
     storage = CallValue { callee, args };
@@ -93,6 +95,7 @@ op TailCallValue(move callee: Value<Callable>, move args: sequence(Value)) -> ()
 }
 
 op CallValue(move callee: Value<Callable>, move args: sequence(Value)) -> signature {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
     mnemonic = "call-value";
     storage = CallValue { callee, args };
@@ -196,6 +199,7 @@ op IMulWithOverflow<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>
 ; }
 
 op IDivS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    modifiers = [notrap];
     meta = OpInfo {};
     mnemonic = "idiv-s";
     storage = Binary { args: [lhs, rhs] };
@@ -207,6 +211,7 @@ op IDivS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 ; }
 
 op IDivU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    modifiers = [notrap];
     meta = OpInfo {};
     mnemonic = "idiv-u";
     storage = Binary { args: [lhs, rhs] };
@@ -215,6 +220,7 @@ op IDivU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 ; }
 
 op IRemS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    modifiers = [notrap];
     meta = OpInfo {};
     mnemonic = "irem-s";
     storage = Binary { args: [lhs, rhs] };
@@ -224,6 +230,7 @@ op IRemS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 ; }
 
 op IRemU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    modifiers = [notrap];
     meta = OpInfo {};
     mnemonic = "irem-u";
     storage = Binary { args: [lhs, rhs] };
@@ -544,6 +551,7 @@ op PtrToInt(arg: Value<Type::PTR>) -> Value<ScalarInteger> {
 }
 
 op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
     mnemonic = "load";
     storage = Load { ptr, offset, flags };
@@ -551,6 +559,7 @@ op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<A
 }
 
 op Store(ptr: Value<Type::PTR>, value: Value<Any>, offset: u32, flags: MemFlags) -> () {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::WRITE) };
     mnemonic = "store";
     storage = Store { ptr, value, offset, flags };
@@ -595,6 +604,7 @@ op PtrIndex(ptr: Value<Type::PTR>, index: Value<ScalarInteger>, imm: PtrIndexImm
 }
 
 op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
     mnemonic = "call";
     storage = Call { func_id, args };
@@ -604,6 +614,7 @@ op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
 
 
 op CallIndirect(sig_id: SigId, ptr: Value<Type::PTR>, move args: sequence(Value)) -> signature {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
     mnemonic = "call-indirect";
     storage = CallIndirect { ptr, args, sig_id };
@@ -617,6 +628,7 @@ op CallIndirect(sig_id: SigId, ptr: Value<Type::PTR>, move args: sequence(Value)
 }
 
 op CallIntrinsic(intrinsic: Intrinsic, sig_id: SigId, move args: sequence(Value)) -> signature {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
     mnemonic = "call-intrinsic";
     storage = CallIntrinsic { intrinsic, args, sig_id };
@@ -751,6 +763,7 @@ op ReduceXor<T: Integer & Vector | vectors(Type::BOOL)>(arg: Value<T>) -> Value<
 }
 
 op LoadStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, mem: VectorMemOptions) -> (result: Value<Vector>) {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
     mnemonic = "load-stride";
     storage = VectorLoadStrided { ptr, stride, ext: mem };
@@ -763,6 +776,7 @@ op LoadStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, mem: VectorMe
 }
 
 op StoreStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, value: Value<Vector>, mem: VectorMemOptions) -> () {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::WRITE) };
     mnemonic = "store-stride";
     storage = VectorStoreStrided { args: [ptr, stride, value], ext: mem };
@@ -775,6 +789,7 @@ op StoreStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, value: Value
 }
 
 op Gather<T: Integer & Vector, U: Vector>(ptr: Value<Type::PTR>, index: Value<T>, mem: VectorMemOptions) -> Value<U> {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
     mnemonic = "gather";
     storage = VectorGather { ptr, index, ext: mem };
@@ -788,6 +803,7 @@ op Gather<T: Integer & Vector, U: Vector>(ptr: Value<Type::PTR>, index: Value<T>
 }
 
 op Scatter<T: Integer & Vector, U: Vector>(ptr: Value<Type::PTR>, index: Value<T>, value: Value<U>, mem: VectorMemOptions) -> () {
+    modifiers = [notrap];
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::WRITE) };
     mnemonic = "scatter";
     storage = VectorScatter { args: [ptr, index, value], ext: mem };

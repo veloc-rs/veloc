@@ -91,9 +91,7 @@ impl FunctionPass for PromotePass {
         }
         let cells: Vec<_> = cells.into_values().collect();
         for pair in cells.windows(2) {
-            if pair[0].access.base == pair[1].access.base
-                && pair[0].access.end() > i128::from(pair[1].access.offset)
-            {
+            if pair[0].access.overlaps(pair[1].access) {
                 escaped.insert(pair[0].access.base);
             }
         }

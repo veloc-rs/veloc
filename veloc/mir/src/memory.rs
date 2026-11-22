@@ -22,6 +22,18 @@ impl Access {
     pub fn end(self) -> i128 {
         i128::from(self.offset) + i128::from(self.bytes)
     }
+
+    /// Whether the linear byte ranges share a base and at least one byte.
+    /// For possible aliasing across bases or address wraparound, use [`FuncBody::may_alias`].
+    pub fn overlaps(self, other: Self) -> bool {
+        self.base == other.base
+            && i128::from(self.offset.max(other.offset)) < self.end().min(other.end())
+    }
+
+    /// Whether this linear byte range contains the other's range at the same base.
+    pub fn covers(self, other: Self) -> bool {
+        self.base == other.base && self.offset <= other.offset && self.end() >= other.end()
+    }
 }
 
 impl FuncBody {
@@ -79,6 +91,9 @@ impl FuncBody {
     }
 
     pub fn may_alias(&self, a: Access, b: Access, layout: &DataLayout) -> bool {
+        if a.flags.region().is_disjoint(b.flags.region()) {
+            return false;
+        }
         if a.base == b.base {
             return ranges_may_overlap(
                 (a.offset, a.bytes),

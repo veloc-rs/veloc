@@ -136,12 +136,13 @@ impl PassManager {
                     .iter()
                     .take_while(|pass| matches!(pass, Pass::Function(_)))
                     .count();
-            for (id, function) in module.bodies_mut() {
+            let (decls, bodies) = module.decls_and_bodies_mut();
+            for (id, function) in bodies {
                 let function_scope = self
                     .profile
                     .entity_scope("function", 0, || format!("{id:?}"));
                 let mut analyses =
-                    AnalysisManager::new(function).with_profile(self.profile.clone());
+                    AnalysisManager::new(function, decls).with_profile(self.profile.clone());
                 let mut unchanged = hashbrown::HashSet::new();
                 for (offset, pass) in self.passes[position..end].iter().enumerate() {
                     let Pass::Function(pass) = pass else {

@@ -440,7 +440,7 @@ impl<'a> WasmTranslator<'a> {
         let is_neg_one = self.builder.ins().icmp(IntCC::Eq, r, neg_one);
         let is_overflow = self.builder.ins().iand(is_min, is_neg_one);
         self.trap_if(is_overflow, TrapCode::IntegerOverflow);
-        let res = self.builder.ins().idiv_s(l, r);
+        let res = self.builder.ins().idiv_s_notrap(l, r);
         self.stack.push(res);
     }
 
@@ -458,7 +458,7 @@ impl<'a> WasmTranslator<'a> {
             .iconst(veloc_mir::Int::from_bits(ty, 0).expect("integer constant type"));
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
-        let res = self.builder.ins().idiv_u(l, r);
+        let res = self.builder.ins().idiv_u_notrap(l, r);
         self.stack.push(res);
     }
 
@@ -499,7 +499,7 @@ impl<'a> WasmTranslator<'a> {
                 b.def_var(res_var, zero_res);
             },
             |b| {
-                let rem_res = b.ins().irem_s(l, r);
+                let rem_res = b.ins().irem_s_notrap(l, r);
                 b.def_var(res_var, rem_res);
             },
         );
@@ -522,7 +522,7 @@ impl<'a> WasmTranslator<'a> {
             .iconst(veloc_mir::Int::from_bits(ty, 0).expect("integer constant type"));
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
-        let res = self.builder.ins().irem_u(l, r);
+        let res = self.builder.ins().irem_u_notrap(l, r);
         self.stack.push(res);
     }
 }

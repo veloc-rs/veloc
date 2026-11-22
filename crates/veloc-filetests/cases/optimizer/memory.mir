@@ -38,6 +38,8 @@ block0():
 
 // ----- partial-overwrite-invalidates-forwarding
 // run: o1
+// check: store i32(1)
+// check: store i8(2)
 // check: : i32 = load
 local function main() -> i32
 stack-slot p, size=4, align=4
@@ -46,6 +48,21 @@ block0():
   store i8(2), p, offset=1
   y: i32 = load p, offset=0
   return y
+
+// ----- full-overwrite-removes-covered-store
+// run: o1
+// check: stack-slot
+// not: store i8(2)
+// check: store i32(1)
+// check: call observe
+import function observe(ptr) -> void
+local function main() -> void
+stack-slot p, size=4, align=4
+block0():
+  store i8(2), p, offset=1
+  store i32(1), p, offset=0
+  call observe(p) : (ptr) -> void
+  return
 
 // ----- unused-object-is-removable
 // run: o1
@@ -68,3 +85,79 @@ block0():
   last: ptr = ptr-offset end, -4
   x: i32 = load.align4 last, offset=0
   return x
+
+// ----- pointer-disjoint-ranges-and-full-overwrite
+// run: o1
+// not: store.notrap i8(9)
+// check: store.notrap i32(42)
+// check: store.notrap i32(7)
+// not: = load
+// check: return i32(42)
+local function main(p: ptr) -> i32
+block0():
+  q: ptr = ptr-offset p, 1
+  store.notrap i8(9), q, offset=0
+  store.notrap i32(42), p, offset=0
+  store.notrap i32(7), p, offset=4
+  x: i32 = load.notrap p, offset=0
+  return x
+
+// ----- pointer-arguments-may-alias
+// run: o1
+// check: store.notrap i32(1)
+// check: $(before=before\.v\d+): i32 = load.notrap
+// check: store.notrap i32(2)
+// check: $(after=after\.v\d+): i32 = load.notrap
+// check: return $before, $after
+local function main(p: ptr, q: ptr) -> (i32, i32)
+block0():
+  store.notrap.region0 i32(1), p, offset=0
+  before: i32 = load.notrap q, offset=0
+  store.notrap i32(2), p, offset=0
+  after: i32 = load.notrap q, offset=0
+  return before, after
+
+// ----- trapping-load-preserves-prior-write
+// run: o1
+// check: store.notrap i32(1)
+// check: : i32 = load
+// check: store.notrap i32(2)
+// check: return i32(1)
+local function main(p: ptr) -> i32
+block0():
+  store.notrap i32(1), p, offset=0
+  x: i32 = load p, offset=0
+  store.notrap i32(2), p, offset=0
+  return x
+
+// ----- trapping-store-survives-full-overwrite
+// run: o1
+// check: store i32(1)
+// check: store.notrap i32(2)
+// check: return
+local function main(p: ptr) -> void
+block0():
+  store i32(1), p, offset=0
+  store.notrap i32(2), p, offset=0
+  return
+
+// ----- region-aliasing
+// run: o1
+// check: store.notrap.region1 i32(1)
+// check: store.notrap.region255 i32(2)
+// not: = load
+// check: store.notrap.region1 i32(3)
+// check: $(same=same\.v\d+): i32 = load.notrap.region1
+// check: store.notrap i32(4)
+// not: = load
+// check: return i32(1), $same, $same
+local function main(p: ptr, q: ptr, r: ptr, s: ptr) -> (i32, i32, i32)
+block0():
+  store.notrap.region1 i32(1), p, offset=0
+  store.notrap.region255 i32(2), q, offset=0
+  disjoint: i32 = load.notrap.region1 p, offset=0
+  store.notrap.region1 i32(3), r, offset=0
+  same: i32 = load.notrap.region1 p, offset=0
+  store.notrap.region0 i32(4), s, offset=0
+  after_default: i32 = load.notrap.region1 p, offset=0
+  return disjoint, same, after_default

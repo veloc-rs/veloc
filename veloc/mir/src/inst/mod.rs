@@ -85,16 +85,24 @@ impl<'a> InstView<'a> {
         self.memory_flags().is_some_and(|flags| flags.is_volatile())
     }
 
-    pub fn may_trap(&self) -> bool {
-        self.opcode().spec().may_trap()
-            && !self.memory_flags().is_some_and(|flags| flags.is_notrap())
+    /// A direct call can rely on its callee's contract or its own site guarantee.
+    pub fn may_trap(&self, decls: &crate::FuncDecls) -> bool {
+        if !self.opcode().spec().may_trap() || self.is_notrap() {
+            return false;
+        }
+        match self {
+            Self::Call { func_id, .. } | Self::TailCall { func_id, .. } => {
+                !decls.get(*func_id).is_some_and(|decl| decl.notrap)
+            }
+            _ => true,
+        }
     }
 
     /// Deletion, speculation and commoning have different preconditions.
-    pub fn can_erase(&self) -> bool {
+    pub fn can_erase(&self, decls: &crate::FuncDecls) -> bool {
         let spec = self.opcode().spec();
         !spec.is_terminator()
-            && !self.may_trap()
+            && !self.may_trap(decls)
             && !self.opcode().transfers_ownership()
             && !self.has_volatile_access()
             && self.memory_effect().can_erase()
@@ -113,10 +121,10 @@ impl<'a> InstView<'a> {
         self.can_speculate()
     }
 
-    pub fn has_side_effects(&self) -> bool {
+    pub fn has_side_effects(&self, decls: &crate::FuncDecls) -> bool {
         let spec = self.opcode().spec();
         spec.is_terminator()
-            || self.may_trap()
+            || self.may_trap(decls)
             || self.has_volatile_access()
             || self.memory_effect().has_side_effects()
     }

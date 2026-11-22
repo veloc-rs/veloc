@@ -321,8 +321,8 @@ mod tests {
         use veloc_mir::{Linkage, ModuleBuilder};
         let mut mb = ModuleBuilder::new();
         let sig = mb.make_signature(vec![], vec![], veloc_mir::CallConv::Platform);
-        let ext = mb.declare_function("host".into(), sig, Linkage::Import);
-        let main = mb.declare_function("main".into(), sig, Linkage::Export);
+        let ext = mb.declare_function("host".into(), sig, Linkage::Import, false);
+        let main = mb.declare_function("main".into(), sig, Linkage::Export, false);
         {
             let mut fb = mb.define(main);
             fb.ins().call(ext, &[]);

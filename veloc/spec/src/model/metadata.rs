@@ -117,9 +117,10 @@ impl Pending {
         vocabulary: super::Vocabulary<'_>,
         traits: &BTreeSet<String>,
         semantic: bool,
+        allows_notrap: bool,
     ) -> Result<Metadata, Error> {
         let offset = self.node.offset;
-        if self.traits.is_none() && !traits.is_empty() {
+        if self.traits.is_none() && (allows_notrap || !traits.is_empty()) {
             return Err(Error::at(
                 source,
                 offset,
@@ -175,6 +176,12 @@ impl Pending {
                 },
                 "ABORT requires TERMINATOR".into(),
             ));
+            if allows_notrap {
+                checks.push((
+                    contains("MAY_TRAP"),
+                    "notrap modifier requires MAY_TRAP".into(),
+                ));
+            }
             if semantic {
                 // Derived facts are trusted primitive facts. Opaque user expressions
                 // must not add unproved algebraic/control/trap promises.

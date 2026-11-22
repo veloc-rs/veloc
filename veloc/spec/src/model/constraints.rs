@@ -264,13 +264,7 @@ fn emit_body(
     // Type-only predicates use already checked operand/result slices and
     // therefore work for alternate instruction layouts without reprojection.
     if storage_used {
-        let fields = format
-            .fields
-            .iter()
-            .enumerate()
-            .map(|(i, f)| format!("{}: _f{i}", f.name))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let pattern = format.pattern("InstView", |i, _| format!("_f{i}"));
         let mismatch = if defs.storage.formats.len() + defs.storage.alternatives.len() == 1 {
             ""
         } else {
@@ -278,10 +272,7 @@ fn emit_body(
         };
         body.insert_str(
             0,
-            &format!(
-                "                let InstView::{} {{ {fields} }} = data{mismatch};\n",
-                format.name
-            ),
+            &format!("                let {pattern} = data{mismatch};\n"),
         );
     }
     body

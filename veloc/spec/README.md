@@ -1385,6 +1385,13 @@ Constant folding replaces an operation only when no guard fires; a known trap
 stays as an instruction. Lowering must separately preserve these outcomes;
 adding the contract does not generate backend trap checks automatically.
 
+A packed MIR operation can declare `modifiers = [notrap];` when its static
+traits include `MAY_TRAP`. This generates a `.notrap` text suffix and a
+`_notrap` typed builder. The guarantee belongs to the instruction site and
+travels with its stored fields through SSA copies and imports. Memory operations
+store this guarantee in their existing `MemFlags`, including vector memory options. Trap guards
+still define the opcode's behavior and its conservative speculation rules.
+
 Raw `bv.sdiv/udiv/srem/urem` use total SMT-LIB semantics. Signed remainder of
 MIN and -1 is zero, not an overflow trap. Raw `bv.shl/lshr/ashr` do not mask
 counts: MIR explicitly uses `bv.urem(rhs, bv.width())`. `bv.width()` and

@@ -19,10 +19,11 @@ fn main() {
         let module = ModuleParser::new()
             .parse("local function main(v0: i32, v1: i32) -> i32\nblock0():\n  return v0\n")?;
         let mut data = module;
-        let func = data.bodies_mut().map(|(_, body)| body).next().unwrap();
+        let (decls, mut bodies) = data.decls_and_bodies_mut();
+        let (_, func) = bodies.next().unwrap();
         let ret = func.layout().last_inst(func.entry_block()).unwrap();
         let second = func.params()[1];
-        let mut analyses = AnalysisManager::new(func);
+        let mut analyses = AnalysisManager::new(func, decls);
         let before = format!("{:?}", analyses.liveness().intervals);
         analyses.function_mut().edit().set_operand(ret, 0, second);
         let expected = format!("{:?}", analyze_liveness(analyses.function()).intervals);

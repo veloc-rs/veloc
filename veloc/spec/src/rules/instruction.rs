@@ -590,22 +590,16 @@ impl<'a> Compiler<'a, '_> {
             .iter()
             .find(|f| f.name == op.format)
             .unwrap();
-        let fields = format
-            .fields
-            .iter()
-            .map(|f| {
-                if f.ty.named("Opcode") {
-                    format!("{}: Opcode::{}", f.name, op.name)
-                } else {
-                    format!("{}: {prefix}_{}", f.name, f.name)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+        let pattern = format.pattern("InstView", |_, f| {
+            if f.ty.named("Opcode") {
+                format!("Opcode::{}", op.name)
+            } else {
+                format!("{prefix}_{}", f.name)
+            }
+        });
         writeln!(
             self.code,
-            "let InstView::{} {{ {fields} }} = dfg.inst({inst}) else {{ return None; }};",
-            op.format
+            "let {pattern} = dfg.inst({inst}) else {{ return None; }};"
         )
         .unwrap();
         let mut edge_index = EdgeIndex::Fixed(0);

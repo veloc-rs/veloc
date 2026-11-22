@@ -76,7 +76,7 @@ pub fn run_with_cost(
     metrics: &Profile,
 ) -> bool {
     run_with_analyses(
-        &mut AnalysisManager::new(func).with_profile(metrics.clone()),
+        &mut AnalysisManager::new(func, &Default::default()).with_profile(metrics.clone()),
         budget,
         cost,
         None,
@@ -593,7 +593,7 @@ block1():
         let load_block = f.layout().inst_block(load);
         assert!(super::run(f, Budget::DEFAULT, false, &Profile::default()));
         crate::DcePass.run(
-            &mut AnalysisManager::new(f),
+            &mut AnalysisManager::new(f, &Default::default()),
             &OptConfig::new(veloc_interpreter::DATA_LAYOUT),
             &Profile::default(),
         );
@@ -763,7 +763,7 @@ block0():
             .apply(body);
         assert_eq!(changed, 1);
         crate::DcePass.run(
-            &mut AnalysisManager::new(body),
+            &mut AnalysisManager::new(body, &Default::default()),
             &OptConfig::new(veloc_interpreter::DATA_LAYOUT),
             &Profile::default(),
         );

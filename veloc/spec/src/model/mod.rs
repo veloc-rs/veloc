@@ -92,6 +92,7 @@ pub(crate) struct Slot {
 }
 
 pub(crate) struct Op {
+    pub allows_notrap: bool,
     pub declaration: crate::syntax::Signature,
     pub offset: usize,
     pub name: String,
@@ -291,11 +292,14 @@ impl Definitions {
                 return Err(fail(format!("invalid mnemonic `{}`", op.mnemonic)));
             }
             let method = op.method_name();
-            if let Some(previous) = methods.insert(method.clone(), &op.mnemonic) {
-                return Err(fail(format!(
-                    "mnemonics `{previous}` and `{}` produce the same method name `{method}`",
-                    op.mnemonic
-                )));
+            let annotated = op.allows_notrap.then(|| format!("{method}_notrap"));
+            for name in std::iter::once(method).chain(annotated) {
+                if let Some(previous) = methods.insert(name.clone(), &op.mnemonic) {
+                    return Err(fail(format!(
+                        "mnemonics `{previous}` and `{}` produce the same method name `{name}`",
+                        op.mnemonic
+                    )));
+                }
             }
             if let storage::Strategy::Packed = self.storage.strategy {
                 let format = self

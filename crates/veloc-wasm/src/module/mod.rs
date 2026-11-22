@@ -94,101 +94,28 @@ impl RuntimeFunctions {
         let p = VelocType::PTR;
         let i = VelocType::I32;
 
-        let sig =
-            |ir: &mut veloc::mir::ModuleBuilder, params: Vec<VelocType>, ret: Vec<VelocType>| {
-                ir.make_signature(params, ret, CallConv::Platform)
-            };
-
-        let trap_handler_sig = sig(ir, vec![p, i], vec![]);
-        let trap_handler = ir.declare_function(
-            "wasm_trap_handler".into(),
-            trap_handler_sig,
-            Linkage::Import,
-        );
-
-        let memory_size_sig = sig(ir, vec![p, i], vec![i]);
-        let memory_size =
-            ir.declare_function("wasm_memory_size".into(), memory_size_sig, Linkage::Import);
-
-        let memory_grow_sig = sig(ir, vec![p, i, i], vec![i]);
-        let memory_grow =
-            ir.declare_function("wasm_memory_grow".into(), memory_grow_sig, Linkage::Import);
-
-        let init_table_element_sig = sig(ir, vec![p, i, i], vec![]);
-        let init_table_element = ir.declare_function(
-            "wasm_init_table_element".into(),
-            init_table_element_sig,
-            Linkage::Import,
-        );
-
-        let init_memory_data_sig = sig(ir, vec![p, i, i], vec![]);
-        let init_memory_data = ir.declare_function(
-            "wasm_init_memory_data".into(),
-            init_memory_data_sig,
-            Linkage::Import,
-        );
-
-        let init_table_sig = sig(ir, vec![p, i, p], vec![]);
-        let init_table =
-            ir.declare_function("wasm_init_table".into(), init_table_sig, Linkage::Import);
-
-        let table_init_sig = sig(ir, vec![p, i, i, i, i, i], vec![]);
-        let table_init =
-            ir.declare_function("wasm_table_init".into(), table_init_sig, Linkage::Import);
-
-        let table_copy_sig = sig(ir, vec![p, i, i, i, i, i], vec![]);
-        let table_copy =
-            ir.declare_function("wasm_table_copy".into(), table_copy_sig, Linkage::Import);
-
-        let table_grow_sig = sig(ir, vec![p, i, p, i], vec![i]);
-        let table_grow =
-            ir.declare_function("wasm_table_grow".into(), table_grow_sig, Linkage::Import);
-
-        let table_size_sig = sig(ir, vec![p, i], vec![i]);
-        let table_size =
-            ir.declare_function("wasm_table_size".into(), table_size_sig, Linkage::Import);
-
-        let table_fill_sig = sig(ir, vec![p, i, i, p, i], vec![]);
-        let table_fill =
-            ir.declare_function("wasm_table_fill".into(), table_fill_sig, Linkage::Import);
-
-        let elem_drop_sig = sig(ir, vec![p, i], vec![]);
-        let elem_drop =
-            ir.declare_function("wasm_elem_drop".into(), elem_drop_sig, Linkage::Import);
-
-        let memory_init_sig = sig(ir, vec![p, i, i, i, i, i], vec![]);
-        let memory_init =
-            ir.declare_function("wasm_memory_init".into(), memory_init_sig, Linkage::Import);
-
-        let data_drop_sig = sig(ir, vec![p, i], vec![]);
-        let data_drop =
-            ir.declare_function("wasm_data_drop".into(), data_drop_sig, Linkage::Import);
-
-        let memory_copy_sig = sig(ir, vec![p, i, i, i, i, i], vec![]);
-        let memory_copy =
-            ir.declare_function("wasm_memory_copy".into(), memory_copy_sig, Linkage::Import);
-
-        let memory_fill_sig = sig(ir, vec![p, i, i, i, i], vec![]);
-        let memory_fill =
-            ir.declare_function("wasm_memory_fill".into(), memory_fill_sig, Linkage::Import);
+        let mut import = |name: &str, params, returns| {
+            let sig = ir.make_signature(params, returns, CallConv::Platform);
+            ir.declare_function(name.into(), sig, Linkage::Import, false)
+        };
 
         Self {
-            trap_handler,
-            memory_size,
-            memory_grow,
-            init_table_element,
-            init_memory_data,
-            init_table,
-            table_init,
-            table_copy,
-            table_grow,
-            table_size,
-            table_fill,
-            elem_drop,
-            memory_init,
-            data_drop,
-            memory_copy,
-            memory_fill,
+            trap_handler: import("wasm_trap_handler", vec![p, i], vec![]),
+            memory_size: import("wasm_memory_size", vec![p, i], vec![i]),
+            memory_grow: import("wasm_memory_grow", vec![p, i, i], vec![i]),
+            init_table_element: import("wasm_init_table_element", vec![p, i, i], vec![]),
+            init_memory_data: import("wasm_init_memory_data", vec![p, i, i], vec![]),
+            init_table: import("wasm_init_table", vec![p, i, p], vec![]),
+            table_init: import("wasm_table_init", vec![p, i, i, i, i, i], vec![]),
+            table_copy: import("wasm_table_copy", vec![p, i, i, i, i, i], vec![]),
+            table_grow: import("wasm_table_grow", vec![p, i, p, i], vec![i]),
+            table_size: import("wasm_table_size", vec![p, i], vec![i]),
+            table_fill: import("wasm_table_fill", vec![p, i, i, p, i], vec![]),
+            elem_drop: import("wasm_elem_drop", vec![p, i], vec![]),
+            memory_init: import("wasm_memory_init", vec![p, i, i, i, i, i], vec![]),
+            data_drop: import("wasm_data_drop", vec![p, i], vec![]),
+            memory_copy: import("wasm_memory_copy", vec![p, i, i, i, i, i], vec![]),
+            memory_fill: import("wasm_memory_fill", vec![p, i, i, i, i], vec![]),
         }
     }
 }
@@ -682,7 +609,7 @@ fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmM
         // 构造正确的函数签名
         let sig_id = wasm_sig.intern_veloc_sig(ir);
 
-        let func_id = ir.declare_function(func_name.clone(), sig_id, linkage);
+        let func_id = ir.declare_function(func_name.clone(), sig_id, linkage, false);
         metadata.functions[i].func_id = func_id;
 
         // 仅为本地定义的函数生成 Array-to-Wasm Trampoline
@@ -693,7 +620,7 @@ fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmM
             let tramp_params = vec![VelocType::PTR, VelocType::PTR, VelocType::PTR];
             let tramp_sig_id =
                 ir.make_signature(tramp_params, vec![VelocType::I64], CallConv::Platform);
-            let tramp_id = ir.declare_function(tramp_name, tramp_sig_id, Linkage::Export);
+            let tramp_id = ir.declare_function(tramp_name, tramp_sig_id, Linkage::Export, false);
 
             let sig = &metadata.signatures[ty_idx as usize];
 
@@ -765,8 +692,12 @@ fn generate_veloc_init(
     runtime: &RuntimeFunctions,
 ) -> veloc::mir::FuncId {
     let init_sig_id = ir.make_signature(vec![veloc::mir::Type::PTR], vec![], CallConv::Platform);
-    let init_func_id =
-        ir.declare_function("__veloc_init".to_string(), init_sig_id, Linkage::Export);
+    let init_func_id = ir.declare_function(
+        "__veloc_init".to_string(),
+        init_sig_id,
+        Linkage::Export,
+        false,
+    );
 
     let mut builder = ir.define(init_func_id);
     let vmctx = builder.func().params()[0];

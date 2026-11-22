@@ -90,6 +90,9 @@ impl FunctionRef<'_> {
             ));
         }
 
+        if data.is_notrap() && !opcode.allows_notrap_modifier() {
+            return self.fail(alloc::format!("{} does not support .notrap", spec.mnemonic));
+        }
         let mut operands = SmallVec::<[Type; 4]>::new();
         data.visit_type_operands(|value| {
             operands.push(body.dfg().value_type(value));
@@ -205,13 +208,13 @@ mod tests {
         ];
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(types.to_vec(), types.to_vec(), CallConv::Platform);
-        let callee = module.declare_function("callee".into(), sig, Linkage::Local);
+        let callee = module.declare_function("callee".into(), sig, Linkage::Local, false);
         {
             let mut builder = module.define(callee);
             let params = builder.func().params().to_vec();
             builder.ins().ret(&params);
         }
-        let caller = module.declare_function("caller".into(), sig, Linkage::Local);
+        let caller = module.declare_function("caller".into(), sig, Linkage::Local, false);
         let (target, last_param) = {
             let mut builder = module.define(caller);
             let args = builder.func().params().to_vec();
@@ -264,7 +267,7 @@ mod tests {
     fn branch_tables_require_a_default_destination() {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(vec![], vec![], CallConv::Platform);
-        let func = module.declare_function("empty-table".into(), sig, Linkage::Local);
+        let func = module.declare_function("empty-table".into(), sig, Linkage::Local, false);
         {
             let mut builder = module.define(func);
             let entry = builder.func().entry_block();
@@ -296,7 +299,8 @@ mod tests {
     fn explicit_ssa_does_not_require_builder_sealing() {
         let mut module = ModuleBuilder::new();
         let signature = module.make_signature(vec![], vec![], CallConv::Platform);
-        let function = module.declare_function("test".to_string(), signature, Linkage::Export);
+        let function =
+            module.declare_function("test".to_string(), signature, Linkage::Export, false);
         let mut builder = module.define(function);
 
         builder.ins().ret(&[]);
@@ -312,7 +316,7 @@ mod tests {
     fn constant_validation_reports_invalid_size_without_panicking() {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(vec![], vec![], CallConv::Platform);
-        let id = module.declare_function("invalid-size".into(), sig, Linkage::Local);
+        let id = module.declare_function("invalid-size".into(), sig, Linkage::Local, false);
         {
             let mut builder = module.define(id);
             builder.ins().vconst(crate::VectorConst::dense(

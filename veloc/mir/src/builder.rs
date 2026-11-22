@@ -25,8 +25,14 @@ impl ModuleBuilder {
         }
     }
 
-    pub fn declare_function(&mut self, name: String, sig_id: SigId, linkage: Linkage) -> FuncId {
-        self.data.declare_function(name, sig_id, linkage)
+    pub fn declare_function(
+        &mut self,
+        name: String,
+        sig_id: SigId,
+        linkage: Linkage,
+        notrap: bool,
+    ) -> FuncId {
+        self.data.declare_function(name, sig_id, linkage, notrap)
     }
 
     pub fn make_signature(
@@ -83,7 +89,7 @@ impl Default for ModuleBuilder {
 /// needed to materialize their SSA definitions.
 pub struct SsaBuilder<'a> {
     function: &'a mut FuncBody,
-    decls: &'a cranelift_entity::PrimaryMap<FuncId, crate::FuncDecl>,
+    decls: &'a crate::FuncDecls,
     signatures: &'a veloc_types::Signatures,
     current_block: Block,
     // 变量的类型映射

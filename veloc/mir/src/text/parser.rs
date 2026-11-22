@@ -5,8 +5,8 @@
 
 use super::lexer::{Cursor, Kind, Location};
 use crate::{
-    Block, CallConv, FuncBody, FuncId, Linkage, MemFlags, Module, Opcode, Result, SigId, Signature,
-    SuccessorData, Type, Value,
+    Block, CallConv, FuncBody, FuncId, Linkage, MemFlags, Module, Opcode, Region, Result, SigId,
+    Signature, SuccessorData, Type, Value,
 };
 use alloc::boxed::Box;
 use alloc::{
@@ -46,6 +46,7 @@ impl core::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 struct FunctionHeader {
+    notrap: bool,
     name: String,
     linkage: Linkage,
     signature: Signature,
@@ -57,12 +58,13 @@ struct FunctionHeader {
 #[derive(Default)]
 struct Functions {
     names: HashMap<String, FuncId>,
-    entries: Vec<FunctionSymbol>,
-    order: Vec<FuncId>,
+    entries: cranelift_entity::PrimaryMap<FuncId, FunctionSymbol>,
 }
 
 struct FunctionSymbol {
-    defined: bool,
+    name: String,
+    signature: SigId,
+    declaration: Option<FuncId>,
     location: Location,
 }
 
@@ -72,22 +74,22 @@ impl Functions {
         name: &str,
         signature: SigId,
         location: Location,
-        module: &mut Module,
     ) -> ParseResult<FuncId> {
         if let Some(&id) = self.names.get(name) {
-            if module.decls[id].signature != signature {
+            if self.entries[id].signature != signature {
                 return Err(location.error(format!(
                     "call signature does not match declaration of `{name}`"
                 )));
             }
             return Ok(id);
         }
-        let id = module.declare_function(name.into(), signature, Linkage::Local);
-        self.names.insert(name.into(), id);
-        self.entries.push(FunctionSymbol {
-            defined: false,
+        let id = self.entries.push(FunctionSymbol {
+            name: name.into(),
+            signature,
+            declaration: None,
             location,
         });
+        self.names.insert(name.into(), id);
         Ok(id)
     }
 
@@ -100,66 +102,49 @@ impl Functions {
         if self
             .names
             .get(&header.name)
-            .is_some_and(|id| self.entries[id.0 as usize].defined)
+            .is_some_and(|&id| self.entries[id].declaration.is_some())
         {
             return Err(location.error(format!("duplicate function `{}`", header.name)));
         }
         let signature = module.intern_signature(header.signature.clone());
-        let id = self.reference(&header.name, signature, location, module)?;
-        self.entries[id.0 as usize].defined = true;
-        module.decls[id].linkage = header.linkage;
-        self.order.push(id);
+        let symbol = self.reference(&header.name, signature, location)?;
+        let id = module.declare_function(
+            header.name.clone(),
+            signature,
+            header.linkage,
+            header.notrap,
+        );
+        self.entries[symbol].declaration = Some(id);
         Ok(id)
     }
 
     fn finish(self, module: &mut Module) -> ParseResult<()> {
-        let mut map = vec![FuncId(u32::MAX); self.entries.len()];
-        for (index, &id) in self.order.iter().enumerate() {
-            map[id.0 as usize] = FuncId(index as u32);
-        }
-        for (index, entry) in self.entries.iter().enumerate() {
-            if entry.defined {
+        let mut map = Vec::with_capacity(self.entries.len());
+        for (_, symbol) in self.entries {
+            if let Some(id) = symbol.declaration {
+                map.push(id);
                 continue;
             }
-            // Names take precedence over the legacy numeric spellings.
-            let function = &module.decls[FuncId(index as u32)];
-            let name = &function.name;
-            let number = name
+            // An explicitly declared name takes precedence over a numeric reference.
+            let name = &symbol.name;
+            let id = name
                 .strip_prefix("func")
-                .or_else(|| {
-                    name.strip_prefix("FuncId(")
-                        .and_then(|s| s.strip_suffix(')'))
-                })
-                .and_then(|s| s.parse::<usize>().ok());
-            let Some(target) = number.and_then(|n| self.order.get(n)).copied() else {
-                return Err(entry.location.error(format!("unknown function `{name}`")));
-            };
-            if function.signature != module.decls[target].signature {
-                return Err(entry.location.error(format!(
+                .or_else(|| name.strip_prefix("FuncId(")?.strip_suffix(')'))
+                .and_then(|n| n.parse::<u32>().ok())
+                .map(FuncId)
+                .filter(|&id| module.decls.get(id).is_some())
+                .ok_or_else(|| symbol.location.error(format!("unknown function `{name}`")))?;
+            let decl = &module.decls[id];
+            if decl.signature != symbol.signature {
+                return Err(symbol.location.error(format!(
                     "call signature does not match declaration of `{}`",
-                    module.decls[target].name
+                    decl.name
                 )));
             }
-            map[index] = map[target.0 as usize];
+            map.push(id);
         }
-        if map
-            .iter()
-            .enumerate()
-            .all(|(index, id)| id.0 as usize == index)
-        {
-            return Ok(());
-        }
-        let old = core::mem::take(&mut module.decls);
-        let mut bodies = core::mem::take(&mut module.bodies);
-        let mut functions: Vec<_> = old.into_iter().map(|(_, func)| Some(func)).collect();
-        for id in self.order {
-            let func = functions[id.0 as usize]
-                .take()
-                .expect("unique function declaration");
-            let body = bodies[id].take();
-            let new_id = module.decls.push(func);
-            module.bodies[new_id] = body;
-            if let Some(body) = module.bodies[new_id].as_deref_mut() {
+        if map.iter().enumerate().any(|(i, id)| id.0 as usize != i) {
+            for (_, body) in module.bodies_mut() {
                 body.edit().remap_functions(&map);
             }
         }
@@ -653,7 +638,7 @@ impl OperandParser<'_> {
         signature: SigId,
     ) -> ParseResult<FuncId> {
         self.functions
-            .reference(&name.name, signature, name.location, self.module)
+            .reference(&name.name, signature, name.location)
     }
 
     pub(super) fn signature(&mut self, input: &mut Cursor<'_>) -> ParseResult<SigId> {
@@ -708,6 +693,13 @@ fn parse_typed_name<'a>(input: &mut Cursor<'a>, module: &mut Module) -> ParseRes
 fn parse_instruction_header(input: &mut Cursor<'_>) -> ParseResult<(Opcode, MemFlags)> {
     let location = input.location();
     let (opcode, suffix) = input.atom(parse_opcode)?;
+    if opcode.allows_notrap_modifier() && !accepts_memory_flags(opcode) {
+        return match suffix {
+            "" => Ok((opcode, MemFlags::empty())),
+            ".notrap" => Ok((opcode, MemFlags::empty().with_notrap(true))),
+            _ => Err(location.error("only .notrap is supported by this operation")),
+        };
+    }
     let mut flags = MemFlags::new();
     for part in suffix.strip_prefix('.').unwrap_or(suffix).split('.') {
         if part.is_empty() {
@@ -717,9 +709,17 @@ fn parse_instruction_header(input: &mut Cursor<'_>) -> ParseResult<(Opcode, MemF
         } else if part == "volatile" {
             flags = flags.with_volatile(true);
         } else if part == "notrap" {
+            if !opcode.allows_notrap_modifier() {
+                return Err(location.error("flags are not supported by this operation"));
+            }
             flags = flags.with_notrap(true);
         } else if let Some(value) = part.strip_prefix("align") {
             flags = flags.with_alignment(parse_alignment(value, part, location)?);
+        } else if let Some(value) = part.strip_prefix("region") {
+            let region = value.parse::<u8>().map_err(|_| {
+                location.error(format!("expected region ID in 0..=255, got `{part}`"))
+            })?;
+            flags = flags.with_region(Region(region));
         } else {
             return Err(location.error(format!("unknown opcode suffix `{part}`")));
         }
@@ -927,7 +927,12 @@ fn parse_function_header(
         Vec::new()
     };
     let convention = parse_call_conv(input)?;
+    let notrap = input.is("notrap");
+    if notrap {
+        input.advance();
+    }
     Ok(FunctionHeader {
+        notrap,
         name,
         linkage,
         signature: Signature::new(params, returns, convention).with_variadic(variadic),
@@ -1200,8 +1205,8 @@ block0():
             let mut input = Cursor::new("later() : () -> i32");
             cx.parse(Opcode::Call, MemFlags::empty(), &mut input, None)
                 .unwrap();
-            assert_eq!(cx.module.decls.len(), 1);
-            let function = &cx.module.decls[FuncId(0)];
+            assert!(cx.module.decls.is_empty());
+            let function = &cx.functions.entries[FuncId(0)];
             assert_eq!(
                 cx.module.signatures()[function.signature].returns(),
                 [Type::I32]

@@ -1,10 +1,10 @@
-use crate::function::{FuncBody, FuncDecl, FunctionRef};
+use crate::function::{FuncBody, FuncDecl, FuncDecls, FunctionRef};
 use crate::types::{FuncId, SigId, Signature, Type};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use cranelift_entity::{PrimaryMap, SecondaryMap};
+use cranelift_entity::SecondaryMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Linkage {
@@ -63,14 +63,14 @@ pub struct DataRelocation {
 /// Construction and sharing do not imply validation.
 #[derive(Debug, Default, Clone)]
 pub struct Module {
-    pub(crate) decls: PrimaryMap<FuncId, FuncDecl>,
+    pub(crate) decls: FuncDecls,
     pub(crate) bodies: SecondaryMap<FuncId, Option<Box<FuncBody>>>,
     types: Arc<veloc_types::TypeContext>,
     pub(crate) globals: Vec<Global>,
 }
 
 impl Module {
-    pub fn decls(&self) -> &PrimaryMap<FuncId, FuncDecl> {
+    pub fn decls(&self) -> &FuncDecls {
         &self.decls
     }
 
@@ -103,16 +103,25 @@ impl Module {
 
     /// Iterate existing definitions without exposing body insertion or removal.
     pub fn bodies_mut(&mut self) -> impl Iterator<Item = (FuncId, &mut FuncBody)> {
-        self.bodies
+        self.decls_and_bodies_mut().1
+    }
+
+    /// Borrow call contracts alongside mutable definitions during function passes.
+    pub fn decls_and_bodies_mut(
+        &mut self,
+    ) -> (&FuncDecls, impl Iterator<Item = (FuncId, &mut FuncBody)>) {
+        let bodies = self
+            .bodies
             .iter_mut()
-            .filter_map(|(id, body)| body.as_deref_mut().map(|body| (id, body)))
+            .filter_map(|(id, body)| body.as_deref_mut().map(|body| (id, body)));
+        (&self.decls, bodies)
     }
 
     /// Bind a module to an existing immutable type universe.
     pub fn with_types(types: Arc<veloc_types::TypeContext>) -> Self {
         Self {
             types,
-            decls: PrimaryMap::new(),
+            decls: FuncDecls::new(),
             bodies: SecondaryMap::new(),
             globals: Vec::new(),
         }
@@ -148,8 +157,17 @@ impl Module {
         self.types_mut().insert_signature(signature)
     }
 
-    pub fn declare_function(&mut self, name: String, signature: SigId, linkage: Linkage) -> FuncId {
+    /// Set `notrap` when every direct call with valid arguments is guaranteed
+    /// to execute without a MIR trap.
+    pub fn declare_function(
+        &mut self,
+        name: String,
+        signature: SigId,
+        linkage: Linkage,
+        notrap: bool,
+    ) -> FuncId {
         self.decls.push(FuncDecl {
+            notrap,
             name,
             signature,
             linkage,
@@ -179,11 +197,7 @@ impl Module {
     pub(crate) fn define_body(
         &mut self,
         id: FuncId,
-    ) -> (
-        &PrimaryMap<FuncId, FuncDecl>,
-        &veloc_types::Signatures,
-        &mut FuncBody,
-    ) {
+    ) -> (&FuncDecls, &veloc_types::Signatures, &mut FuncBody) {
         assert!(self.decls.get(id).is_some(), "unknown function");
         assert!(self.bodies[id].is_none(), "function already defined");
         let params = self.types.signatures()[self.decls[id].signature].params();

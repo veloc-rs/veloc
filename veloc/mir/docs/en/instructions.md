@@ -56,6 +56,22 @@ block1(x: i32):
   return result
 ```
 
+## Trap guarantees
+
+The `.notrap` suffix guarantees that executing the instruction at its current
+location with its current operands cannot trigger a MIR trap. A frontend that
+emits the suffix must establish this for every execution that reaches the site.
+For example, a dominating nonzero check suffices for `idiv-u.notrap`.
+Signed division also needs to exclude the signed minimum divided by −1.
+Speculation above the check requires a proof at the new location.
+
+Integer division, remainder, calls and memory accesses accept this suffix.
+A declaration such as `import function f(i32) -> i32 notrap` guarantees this
+for every direct call with valid arguments. A call can still write memory or
+run indefinitely. `view.may_trap(module.decls())` considers the opcode and
+the instruction's site guarantee. For `call` and `tail-call`, the callee's
+declaration can also supply the guarantee. Indirect calls require a site guarantee.
+
 ## Instruction List
 
 ### 1. Unary Operations
@@ -100,6 +116,11 @@ block1(x: i32):
 ---
 
 ### 3. Memory Access Instructions
+
+The optional `.regionN` suffix tags the bytes touched by a memory access.
+IDs 0 through 255 are shared across a module. Omitting the suffix selects
+region 0. The producer must assign the same ID to accesses that may touch
+the same byte. Within a region, disjoint address ranges can still rule out aliasing.
 
 #### `Load`
 | Attribute | Description |

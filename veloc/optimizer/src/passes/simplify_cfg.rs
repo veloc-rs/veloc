@@ -6,7 +6,9 @@ use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use hashbrown::HashSet;
 use smallvec::{SmallVec, smallvec};
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{Block, FuncBody, Inst, InstView, ScalarConst, SuccessorData, function::EdgeRef};
+use veloc_mir::{
+    Block, FuncBody, FuncDecls, Inst, InstView, ScalarConst, SuccessorData, function::EdgeRef,
+};
 
 pub struct SimplifyCfgPass;
 impl FunctionPass for SimplifyCfgPass {
@@ -17,11 +19,12 @@ impl FunctionPass for SimplifyCfgPass {
         "SimplifyCfgPass"
     }
     fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
+        let decls = am.decls();
         let f = am.function_mut();
         let mut changed = f.edit().remove_unreachable();
         loop {
             // Merge after tracing: a merge can hide a block that one edge could bypass.
-            let edges_changed = rewrite_edges(f, metrics);
+            let edges_changed = rewrite_edges(f, decls, metrics);
             let cleaned = cleanup(f, edges_changed, metrics);
             if !edges_changed && !cleaned {
                 break;
@@ -36,7 +39,7 @@ impl FunctionPass for SimplifyCfgPass {
     }
 }
 
-fn rewrite_edges(f: &mut FuncBody, metrics: &Profile) -> bool {
+fn rewrite_edges(f: &mut FuncBody, decls: &FuncDecls, metrics: &Profile) -> bool {
     let scope = metrics.scope("threading.edges", 0);
     let mut rewritten = 0;
     let mut bypassed = 0;
@@ -48,7 +51,7 @@ fn rewrite_edges(f: &mut FuncBody, metrics: &Profile) -> bool {
                 edit.apply(f, last);
                 rewritten += 1;
             }
-            bypassed += bypass(f, block, last);
+            bypassed += bypass(f, decls, block, last);
         }
         next = f.layout().next_block(block);
     }
@@ -77,7 +80,7 @@ fn cleanup(f: &mut FuncBody, edges_changed: bool, metrics: &Profile) -> bool {
     edits != 0
 }
 
-fn bypass(f: &mut FuncBody, block: Block, last: Inst) -> u64 {
+fn bypass(f: &mut FuncBody, decls: &FuncDecls, block: Block, last: Inst) -> u64 {
     let mut changed = 0;
     let mut edges = SmallVec::<[_; 2]>::new();
     f.dfg()
@@ -88,7 +91,7 @@ fn bypass(f: &mut FuncBody, block: Block, last: Inst) -> u64 {
             inst: last,
             index: index as u32,
         };
-        if let Some(target) = trace_edge(f, block, edge, dest) {
+        if let Some(target) = trace_edge(f, decls, block, edge, dest) {
             f.edit().redirect_edge(edge, target.block, &target.args);
             changed += 1;
         }
@@ -98,6 +101,7 @@ fn bypass(f: &mut FuncBody, block: Block, last: Inst) -> u64 {
 
 fn trace_edge(
     f: &mut FuncBody,
+    decls: &FuncDecls,
     source: Block,
     edge: EdgeRef,
     mut dest: SuccessorData,
@@ -107,7 +111,7 @@ fn trace_edge(
     let mut seen = HashSet::<Block>::from([source]);
     // Discard a cyclic trace rather than redirecting partway around a loop.
     while seen.insert(dest.block) {
-        let Some(next) = fold_successor(f, &dest, &mut facts) else {
+        let Some(next) = fold_successor(f, decls, &dest, &mut facts) else {
             return (dest.block != original).then_some(dest);
         };
         dest = next;
@@ -136,6 +140,7 @@ fn edge_facts(f: &mut FuncBody, edge: EdgeRef) -> Option<PathFacts> {
 
 fn fold_successor(
     f: &mut FuncBody,
+    decls: &FuncDecls,
     edge: &SuccessorData,
     facts: &mut PathFacts,
 ) -> Option<SuccessorData> {
@@ -161,7 +166,7 @@ fn fold_successor(
         if f.dfg().inst_results(inst).iter().any(|&v| escapes(f, v)) {
             return None;
         }
-        if !fold_or_skip(f, inst, facts) {
+        if !fold_or_skip(f, decls, inst, facts) {
             return None;
         }
         cursor = f.layout().next_inst(inst);
@@ -202,7 +207,7 @@ fn resolve_successor(
 }
 
 /// Bind folded results, or check that the unfolded instruction can be skipped.
-fn fold_or_skip(f: &mut FuncBody, inst: Inst, facts: &mut PathFacts) -> bool {
+fn fold_or_skip(f: &mut FuncBody, decls: &FuncDecls, inst: Inst, facts: &mut PathFacts) -> bool {
     let view = f.dfg().inst(inst);
     let results = f.dfg().inst_results(inst);
     let types: SmallVec<[_; 2]> = results.iter().map(|&v| f.dfg().value_type(v)).collect();
@@ -223,7 +228,7 @@ fn fold_or_skip(f: &mut FuncBody, inst: Inst, facts: &mut PathFacts) -> bool {
         Some(smallvec![Fold::Constant(ScalarConst::from(truth))])
     });
     let Some(folds) = folds else {
-        return view.can_erase();
+        return view.can_erase(decls);
     };
     for (i, fold) in folds.into_iter().enumerate() {
         let result = f.dfg().inst_results(inst)[i];

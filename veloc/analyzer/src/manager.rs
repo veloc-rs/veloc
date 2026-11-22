@@ -1,11 +1,12 @@
 use crate::Dominators;
 use crate::liveness::{Liveness, analyze_liveness};
-use veloc_mir::FuncBody;
+use veloc_mir::{FuncBody, FuncDecls};
 
 /// Analyses belong to one borrowed function. Exclusive mutation conservatively
 /// invalidates caches, without revision counters or cross-function reuse.
 pub struct AnalysisManager<'f> {
     func: &'f mut FuncBody,
+    decls: &'f FuncDecls,
     #[cfg(feature = "profile")]
     profile: veloc_profile::Profile,
     liveness: Option<Liveness>,
@@ -13,9 +14,10 @@ pub struct AnalysisManager<'f> {
 }
 
 impl<'f> AnalysisManager<'f> {
-    pub fn new(func: &'f mut FuncBody) -> Self {
+    pub fn new(func: &'f mut FuncBody, decls: &'f FuncDecls) -> Self {
         Self {
             func,
+            decls,
             #[cfg(feature = "profile")]
             profile: veloc_profile::Profile::default(),
             liveness: None,
@@ -27,6 +29,10 @@ impl<'f> AnalysisManager<'f> {
     pub fn with_profile(mut self, profile: veloc_profile::Profile) -> Self {
         self.profile = profile;
         self
+    }
+
+    pub fn decls(&self) -> &'f FuncDecls {
+        self.decls
     }
 
     pub fn function(&self) -> &FuncBody {

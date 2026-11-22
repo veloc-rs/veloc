@@ -79,15 +79,9 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
                     .storage
                     .formats
                     .iter()
+                    .chain(defs.storage.alternatives.iter().map(|alt| &alt.format))
                     .filter(|f| !helper_types.contains(f.name.as_str()))
                     .map(|f| f.name.clone())
-                    .chain(
-                        defs.storage
-                            .alternatives
-                            .iter()
-                            .filter(|a| !helper_types.contains(a.name.as_str()))
-                            .map(|a| a.name.clone()),
-                    )
                     .collect::<Vec<_>>(),
                 crate::model::metadata::record_type(&defs.ops),
             ) + &defs.storage.instructions();
@@ -169,6 +163,9 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
                 .unwrap();
             }
             ops.push_str("            _ => None,\n        }\n    }\n}\n");
+            ops.push_str(&classification(defs, "allows_notrap_modifier", |op| {
+                op.allows_notrap
+            }));
             ops.push_str(&classification(defs, "has_signature", |op| {
                 op.signature_source.is_some()
             }));

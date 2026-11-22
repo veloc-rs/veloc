@@ -612,3 +612,13 @@ op Transfer(target: Value<Type::PTR>, hint: i64) -> () {
 // run: opgen-error
 // check: sequence fields are supported only in standalone operand storage layouts
 struct Data { values: sequence(i64) }
+
+// ----- storage/memory-flags-must-have-one-source
+// run: opgen-error
+// check: a layout has at most one memory flags source
+struct AccessOptions { flags: MemFlags }
+struct Access { flags: MemFlags, options: AccessOptions }
+op Access(flags: MemFlags, options: AccessOptions) -> () {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = Access { flags, options };
+}

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use crate::Error;
-use crate::model::records::{Policy, RecordDef};
+use crate::model::records::{Policy, PropertyType, RecordDef};
 use crate::syntax::{Decl, DeclKind, Kind, Node};
 
 pub(crate) mod compact;
@@ -31,11 +31,27 @@ pub(crate) fn constructor_name(name: &str) -> String {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Format {
+    pub notrap: NotrapStorage,
     pub name: String,
     pub arity: Option<usize>,
     pub fields: Vec<Field>,
+}
+
+impl Format {
+    /// Match logical fields while leaving storage-only site guarantees intact.
+    pub(crate) fn pattern(&self, ty: &str, bind: impl Fn(usize, &Field) -> String) -> String {
+        let fields = self
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, field)| format!("{}: {}", field.name, bind(i, field)))
+            .chain(["..".into()])
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{ty}::{} {{ {fields} }}", self.name)
+    }
 }
 
 #[derive(Debug)]
@@ -49,15 +65,15 @@ pub(crate) struct Storage {
 
 #[derive(Debug)]
 pub(crate) struct Alternative {
-    pub name: String,
-    pub fields: Vec<Field>,
-    pub formats: Vec<String>,
+    pub format: Format,
+    pub targets: Vec<String>,
     pub text: Node,
     pub constraints: Option<Node>,
 }
 
 #[derive(Debug)]
 struct Layout {
+    notrap: NotrapStorage,
     offset: usize,
     name: String,
     fields: Vec<Field>,
@@ -78,6 +94,7 @@ pub(crate) struct Field {
 
 #[derive(Clone, Debug)]
 pub(crate) enum FieldType {
+    Notrap,
     Named(String),
     Values(usize),
 }
@@ -112,6 +129,7 @@ impl FieldType {
 
     fn schema_type(&self) -> String {
         match self {
+            Self::Notrap => "bool".into(),
             Self::Named(name) => name.clone(),
             Self::Values(n) => format!("values({n})"),
         }
@@ -147,7 +165,66 @@ impl Field {
     }
 }
 
+/// Physical representation of the site guarantee shared by writers and views.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum NotrapStorage {
+    None,
+    Field,
+    MemFlags {
+        index: usize,
+        member: Option<String>,
+    },
+}
+
+impl NotrapStorage {
+    fn resolve(
+        fields: &[Field],
+        records: &[RecordDef],
+        allows_notrap: bool,
+    ) -> Result<Self, &'static str> {
+        let mut storage = if allows_notrap {
+            Self::Field
+        } else {
+            Self::None
+        };
+        let mut set_flags = |index, member: Option<String>| {
+            if matches!(storage, Self::MemFlags { .. }) {
+                return Err("a layout has at most one memory flags source");
+            }
+            storage = Self::MemFlags { index, member };
+            Ok(())
+        };
+        for (index, field) in fields.iter().enumerate() {
+            if field.ty.named("MemFlags") {
+                set_flags(index, None)?;
+            } else if let Some(record) = generate::record(field, records) {
+                for member in &record.fields {
+                    if matches!(&member.ty, PropertyType::Named(name) if name == "MemFlags") {
+                        set_flags(index, Some(member.name.clone()))?;
+                    }
+                }
+            }
+        }
+        Ok(storage)
+    }
+}
+
 impl Layout {
+    fn logical_format(&self) -> Format {
+        Format {
+            name: self.name.clone(),
+            arity: self.arity(),
+            fields: self.logical_fields().cloned().collect(),
+            notrap: self.notrap.clone(),
+        }
+    }
+
+    fn logical_fields(&self) -> impl Iterator<Item = &Field> {
+        self.fields
+            .iter()
+            .filter(|f| !matches!(f.ty, FieldType::Notrap))
+    }
+
     fn arity(&self) -> Option<usize> {
         self.fields
             .iter()
@@ -250,30 +327,24 @@ pub(crate) fn compile(
         }
         let method = constructor_name(&record.name);
         crate::model::identifier(source, record.offset, &method)?;
-        if !methods.insert(method.clone()) {
-            return Err(Error::at(
-                source,
-                record.offset,
-                format!("conflicting instruction constructor `{method}`"),
-            ));
+        let layout = parse_layout(record, binding, records, source, &properties, &data.rust)?;
+        let flagged =
+            (layout.notrap == NotrapStorage::Field).then(|| format!("{method}_with_notrap"));
+        for name in std::iter::once(method).chain(flagged) {
+            if !methods.insert(name.clone()) {
+                return Err(Error::at(
+                    source,
+                    record.offset,
+                    format!("conflicting instruction constructor `{name}`"),
+                ));
+            }
         }
-        layouts.push(parse_layout(
-            record,
-            binding,
-            records,
-            source,
-            &properties,
-            &data.rust,
-        )?);
+        layouts.push(layout);
     }
     let formats = layouts
         .iter()
         .filter(|layout| layout.canonical)
-        .map(|layout| Format {
-            name: layout.name.clone(),
-            arity: layout.arity(),
-            fields: layout.fields.clone(),
-        })
+        .map(Layout::logical_format)
         .collect::<Vec<_>>();
     validate_links(&layouts, &formats, source)?;
     // Only records actually used by instruction layouts belong in operand storage.
@@ -325,9 +396,8 @@ pub(crate) fn compile(
             .filter(|layout| !layout.canonical)
             .map(|layout| Alternative {
                 constraints: layout.constraints.clone(),
-                name: layout.name.clone(),
-                fields: layout.fields.clone(),
-                formats: match &layout.format {
+                format: layout.logical_format(),
+                targets: match &layout.format {
                     FormatSource::Fixed(name) => vec![name.clone()],
                     FormatSource::Arity { formats, .. } => formats.clone(),
                 },
@@ -417,6 +487,7 @@ fn parse_layout(
                 name: f.name.clone(),
                 policy: f.policy.clone(),
                 rust: match &ty {
+                    FieldType::Notrap => "bool".into(),
                     FieldType::Named(name) => rust.qualified(name),
                     FieldType::Values(n) => format!("[{}; {n}]", rust.qualified("Value")),
                 },
@@ -457,17 +528,9 @@ fn parse_layout(
         }
     }
     let record = binding.unwrap_or(record);
-    let flags_fields = fields
-        .iter()
-        .filter(|f| f.ty.named("MemFlags") || f.ty.named("VectorMemOptions"))
-        .count();
-    if flags_fields > 1 {
-        return Err(Error::at(
-            source,
-            record.offset,
-            "a layout has at most one memory flags source",
-        ));
-    }
+    let allows_notrap = users.iter().any(|op| op.fields.contains_key("modifiers"));
+    let notrap = NotrapStorage::resolve(&fields, records, allows_notrap)
+        .map_err(|message| Error::at(source, record.offset, message))?;
 
     let (format, text) = if is_format {
         (FormatSource::Fixed(record.name.clone()), None)
@@ -538,7 +601,8 @@ fn parse_layout(
         })?;
         (format, Some(text))
     };
-    let layout = Layout {
+    let mut layout = Layout {
+        notrap,
         constraints: record.fields.get("verify").cloned(),
         offset: record.offset,
         name: record.name.clone(),
@@ -550,6 +614,21 @@ fn parse_layout(
     };
 
     validate_runtime_contract(&layout, source)?;
+    if layout.notrap == NotrapStorage::Field {
+        if layout.fields.iter().any(|f| f.name == "notrap") {
+            return Err(Error::at(
+                source,
+                layout.offset,
+                "notrap conflicts with the instruction modifier",
+            ));
+        }
+        layout.fields.push(Field {
+            name: "notrap".into(),
+            ty: FieldType::Notrap,
+            rust: "bool".into(),
+            policy: Policy::default(),
+        });
+    }
     Ok(layout)
 }
 
@@ -756,6 +835,7 @@ fn value_only(fields: &[Field]) -> bool {
     fields.iter().all(|f| {
         f.policy.references.is_operand()
             || f.ty.named("Opcode")
+            || matches!(f.ty, FieldType::Notrap)
             || matches!(f.ty, FieldType::Values(_))
     })
 }

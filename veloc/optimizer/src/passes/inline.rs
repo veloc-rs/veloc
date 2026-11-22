@@ -60,7 +60,13 @@ impl ModulePass for DevirtualizePass {
                 .flat_map(|b| body.layout().block_insts(b))
                 .collect();
             for inst in insts {
-                let InstView::CallIndirect { ptr, args, sig_id } = body.dfg().inst(inst) else {
+                let InstView::CallIndirect {
+                    ptr,
+                    args,
+                    sig_id,
+                    notrap,
+                } = body.dfg().inst(inst)
+                else {
                     continue;
                 };
                 let Some(source) = body.dfg().value_inst(ptr) else {
@@ -73,7 +79,8 @@ impl ModulePass for DevirtualizePass {
                     continue;
                 }
                 let args = args.to_vec();
-                body.edit().replace_inst(inst, |w| w.call(func_id, &args));
+                body.edit()
+                    .replace_inst(inst, |w| w.call_with_notrap(func_id, &args, notrap));
                 changed += 1;
             }
         }

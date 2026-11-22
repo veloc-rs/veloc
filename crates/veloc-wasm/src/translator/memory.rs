@@ -1,7 +1,12 @@
 use super::WasmTranslator;
 use crate::vm::{TrapCode, VMMemory};
-use veloc::mir::{IntCC, MemFlags, Type as VelocType, Value};
+use veloc::mir::{IntCC, MemFlags, Region, Type as VelocType, Value};
 use wasmparser::{BinaryReaderError, MemArg, Operator};
+
+// Descriptors and other runtime storage use the default region. All linear
+// accesses share one separate region because imports can name the same memory.
+const DESCRIPTOR_FLAGS: MemFlags = MemFlags::new().with_notrap(true);
+const LINEAR_FLAGS: MemFlags = MemFlags::new().with_region(Region(2));
 
 // Wasm scalar linear-memory representation, not the native pointer/ABI layout.
 const LINEAR_MEMORY_LAYOUT: veloc_types::DataLayout = {
@@ -125,7 +130,7 @@ impl<'a> WasmTranslator<'a> {
                 let (_, len_var) = self.memory_vars[mem as usize];
                 let size_bytes = self.builder.use_var(len_var);
                 let page_size = self.builder.ins().i64const((65536) as i64);
-                let size_pages = self.builder.ins().idiv_u(size_bytes, page_size);
+                let size_pages = self.builder.ins().idiv_u_notrap(size_bytes, page_size);
                 let size_i32 = self.builder.ins().wrap(size_pages, VelocType::I32);
                 self.stack.push(size_i32);
             }
@@ -197,19 +202,19 @@ impl<'a> WasmTranslator<'a> {
             let def_ptr = self.builder.ins().load(
                 vmctx,
                 offset,
-                MemFlags::new().with_notrap(true).with_alignment(alignment),
+                DESCRIPTOR_FLAGS.with_alignment(alignment),
                 VelocType::PTR,
             );
             let base = self.builder.ins().load(
                 def_ptr,
                 VMMemory::base_offset(),
-                MemFlags::new().with_notrap(true).with_alignment(8),
+                DESCRIPTOR_FLAGS.with_alignment(8),
                 VelocType::PTR,
             );
             let length = self.builder.ins().load(
                 def_ptr,
                 VMMemory::current_length_offset(),
-                MemFlags::new().with_notrap(true).with_alignment(8),
+                DESCRIPTOR_FLAGS.with_alignment(8),
                 VelocType::I64,
             );
             (base, length)
@@ -218,13 +223,13 @@ impl<'a> WasmTranslator<'a> {
             let base = self.builder.ins().load(
                 vmctx,
                 offset + VMMemory::base_offset(),
-                MemFlags::new().with_notrap(true).with_alignment(8),
+                DESCRIPTOR_FLAGS.with_alignment(8),
                 VelocType::PTR,
             );
             let length = self.builder.ins().load(
                 vmctx,
                 offset + VMMemory::current_length_offset(),
-                MemFlags::new().with_notrap(true).with_alignment(8),
+                DESCRIPTOR_FLAGS.with_alignment(8),
                 VelocType::I64,
             );
             (base, length)
@@ -267,11 +272,10 @@ impl<'a> WasmTranslator<'a> {
             },
         );
         // Wasm's alignment annotation is a hint, not an address guarantee.
-        let flags = MemFlags::new();
         let res = self
             .builder
             .ins()
-            .load(actual_ptr, memarg.offset as u32, flags, ty);
+            .load(actual_ptr, memarg.offset as u32, LINEAR_FLAGS, ty);
         self.stack.push(res);
     }
 
@@ -327,12 +331,11 @@ impl<'a> WasmTranslator<'a> {
             };
             self.builder
                 .ins()
-                .load(base, offset, MemFlags::new(), VelocType::I8);
+                .load(base, offset, LINEAR_FLAGS, VelocType::I8);
         }
-        let flags = MemFlags::new();
         self.builder
             .ins()
-            .store(actual_ptr, val, memarg.offset as u32, flags);
+            .store(actual_ptr, val, memarg.offset as u32, LINEAR_FLAGS);
     }
 
     pub(super) fn get_memory_base(&mut self, index: u32) -> Value {

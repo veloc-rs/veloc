@@ -21,13 +21,7 @@ pub(crate) fn generate(defs: &Definitions) -> String {
                 .iter()
                 .find(|f| f.name == op.format)
                 .unwrap();
-            let fields = format
-                .fields
-                .iter()
-                .enumerate()
-                .map(|(i, f)| format!("{}: _f{i}", f.name))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let pattern = format.pattern("Self", |i, _| format!("_f{i}"));
             let projections: BTreeMap<_, _> = crate::model::access::projections(
                 op,
                 |name| {
@@ -41,8 +35,7 @@ pub(crate) fn generate(defs: &Definitions) -> String {
             .into_iter()
             .collect();
             let mut body = format!(
-                "let Self::{} {{ {fields} }} = self else {{ unreachable!(\"validated transfer storage\") }};\n",
-                format.name
+                "let {pattern} = self else {{ unreachable!(\"validated transfer storage\") }};\n"
             );
             body.push_str(&body_for(defs, op, &projections));
             body

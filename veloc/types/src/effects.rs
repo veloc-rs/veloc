@@ -114,7 +114,19 @@ impl core::fmt::Display for MemoryEffect {
     }
 }
 
-/// Per-access alignment, volatility and validity. Alignment is a conservative power-of-two
+/// Module-wide alias region. Overlapping accesses must use the same region.
+/// An access with no explicit region belongs to region zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(transparent)]
+pub struct Region(pub u8);
+
+impl Region {
+    pub fn is_disjoint(self, other: Self) -> bool {
+        self != other
+    }
+}
+
+/// Per-access alignment, volatility, validity and alias region. Alignment is a conservative power-of-two
 /// guarantee, saturated at the largest value supported by the compact encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
@@ -166,6 +178,14 @@ impl MemFlags {
     }
     pub const fn with_notrap(self, value: bool) -> Self {
         Self((self.0 & !Self::NOTRAP) | ((value as u16) << 5))
+    }
+
+    pub const fn region(self) -> Region {
+        Region((self.0 >> 8) as u8)
+    }
+
+    pub const fn with_region(self, region: Region) -> Self {
+        Self((self.0 & 0xff) | ((region.0 as u16) << 8))
     }
 }
 

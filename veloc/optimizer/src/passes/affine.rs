@@ -276,7 +276,7 @@ impl Symbolic<'_> {
     }
     fn operation(&mut self, body: &FuncBody, state: &State, inst: Inst) -> Option<Word> {
         let view = body.dfg().inst(inst);
-        if let InstView::Call { func_id, args } = view {
+        if let InstView::Call { func_id, args, .. } = view {
             return self.call(
                 func_id,
                 args.iter()

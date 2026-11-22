@@ -31,13 +31,13 @@ pub(super) fn parse(
     schema: &Schema,
     records: &[RecordDef],
     arity: Option<usize>,
-    opcode: &str,
+    canonical: &Op,
     rust: &RustTypes,
 ) -> String {
     let mut out = String::new();
     if let Some(path) = &schema.flags {
         writeln!(out, "let {} = flags;", leaf(op, path)).unwrap();
-    } else {
+    } else if !canonical.allows_notrap {
         out.push_str("if flags != crate::MemFlags::empty() { return Err(input.error(\"memory flags are not supported by this operation\")); }\n");
     }
     let variadic = match schema.args.as_slice() {
@@ -156,7 +156,13 @@ pub(super) fn parse(
     let construction = match host {
         Host::Packed(format) => format!(
             "self.func.edit().create_inst({})",
-            crate::generate::packing::constructor(op, format, opcode, parameter)
+            crate::generate::packing::constructor(
+                op,
+                format,
+                &canonical.name,
+                parameter,
+                (canonical.allows_notrap && schema.flags.is_none()).then_some("flags.is_notrap()")
+            )
         ),
         Host::Operands(storage) => storage
             .construction(op, "self", |name| {
@@ -309,18 +315,8 @@ pub(super) fn print(
     let mut out = String::new();
     match host {
         Host::Packed(format) => {
-            let fields = format
-                .fields
-                .iter()
-                .enumerate()
-                .map(|(i, f)| format!("{}: _s{i}", f.name))
-                .collect::<Vec<_>>()
-                .join(", ");
-            if fields.is_empty() {
-                writeln!(out, "crate::InstView::{} => {{", format.name).unwrap();
-            } else {
-                writeln!(out, "crate::InstView::{} {{ {fields} }} => {{", format.name).unwrap();
-            }
+            let pattern = format.pattern("crate::InstView", |i, _| format!("_s{i}"));
+            writeln!(out, "{pattern} => {{").unwrap();
             for (index, field) in format.fields.iter().enumerate() {
                 let expected = match &field.ty {
                     FieldType::Named(_) if field.policy.references.is_operands() => arity,
@@ -375,7 +371,13 @@ pub(super) fn print(
         .flags
         .as_ref()
         .map(|p| local(op, p))
-        .unwrap_or_else(|| "crate::MemFlags::empty()".into());
+        .unwrap_or_else(|| {
+            if canonical.allows_notrap {
+                "crate::MemFlags::empty().with_notrap(data.is_notrap())".into()
+            } else {
+                "crate::MemFlags::empty()".into()
+            }
+        });
     writeln!(out, "self.fmt_head(f, {:?}, {flags})?;", canonical.mnemonic).unwrap();
     if !schema.args.is_empty() || !schema.named.is_empty() {
         out.push_str("let mut _separator = \" \";\n");

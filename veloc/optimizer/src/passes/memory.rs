@@ -1,9 +1,8 @@
-//! Bounded block-local forwarding and dead-store elimination for stack slots.
-//! Unknown aliases, lifetime effects and volatile accesses are barriers.
+//! Block-local forwarding and dead-store elimination for fixed-width memory accesses.
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use hashbrown::HashSet;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{FuncBody, Inst, InstView, Opcode, Type, Value, memory::Access};
+use veloc_mir::{FuncBody, FuncDecls, Inst, InstView, Opcode, Type, Value, memory::Access};
 use veloc_types::DataLayout;
 
 const MAX_CELLS: usize = 64;
@@ -22,7 +21,8 @@ impl FunctionPass for MemoryPass {
         metrics: &Profile,
     ) -> PassOutcome {
         let layout = &config.data_layout;
-        if run_memory(am.function_mut(), layout, metrics) {
+        let decls = am.decls();
+        if run_memory(am.function_mut(), decls, layout, metrics) {
             PassOutcome::Changed
         } else {
             PassOutcome::Unchanged
@@ -34,34 +34,25 @@ struct Cell {
     access: Access,
     ty: Type,
     value: Value,
-    // Deletable until a read observes it.
+    // A nontrapping store that no intervening read or trap can observe.
     pending_store: Option<Inst>,
 }
 
-impl Cell {
-    fn overlaps(&self, access: Access) -> bool {
-        self.access.base == access.base
-            && i128::from(self.access.offset) < access.end()
-            && i128::from(access.offset) < self.access.end()
+fn private_slots(func: &FuncBody) -> HashSet<Value> {
+    let mut slots: HashSet<_> = func.stack_slots().iter().copied().collect();
+    if slots.is_empty() {
+        return slots;
     }
-}
-
-fn escaped_slots(func: &FuncBody) -> HashSet<Value> {
-    let mut escaped = HashSet::new();
     let mut visited = HashSet::new();
     let mut mark_escape = |mut value| {
         // Follow derived pointers to their allocation regardless of chain length.
         while visited.insert(value) {
-            if matches!(
-                func.dfg().value_def(value),
-                veloc_mir::ValueDef::StackSlot { .. }
-            ) {
-                escaped.insert(value);
-                break;
-            }
             match func.dfg().value_inst_view(value) {
                 Some(InstView::PtrOffset { ptr, .. }) => value = ptr,
-                _ => break,
+                _ => {
+                    slots.remove(&value);
+                    break;
+                }
             }
         }
     };
@@ -79,11 +70,17 @@ fn escaped_slots(func: &FuncBody) -> HashSet<Value> {
             }
         }
     }
-    escaped
+    slots
 }
 
-pub fn run_memory(func: &mut FuncBody, layout: &DataLayout, metrics: &Profile) -> bool {
-    let escaped = escaped_slots(func);
+pub fn run_memory(
+    func: &mut FuncBody,
+    decls: &FuncDecls,
+    layout: &DataLayout,
+    metrics: &Profile,
+) -> bool {
+    let private = private_slots(func);
+    let mut forwarded = false;
     let mut dead = HashSet::new();
     let mut next = func.layout().block_order().next();
     while let Some(block) = next {
@@ -96,7 +93,7 @@ pub fn run_memory(func: &mut FuncBody, layout: &DataLayout, metrics: &Profile) -
                 dead.extend(
                     cells
                         .iter()
-                        .filter(|c| !escaped.contains(&c.access.base))
+                        .filter(|c| private.contains(&c.access.base))
                         .filter_map(|c| c.pending_store),
                 );
                 break;
@@ -106,31 +103,36 @@ pub fn run_memory(func: &mut FuncBody, layout: &DataLayout, metrics: &Profile) -
                 cells.clear();
                 continue;
             }
-            let Some(access) = func
-                .access(inst, layout)
-                .filter(|a| func.dfg().stack_slot_layout(a.base).is_some())
-            else {
-                if !view.memory_effect().is_none() || view.opcode().spec().may_trap() {
+            let Some(access) = func.access(inst, layout) else {
+                if !view.memory_effect().is_none() || view.may_trap(decls) {
                     cells.clear();
                 }
                 continue;
             };
 
+            let may_trap =
+                view.may_trap(decls) && func.dfg().stack_slot_layout(access.base).is_none();
+            if may_trap {
+                // A trap can expose earlier writes before a later overwrite executes.
+                for cell in &mut cells {
+                    cell.pending_store = None;
+                }
+            }
+
             let (value, pending_store) = match view {
                 InstView::Store { value, .. } => {
                     cells.retain(|cell| {
-                        if !cell.overlaps(access) {
+                        if !func.may_alias(access, cell.access, layout) {
                             return true;
                         }
-                        if access.offset <= cell.access.offset
-                            && access.end() >= cell.access.end()
+                        if access.covers(cell.access)
                             && let Some(store) = cell.pending_store
                         {
                             dead.insert(store);
                         }
                         false
                     });
-                    (value, Some(inst))
+                    (value, (!may_trap).then_some(inst))
                 }
                 InstView::Load { .. } => {
                     let result = func.dfg().first_result(inst).expect("load result");
@@ -140,13 +142,18 @@ pub fn run_memory(func: &mut FuncBody, layout: &DataLayout, metrics: &Profile) -
                             && cell.access.offset == access.offset
                             && cell.ty == ty
                     }) {
-                        func.edit().replace_all_uses(result, previous.value);
-                        dead.insert(inst);
+                        if func.dfg().uses(result).next().is_some() {
+                            func.edit().replace_all_uses(result, previous.value);
+                            forwarded = true;
+                        }
+                        if !may_trap {
+                            dead.insert(inst);
+                        }
                         continue;
                     }
                     // A retained read observes any overlapping store.
                     for cell in &mut cells {
-                        if cell.overlaps(access) {
+                        if func.may_alias(access, cell.access, layout) {
                             cell.pending_store = None;
                         }
                     }
@@ -167,7 +174,7 @@ pub fn run_memory(func: &mut FuncBody, layout: &DataLayout, metrics: &Profile) -
         next = func.layout().next_block(block);
     }
     if dead.is_empty() {
-        return false;
+        return forwarded;
     }
     metrics.count("memory.removed_insts", dead.len() as u64);
     func.edit()

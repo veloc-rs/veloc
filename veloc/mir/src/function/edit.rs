@@ -24,7 +24,7 @@ pub struct FuncEditor<'a> {
 /// instruction-building surface at the current insertion point.
 pub struct InstCursor<'ctx, 'body> {
     pub(crate) editor: FuncEditor<'body>,
-    pub(crate) decls: &'ctx cranelift_entity::PrimaryMap<crate::FuncId, crate::FuncDecl>,
+    pub(crate) decls: &'ctx crate::FuncDecls,
     pub(crate) signatures: &'ctx veloc_types::Signatures,
     pub(crate) block: Block,
     // Stable anchor preserves emission order when inserting at block start.
@@ -48,7 +48,7 @@ impl<'a> FuncEditor<'a> {
     pub fn at_end<'ctx>(
         self,
         block: Block,
-        decls: &'ctx cranelift_entity::PrimaryMap<crate::FuncId, crate::FuncDecl>,
+        decls: &'ctx crate::FuncDecls,
         signatures: &'ctx veloc_types::Signatures,
     ) -> InstCursor<'ctx, 'a> {
         assert!(self.body.layout.contains_block(block), "block not placed");
@@ -65,7 +65,7 @@ impl<'a> FuncEditor<'a> {
     pub fn at_start<'ctx>(
         self,
         block: Block,
-        decls: &'ctx cranelift_entity::PrimaryMap<crate::FuncId, crate::FuncDecl>,
+        decls: &'ctx crate::FuncDecls,
         signatures: &'ctx veloc_types::Signatures,
     ) -> InstCursor<'ctx, 'a> {
         assert!(self.body.layout.contains_block(block), "block not placed");

@@ -670,7 +670,7 @@ fn compile_function<'a>(
                     emit_bytes(&mut asm, &[0x48, 0x0f, 0x45, 0xc1])?;
                     emit_one(&mut asm, &STORE_RAX, slot(*result)?)?;
                 }
-                InstView::Call { func_id, args } => {
+                InstView::Call { func_id, args, .. } => {
                     let target = module.function(func_id);
                     let sig = &module.signatures()[target.decl.signature];
                     if sig.params().len() != args.len()
@@ -691,7 +691,9 @@ fn compile_function<'a>(
                         }
                     }
                 }
-                InstView::CallIndirect { ptr, args, sig_id } => {
+                InstView::CallIndirect {
+                    ptr, args, sig_id, ..
+                } => {
                     let sig = &module.signatures()[sig_id];
                     if sig.params().len() != args.len()
                         || sig.returns().len() != results_of_inst.len()
@@ -743,6 +745,7 @@ fn compile_function<'a>(
                 InstView::Binary {
                     opcode: opcode @ (Opcode::FAdd | Opcode::FSub | Opcode::FMul | Opcode::FDiv),
                     args,
+                    ..
                 } => {
                     let [result] = results_of_inst else {
                         return Err(unsupported("float binary arity"));
@@ -994,7 +997,7 @@ fn compile_function<'a>(
                     emit_one(&mut asm, &STORE_RAX, slot(*result)?)?;
                 }
                 InstView::Unreachable => emit_bytes(&mut asm, &[0x0f, 0x0b])?,
-                InstView::Binary { opcode, args }
+                InstView::Binary { opcode, args, .. }
                     if matches!(
                         opcode,
                         Opcode::IAdd
@@ -1037,7 +1040,7 @@ fn compile_function<'a>(
                     asm.emit(&Stencil { bytes, holes: &[] }, &[])?;
                     emit_one(&mut asm, &STORE_RAX, slot(*result)?)?;
                 }
-                InstView::Binary { opcode, args }
+                InstView::Binary { opcode, args, .. }
                     if matches!(
                         opcode,
                         Opcode::IDivS | Opcode::IDivU | Opcode::IRemS | Opcode::IRemU
@@ -1082,7 +1085,7 @@ fn compile_function<'a>(
                     }
                     emit_one(&mut asm, &STORE_RAX, slot(*result)?)?;
                 }
-                InstView::Binary { opcode, args }
+                InstView::Binary { opcode, args, .. }
                     if matches!(
                         opcode,
                         Opcode::IShl

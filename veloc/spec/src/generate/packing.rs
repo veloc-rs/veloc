@@ -2,7 +2,7 @@
 
 use crate::Error;
 use crate::model::{Binding, Definitions, Op, Param, ParamKind, TypeDef, TypeList};
-use crate::storage::{Alternative as LayoutAlternative, FieldType, Format};
+use crate::storage::{Alternative as LayoutAlternative, FieldType, Format, NotrapStorage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -12,8 +12,27 @@ pub(crate) fn constructor(
     format: &Format,
     opcode: &str,
     local: impl Fn(&str) -> String,
+    notrap: Option<&str>,
 ) -> String {
-    let write = crate::storage::compact::construction(op, format, opcode, local);
+    let mut write = crate::storage::compact::construction(op, format, opcode, local);
+    if let Some(flag) = notrap {
+        match &format.notrap {
+            NotrapStorage::Field => {
+                write.callee.push_str("_with_notrap");
+                write.args.push(flag.into());
+            }
+            NotrapStorage::MemFlags { index, member } => {
+                let arg = &mut write.args[*index];
+                *arg = match member {
+                    Some(member) => format!(
+                        "{{ let mut options = {arg}; options.{member} = options.{member}.with_notrap({flag}); options }}"
+                    ),
+                    None => format!("({arg}).with_notrap({flag})"),
+                };
+            }
+            NotrapStorage::None => unreachable!("checked modifier requires storage"),
+        }
+    }
     format!("move |writer: crate::InstWriter<'_>| {}", write.emit())
 }
 
@@ -37,7 +56,7 @@ pub(crate) fn prepare_alternatives(
             .formats
             .iter()
             .enumerate()
-            .filter_map(|(index, format)| alt.formats.contains(&format.name).then_some(index))
+            .filter_map(|(index, format)| alt.targets.contains(&format.name).then_some(index))
             .collect::<Vec<_>>();
         let base = defs
             .ops
@@ -54,8 +73,8 @@ pub(crate) fn prepare_alternatives(
             }
             continue;
         };
-        let (mut op, format) = alternate(base, alt, source)?;
-        op.inputs = crate::storage::compact::inputs(&op, &format);
+        let mut op = alternate(base, alt, source)?;
+        op.inputs = crate::storage::compact::inputs(&op, &alt.format);
         op.constraints = expressions.verify(
             source,
             alt.constraints.clone(),
@@ -70,7 +89,7 @@ pub(crate) fn prepare_alternatives(
         )?;
         alternatives.push(Alternative {
             op,
-            format,
+            format: alt.format.clone(),
             targets,
         });
     }
@@ -80,10 +99,10 @@ pub(crate) fn prepare_alternatives(
 
 /// An alternate storage layout exposes its own text-facing fields. Pool handles
 /// become structured properties, while its primary list retains canonical arity.
-fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Format), Error> {
+fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<Op, Error> {
     let mut params = Vec::new();
     let mut packing = BTreeMap::new();
-    for field in &alt.fields {
+    for field in &alt.format.fields {
         let FieldType::Named(ty) = &field.ty else {
             return Err(Error::at(
                 source,
@@ -117,35 +136,29 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
         });
         packing.insert(field.name.clone(), binding);
     }
-    Ok((
-        Op {
-            declaration: op.declaration.clone(),
-            offset: alt.text.offset,
-            name: op.name.clone(),
-            mnemonic: op.mnemonic.clone(),
-            meta: op.meta.clone(),
-            format: alt.name.clone(),
-            signature: TypeDef {
-                operands: TypeList::Fixed(Vec::new()),
-                results: TypeList::Fixed(Vec::new()),
-            },
-            params,
-            inputs: Default::default(),
-            projection: crate::model::Projection::Packed(packing),
-            signature_source: None,
-            text: Some(alt.text.clone()),
-            traits: BTreeSet::new(),
-            constraints: Vec::new(),
-            identity: None,
-            absorbing: None,
-            semantics: None,
+    Ok(Op {
+        allows_notrap: false,
+        declaration: op.declaration.clone(),
+        offset: alt.text.offset,
+        name: op.name.clone(),
+        mnemonic: op.mnemonic.clone(),
+        meta: op.meta.clone(),
+        format: alt.format.name.clone(),
+        signature: TypeDef {
+            operands: TypeList::Fixed(Vec::new()),
+            results: TypeList::Fixed(Vec::new()),
         },
-        Format {
-            name: alt.name.clone(),
-            arity: None,
-            fields: alt.fields.clone(),
-        },
-    ))
+        params,
+        inputs: Default::default(),
+        projection: crate::model::Projection::Packed(packing),
+        signature_source: None,
+        text: Some(alt.text.clone()),
+        traits: BTreeSet::new(),
+        constraints: Vec::new(),
+        identity: None,
+        absorbing: None,
+        semantics: None,
+    })
 }
 
 pub(crate) struct Builder {
@@ -213,7 +226,25 @@ pub(crate) fn builder(
     builder: &Builder,
     rust: &crate::model::records::RustTypes,
 ) -> String {
-    let name = op.method_name();
+    let mut methods = builder_method(op, format, builder, rust, false);
+    if op.allows_notrap {
+        methods.push_str("    /// The caller guarantees that this instruction cannot trap at its current site.\n");
+        methods.push_str(&builder_method(op, format, builder, rust, true));
+    }
+    methods
+}
+
+fn builder_method(
+    op: &Op,
+    format: &Format,
+    builder: &Builder,
+    rust: &crate::model::records::RustTypes,
+    notrap: bool,
+) -> String {
+    let mut name = op.method_name();
+    if notrap {
+        name.push_str("_notrap");
+    }
     let inferred = &builder.inferred;
     let typed = inferred.is_none() && op.signature_source.is_none();
     let mut params = String::from("&mut self");
@@ -232,7 +263,13 @@ pub(crate) fn builder(
     if typed {
         params.push_str(", ty: crate::Type");
     }
-    let constructor = crate::generate::packing::constructor(op, format, &op.name, str::to_owned);
+    let constructor = crate::generate::packing::constructor(
+        op,
+        format,
+        &op.name,
+        str::to_owned,
+        notrap.then_some("true"),
+    );
     if let Some(source) = &op.signature_source {
         use crate::model::SignatureSource;
         let signature = match source {

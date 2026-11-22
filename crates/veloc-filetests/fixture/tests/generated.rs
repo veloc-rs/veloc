@@ -511,13 +511,13 @@ fn construction_does_not_validate_type_contracts() {
     ] {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(vec![], vec![], CallConv::Platform);
-        let id = module.declare_function(case.into(), sig, Linkage::Local);
+        let id = module.declare_function(case.into(), sig, Linkage::Local, false);
         let callee_sig = module.make_signature(
             vec![Type::F32],
             vec![Type::I64, Type::I32],
             CallConv::Platform,
         );
-        let callee = module.declare_function("callee".into(), callee_sig, Linkage::Import);
+        let callee = module.declare_function("callee".into(), callee_sig, Linkage::Import, false);
         let mut builder = module.define(id);
         let mut ins = builder.ins();
         let i = ins.i32const(1);
@@ -616,7 +616,7 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
         vec![Type::I32],
         CallConv::Platform,
     );
-    let id = module.declare_function("builders".into(), sig, Linkage::Local);
+    let id = module.declare_function("builders".into(), sig, Linkage::Local, false);
     let mut builder = module.define(id);
     let a = builder.func().params()[0];
     let b = builder.func().params()[1];

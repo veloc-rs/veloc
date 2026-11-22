@@ -137,7 +137,7 @@ pub(crate) fn generate(
                         schema,
                         &defs.data.records,
                         format.arity,
-                        &op.name,
+                        op,
                         &defs.data.rust,
                     ));
                     out.push_str("} else {\n");
@@ -148,7 +148,7 @@ pub(crate) fn generate(
                     &entry.schema,
                     &defs.data.records,
                     None,
-                    &op.name,
+                    op,
                     &defs.data.rust,
                 ));
                 if alternative.is_some() {
@@ -181,6 +181,15 @@ pub(crate) fn generate(
         }
     }
     out.push_str("}\n}\n}\n");
+    if matches!(output, Output::Parser) {
+        out.push_str("fn accepts_memory_flags(opcode: crate::Opcode) -> bool { match opcode {\n");
+        for entry in &plan.entries {
+            if entry.schema.flags.is_some() {
+                writeln!(out, "crate::Opcode::{} => true,", defs.ops[entry.op].name).unwrap();
+            }
+        }
+        out.push_str("_ => false, } }\n");
+    }
     out
 }
 
@@ -222,7 +231,7 @@ pub(crate) fn generate_operands(
                     &entry.schema,
                     &defs.data.records,
                     None,
-                    &op.name,
+                    op,
                     &defs.data.rust,
                 ));
             }

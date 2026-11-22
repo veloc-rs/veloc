@@ -288,7 +288,7 @@ fn can_fuse_operand(func: &FuncBody, user_inst: Inst, val: Value) -> bool {
     let constant = func.dfg().as_scalar_const(val);
 
     match idata {
-        InstView::Binary { opcode, args } => {
+        InstView::Binary { opcode, args, .. } => {
             if args[0] == args[1] {
                 return false;
             }
@@ -1276,7 +1276,7 @@ impl<'a> Compiler<'a> {
                 func_id,
                 captures,
             } => self.closure_site(inst, *func_id, captures, None),
-            InstView::TailCall { func_id, args } => ControlSite::TailCall {
+            InstView::TailCall { func_id, args, .. } => ControlSite::TailCall {
                 function: *func_id,
                 args: regs(args),
             },
@@ -1284,6 +1284,7 @@ impl<'a> Compiler<'a> {
                 opcode: IrOpcode::TailCallValue,
                 callee,
                 args,
+                ..
             } => ControlSite::TailCallValue {
                 callee: self.mapper.reg(*callee),
                 ty: self.func.dfg().value_type(*callee),
@@ -1293,6 +1294,7 @@ impl<'a> Compiler<'a> {
                 opcode: IrOpcode::CallValue,
                 callee,
                 args,
+                ..
             } => ControlSite::Call {
                 callee: self.mapper.reg(*callee),
                 ty: self.func.dfg().value_type(*callee),
@@ -1387,7 +1389,7 @@ impl<'a> Compiler<'a> {
         }
 
         match idata {
-            InstView::Binary { opcode, args } => self.emit_binary(inst, *opcode, args)?,
+            InstView::Binary { opcode, args, .. } => self.emit_binary(inst, *opcode, args)?,
             InstView::IntCompare { kind, args, .. } => self.emit_icmp(inst, *kind, args)?,
             InstView::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args)?,
             InstView::Load { ptr, offset, .. } => {
@@ -1437,9 +1439,9 @@ impl<'a> Compiler<'a> {
                 emit::RegMove(&mut self.code, dst, arg_reg);
             }
             InstView::Call { func_id, args, .. } => self.emit_call(inst, *func_id, *args),
-            InstView::CallIndirect { ptr, args, sig_id } => {
-                self.emit_call_indirect(inst, *ptr, *args, *sig_id)
-            }
+            InstView::CallIndirect {
+                ptr, args, sig_id, ..
+            } => self.emit_call_indirect(inst, *ptr, *args, *sig_id),
             InstView::CallIntrinsic {
                 intrinsic, args, ..
             } => self.emit_call_intrinsic(inst, *intrinsic, *args),
@@ -1560,7 +1562,7 @@ mod tests {
             vec![veloc_mir::Type::I32X4],
             CallConv::Platform,
         );
-        let func = module.declare_function("vector_identity".into(), sig, Linkage::Local);
+        let func = module.declare_function("vector_identity".into(), sig, Linkage::Local, false);
         {
             let mut builder = module.define(func);
             let param = builder.func().params()[0];
@@ -1585,7 +1587,7 @@ mod tests {
 
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(Vec::new(), vec![Type::I32], CallConv::Platform);
-        let func = module.declare_function("block_params".into(), sig, Linkage::Local);
+        let func = module.declare_function("block_params".into(), sig, Linkage::Local, false);
 
         {
             let mut builder = module.define(func);

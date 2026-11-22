@@ -17,7 +17,7 @@ mod comparison;
 pub use comparison::{FloatCC, IntCC};
 
 mod effects;
-pub use effects::{MemFlags, MemoryEffect, MemoryEffects, OpTraits};
+pub use effects::{MemFlags, MemoryEffect, MemoryEffects, OpTraits, Region};
 
 mod context;
 pub use context::TypeContext;

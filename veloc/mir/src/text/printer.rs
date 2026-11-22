@@ -5,7 +5,7 @@
 //! printed by semantic value so the output can be parsed into a fresh module.
 
 use crate::{
-    FuncId, FunctionRef, Inst, MemFlags, Module, SigId, Signature, Successors, Type, Value,
+    FuncId, FunctionRef, Inst, MemFlags, Module, Region, SigId, Signature, Successors, Type, Value,
     dfg::DataFlowGraph,
 };
 use core::fmt::{Display, Formatter, Result, Write};
@@ -89,6 +89,10 @@ impl<'a> InstPrinter<'a> {
         }
         if flags.alignment() != 1 {
             write!(f, ".align{}", flags.alignment())?;
+        }
+        let region = flags.region();
+        if region != Region::default() {
+            write!(f, ".region{}", region.0)?;
         }
         Ok(())
     }
@@ -247,6 +251,9 @@ impl<'a> FuncPrinter<'a> {
 
     pub fn print(&self, f: &mut dyn Write) -> Result {
         self.fmt_signature(f)?;
+        if self.func.decl.notrap {
+            f.write_str(" notrap")?;
+        }
         writeln!(f)?;
         let Some(body) = self.func.body else {
             return Ok(());

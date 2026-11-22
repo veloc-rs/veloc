@@ -128,7 +128,8 @@ fn values_construction_handles_inline_fixed_opcode_and_nullary_layouts() {
 fn generated_memory_builders_preserve_field_order() {
     let mut module = ModuleBuilder::new();
     let signature = module.make_signature(vec![Type::PTR, Type::PTR], vec![], CallConv::Platform);
-    let function = module.declare_function("memory_fields".into(), signature, Linkage::Export);
+    let function =
+        module.declare_function("memory_fields".into(), signature, Linkage::Export, false);
     let mut builder = module.define(function);
     let ptr = builder.func().params()[0];
     let value = builder.func().params()[1];
@@ -136,32 +137,53 @@ fn generated_memory_builders_preserve_field_order() {
 
     // Both operands are pointers: reversing them would still pass type validation.
     builder.ins().store(ptr, value, 16, flags);
-    let loaded = builder.ins().load(ptr, 16, flags, Type::PTR);
+    let loaded = builder.ins().load_notrap(ptr, 16, flags, Type::PTR);
+    let stride = builder.ins().i32const(4);
+    let lanes = builder.ins().load_stride_notrap(
+        ptr,
+        stride,
+        VectorMemOptions {
+            offset: 16,
+            flags,
+            scale: 1,
+            mask: None,
+            evl: None,
+        },
+        Type::I32X4,
+    );
 
-    let dfg = builder.func().dfg();
+    builder.ins().ret(&[]);
+    builder.seal_all_blocks();
+    let module = module.build();
+    module.validate().unwrap();
+    let dfg = module.function(function).body.unwrap().dfg();
     let instructions: Vec<_> = dfg.instructions().map(|(_, data)| data).collect();
     assert!(matches!(
         instructions[0],
         InstView::Store { ptr: actual_ptr, value: actual_value, offset: 16, flags: actual_flags }
             if (actual_ptr, actual_value, actual_flags) == (ptr, value, flags)
     ));
+    assert!(instructions[0].may_trap(module.decls()));
     assert!(matches!(
         dfg.inst(dfg.value_inst(loaded).unwrap()),
         InstView::Load { ptr: actual_ptr, offset: 16, flags: actual_flags }
-            if (actual_ptr, actual_flags) == (ptr, flags)
+            if (actual_ptr, actual_flags) == (ptr, flags.with_notrap(true))
     ));
+    for value in [loaded, lanes] {
+        let view = dfg.inst(dfg.value_inst(value).unwrap());
+        assert!(view.is_notrap());
+        assert!(!view.may_trap(module.decls()));
+        assert_eq!(view.memory_flags(), Some(flags.with_notrap(true)));
+    }
     assert_eq!(dfg.value_type(loaded), Type::PTR);
-
-    builder.ins().ret(&[]);
-    builder.seal_all_blocks();
-    module.validate().unwrap();
 }
 
 #[test]
 fn constant_values_preserve_bit_patterns() {
     let mut module = ModuleBuilder::new();
     let signature = module.make_signature(vec![], vec![], CallConv::Platform);
-    let function = module.declare_function("constant_bits".into(), signature, Linkage::Export);
+    let function =
+        module.declare_function("constant_bits".into(), signature, Linkage::Export, false);
     let mut builder = module.define(function);
 
     let bits = 0xfedc_ba98_7654_3210;
@@ -218,7 +240,7 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
 
     let mut module = ModuleBuilder::new();
     let sig = module.make_signature(vec![], vec![], CallConv::Platform);
-    let func = module.declare_function("constants".into(), sig, Linkage::Local);
+    let func = module.declare_function("constants".into(), sig, Linkage::Local, false);
     let mut builder = module.define(func);
     let bytes: Vec<_> = [1i32, -2, 3, 4]
         .into_iter()
@@ -277,7 +299,7 @@ fn vector_constant_construction_defers_data_checks_to_validation() {
     ] {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(vec![], vec![], CallConv::Platform);
-        let func = module.declare_function("constant".into(), sig, Linkage::Local);
+        let func = module.declare_function("constant".into(), sig, Linkage::Local, false);
         let mut builder = module.define(func);
         let result = builder.ins().dense_const(bytes, ty);
         let value = builder.func().dfg().as_const(result).unwrap();
@@ -292,5 +314,43 @@ fn vector_constant_construction_defers_data_checks_to_validation() {
             }
             None => module.validate().unwrap(),
         }
+    }
+}
+
+#[test]
+fn roundtrip_preserves_notrap_on_declarations_and_calls() {
+    let mut builder = ModuleBuilder::new();
+    let sig = builder.make_signature(vec![], vec![], CallConv::Platform);
+    let caller = builder.declare_function("caller".into(), sig, Linkage::Local, false);
+    let trusted = builder.declare_function("trusted".into(), sig, Linkage::Import, true);
+    let unknown = builder.declare_function("unknown".into(), sig, Linkage::Import, false);
+    let mut body = builder.define(caller);
+    let inherited = body.ins().call(trusted, &[]);
+    let explicit = body.ins().call_notrap(unknown, &[]);
+    let plain = body.ins().call(unknown, &[]);
+    let ptr = body.ins().func_addr(trusted);
+    let indirect = body.ins().call_indirect(sig, ptr, &[]);
+    let safe_indirect = body.ins().call_indirect_notrap(sig, ptr, &[]);
+    body.ins().tail_call(trusted, &[]);
+    let module = builder.build();
+    module.validate().unwrap();
+    let module = veloc_mir::ModuleParser::new()
+        .parse(&module.to_string())
+        .unwrap();
+    let body = module.function(caller).body.unwrap();
+    let dfg = body.dfg();
+    let decls = module.decls();
+    let tail = body.layout().last_inst(body.entry_block()).unwrap();
+    assert!(!dfg.inst(inherited).is_notrap());
+    assert!(!dfg.inst(tail).is_notrap());
+    for inst in [inherited, tail, explicit, safe_indirect] {
+        let view = dfg.inst(inst);
+        assert!(!view.may_trap(decls));
+        assert!(!view.can_erase(decls));
+        assert!(view.has_side_effects(decls));
+        assert!(!view.can_speculate());
+    }
+    for inst in [plain, indirect] {
+        assert!(dfg.inst(inst).may_trap(decls));
     }
 }

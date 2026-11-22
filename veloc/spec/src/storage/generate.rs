@@ -1,5 +1,7 @@
 //! Generate construction data, zero-allocation views and SSA-free storage.
-use super::{Access, Field, FieldType, FormatSource, Layout, OpcodeSource, value_only};
+use super::{
+    Access, Field, FieldType, FormatSource, Layout, NotrapStorage, OpcodeSource, value_only,
+};
 use crate::model::records::{PropertyType, RecordDef};
 use std::fmt::Write;
 
@@ -181,18 +183,19 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
             prefix.push('_');
         }
         let values = format!("{prefix}operands");
+        let parameter = |f: &Field| {
+            let ty = match f.access() {
+                Some(Access::Values) => "&[Value]".into(),
+                Some(Access::Edge) => "Successor<'_>".into(),
+                Some(Access::Edges) => "impl IntoIterator<Item = Successor<'a>>".into(),
+                _ => f.rust.clone(),
+            };
+            format!("{}: {ty}", f.name)
+        };
         let params = layout
             .fields
             .iter()
-            .map(|f| {
-                let ty = match f.access() {
-                    Some(Access::Values) => "&[Value]".into(),
-                    Some(Access::Edge) => "Successor<'_>".into(),
-                    Some(Access::Edges) => "impl IntoIterator<Item = Successor<'a>>".into(),
-                    _ => f.rust.clone(),
-                };
-                format!("{}: {ty}", f.name)
-            })
+            .map(parameter)
             .collect::<Vec<_>>()
             .join(", ");
         let lifetime = if layout.fields.iter().any(|f| f.policy.references.is_edges()) {
@@ -200,7 +203,23 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         } else {
             ""
         };
-        writeln!(out, "/// Construct this layout without validating its type contract.\npub fn {}{lifetime}(self, {params}) -> Inst {{\nlet mut {values} = Arguments::new();", super::constructor_name(&layout.name)).unwrap();
+        let mut method = super::constructor_name(&layout.name);
+        if layout.notrap == NotrapStorage::Field {
+            let plain = layout
+                .logical_fields()
+                .map(parameter)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let args = layout
+                .logical_fields()
+                .map(|f| f.name.as_str())
+                .chain(["false"])
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(out, "pub fn {method}{lifetime}(self, {plain}) -> Inst {{ self.{method}_with_notrap({args}) }}").unwrap();
+            method.push_str("_with_notrap");
+        }
+        writeln!(out, "/// Construct this layout without validating its type contract.\npub fn {method}{lifetime}(self, {params}) -> Inst {{\nlet mut {values} = Arguments::new();").unwrap();
         for (i, f) in layout.fields.iter().enumerate() {
             let name = &f.name;
             let expr = if record(f, records).is_some_and(split_record) {
@@ -314,28 +333,33 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         }
         out.push_str(if fallible { "} Ok(()) }\n" } else { "} }\n" });
     }
+    let flags_expr = |layout: &Layout| match &layout.notrap {
+        NotrapStorage::MemFlags {
+            index,
+            member: Some(member),
+        } => Some(format!("_field{index}.{member}")),
+        NotrapStorage::MemFlags {
+            index,
+            member: None,
+        } => Some(format!("*_field{index}")),
+        _ => None,
+    };
+    out.push_str("/// The producer guarantees this instruction cannot trap at its current site.\npub fn is_notrap(&self) -> bool { match self {\n");
+    for layout in layouts {
+        if let Some(flags) = flags_expr(layout) {
+            writeln!(out, "{} => ({flags}).is_notrap(),", layout.pattern()).unwrap();
+        } else if layout.notrap == NotrapStorage::Field {
+            writeln!(out, "Self::{} {{ notrap, .. }} => *notrap,", layout.name).unwrap();
+        }
+    }
+    out.push_str("_ => false, } }\n");
     out.push_str("pub fn memory_flags(&self) -> Option<MemFlags> { match self {\n");
     for layout in layouts {
-        let expr = layout
-            .fields
-            .iter()
-            .enumerate()
-            .find_map(|(i, f)| {
-                if f.ty.named("MemFlags") {
-                    Some(format!("Some(*_field{i})"))
-                } else {
-                    record(f, records)
-                        .and_then(|r| {
-                            r.fields
-                                .iter()
-                                .find(|f| f.ty == PropertyType::Named("MemFlags".into()))
-                        })
-                        .map(|f| format!("Some(_field{i}.{})", f.name))
-                }
-            })
-            .unwrap_or("None".into());
-        writeln!(out, "{} => {expr},", layout.pattern()).unwrap();
+        if let Some(flags) = flags_expr(layout) {
+            writeln!(out, "{} => Some({flags}),", layout.pattern()).unwrap();
+        }
     }
+    out.push_str("_ => None,\n");
     out.push_str("} }\n}\n");
     out.push_str(&super::compact::generate(layouts, records));
     edit_successors(&mut out, layouts);
@@ -393,7 +417,7 @@ fn from_values(out: &mut String, layouts: &[Layout]) {
     {
         let arity = layout.arity().unwrap();
         let mut index = 0;
-        let fields = layout.fields.iter().map(|f| {
+        let fields = layout.logical_fields().map(|f| {
             let expr = match &f.ty {
                 FieldType::Values(n) => {
                     let i = index;
@@ -480,7 +504,11 @@ fn import_view(out: &mut String, layouts: &[Layout], records: &[RecordDef]) {
         writeln!(
             out,
             "assert!(reader.0.is_empty(), \"operand count mismatch\"); self.{}({args}) }},",
-            super::constructor_name(&layout.name)
+            if layout.notrap == NotrapStorage::Field {
+                format!("{}_with_notrap", super::constructor_name(&layout.name))
+            } else {
+                super::constructor_name(&layout.name)
+            }
         )
         .unwrap();
     }

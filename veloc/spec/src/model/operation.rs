@@ -101,6 +101,21 @@ pub(super) fn parse(
             )),
         })
         .transpose()?;
+    let allows_notrap = if let Some(modifiers) = fields.optional("modifiers") {
+        if !matches!(storage_defs.strategy, storage::Strategy::Packed)
+            || !matches!(&modifiers.kind, Kind::List(items) if matches!(items.as_slice(),
+                [Node { kind: Kind::Name(name), .. }] if name == "notrap"))
+        {
+            return Err(Error::at(
+                source,
+                modifiers.offset,
+                "expected modifiers = [notrap] on a packed instruction",
+            ));
+        }
+        true
+    } else {
+        false
+    };
     let text = fields.optional("text");
     let mut meta_node = fields.take("meta")?;
     expressions.metadata(source, &mut meta_node, vocabulary)?;
@@ -146,8 +161,10 @@ pub(super) fn parse(
         vocabulary,
         &traits,
         semantics.is_some(),
+        allows_notrap,
     )?;
     let mut op = Op {
+        allows_notrap,
         declaration,
         offset: fields.offset,
         name: fields.name,

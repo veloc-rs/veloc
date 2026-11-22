@@ -4,7 +4,7 @@ use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use cranelift_entity::SecondaryMap;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::text::printer::InstPrinter;
-use veloc_mir::{FuncBody, Inst, Value, ValueDef};
+use veloc_mir::{FuncBody, FuncDecls, Inst, Value, ValueDef};
 
 const DCE: &str = "dce";
 
@@ -24,9 +24,10 @@ impl FunctionPass for DcePass {
         config: &OptConfig,
         metrics: &Profile,
     ) -> PassOutcome {
+        let decls = am.decls();
         let func = am.function_mut();
         // Candidate sessions must have released their temporary uses before DCE.
-        let live = Liveness::compute(func);
+        let live = Liveness::compute(func, decls);
         let dead: Vec<_> = func
             .layout()
             .block_order()
@@ -82,7 +83,7 @@ struct Liveness {
 }
 
 impl Liveness {
-    fn compute(func: &FuncBody) -> Self {
+    fn compute(func: &FuncBody, decls: &FuncDecls) -> Self {
         let mut live = Self::default();
         let mut incoming = SecondaryMap::<Value, Vec<Value>>::new();
         for block in func.layout().block_order() {
@@ -97,7 +98,7 @@ impl Liveness {
             for inst in func.layout().block_insts(block) {
                 // Preserve control flow, observable effects, trapping operations
                 // and ownership transfers according to the IR's erase contract.
-                if !func.dfg().inst(inst).can_erase() {
+                if !func.dfg().inst(inst).can_erase(decls) {
                     live.mark_inst(func, inst);
                 }
             }

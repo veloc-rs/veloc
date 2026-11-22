@@ -10,11 +10,16 @@ pub(super) fn generate(ir: &mut veloc::mir::ModuleBuilder, meta: &WasmMetadata) 
         vec![],
         CallConv::Platform,
     );
-    let dispatch = ir.declare_function("wasm_host_call".into(), sig, Linkage::Import);
+    let dispatch = ir.declare_function("wasm_host_call".into(), sig, Linkage::Import, false);
     for i in 0..meta.num_imported_funcs {
         let sig = &meta.signatures[meta.functions[i].type_index as usize];
         let native_sig = sig.intern_veloc_sig(ir);
-        let id = ir.declare_function(format!("__veloc_host_{i}"), native_sig, Linkage::Export);
+        let id = ir.declare_function(
+            format!("__veloc_host_{i}"),
+            native_sig,
+            Linkage::Export,
+            false,
+        );
         let mut builder = ir.define(id);
         let params = builder.func().params().to_vec();
         let slots = (sig.params.len() + 1).max(sig.results.len());

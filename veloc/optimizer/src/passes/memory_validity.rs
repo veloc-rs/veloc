@@ -35,9 +35,7 @@ impl FunctionPass for MemoryValidityPass {
                     continue;
                 };
                 let covered = reads.iter().any(|previous| {
-                    previous.base == access.base
-                        && previous.offset <= access.offset
-                        && previous.end() >= access.end()
+                    previous.covers(access)
                         && previous.flags.alignment() >= access.flags.alignment()
                         && access.offset.abs_diff(previous.offset)
                             % u64::from(access.flags.alignment())

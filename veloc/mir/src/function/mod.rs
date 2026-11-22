@@ -10,8 +10,13 @@ pub type ControlFlowGraph = veloc_collections::graph::ControlFlowGraph<Block>;
 pub use edit::{EdgeRef, FuncEditor, InstCursor};
 pub use layout::{InstOrder, Layout};
 
+/// Module declarations indexed by the function IDs used in its bodies.
+pub type FuncDecls = cranelift_entity::PrimaryMap<crate::FuncId, FuncDecl>;
+
 #[derive(Debug, Clone)]
 pub struct FuncDecl {
+    /// A direct call with valid arguments cannot trigger a MIR trap.
+    pub notrap: bool,
     pub name: String,
     pub signature: SigId,
     pub linkage: Linkage,
