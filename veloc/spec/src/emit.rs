@@ -204,20 +204,24 @@ impl Source {
                 continue;
             }
             let text = match kind {
-                Emit::Equivalences | Emit::LocalFolds | Emit::Rewrites => {
+                kind if matches!(kind, Emit::Equivalences | Emit::LocalFolds | Emit::Rewrites)
+                    || (kind == Emit::Semantics && options.optimizations.is_some()) =>
+                {
                     let config = options.optimizations.as_ref().ok_or_else(|| {
                         fail("optimizer rules require definitions, dialect and IR Rust namespace")
                     })?;
                     if optimizations.is_none() {
                         optimizations = Some(crate::rules::optimizer::generate(
                             self,
-                            &config.definitions.parse()?,
+                            &mut config.definitions.parse()?,
                             config.dialect,
                             config.rust,
+                            selected.contains(&Emit::Semantics),
                         )?);
                     }
                     let compiled = optimizations.as_mut().unwrap();
                     std::mem::take(match kind {
+                        Emit::Semantics => &mut compiled.semantics,
                         Emit::LocalFolds => &mut compiled.folds,
                         Emit::Equivalences => &mut compiled.equivalences,
                         Emit::Rewrites => &mut compiled.rewrites,

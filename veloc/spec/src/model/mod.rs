@@ -93,6 +93,7 @@ pub(crate) struct Slot {
 
 pub(crate) struct Op {
     pub allows_notrap: bool,
+    pub trap_callee: Option<String>,
     pub declaration: crate::syntax::Signature,
     pub offset: usize,
     pub name: String,
@@ -118,6 +119,13 @@ pub(crate) enum Projection {
 }
 
 impl Op {
+    /// A normal-result recipe alone cannot evaluate a potentially trapping operation.
+    pub(crate) fn executable_semantics(&self) -> Option<&Semantic> {
+        self.semantics
+            .as_ref()
+            .filter(|sem| !self.traits.contains("MAY_TRAP") || !sem.traps.is_empty())
+    }
+
     pub(crate) fn bindings(&self) -> &BTreeMap<String, Binding> {
         match &self.projection {
             Projection::Packed(bindings) => bindings,

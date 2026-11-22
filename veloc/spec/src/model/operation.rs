@@ -134,16 +134,49 @@ pub(super) fn parse(
         .optional("semantics")
         .map(|node| crate::semantic::parse(source, node, &params))
         .transpose()?;
+    let mut trap_callee = None;
     if let Some(node) = fields.optional("traps") {
-        let sem = semantics
-            .as_mut()
-            .ok_or_else(|| fields.error("trap guards require executable semantics"))?;
-        crate::semantic::traps(source, node, &params, sem)?;
-    }
-    if let Some(semantics) = &semantics {
-        if !semantics.traps.is_empty() {
+        let may_trap = match &node.kind {
+            Kind::Name(name) if name == "possible" => true,
+            Kind::Call(kind, args) if kind == "callee" && args.len() == 1 => {
+                let param = name(source, args[0].clone())?;
+                if !matches!(&projection, Projection::Packed(_))
+                    || !params.iter().any(|p| {
+                        p.name == param
+                            && matches!(&p.kind, ParamKind::Property(ty) if ty == "FuncId")
+                    })
+                {
+                    return Err(Error::at(
+                        source,
+                        node.offset,
+                        "callee requires a packed FuncId parameter",
+                    ));
+                }
+                trap_callee = Some(param);
+                true
+            }
+            Kind::List(_) => {
+                let sem = semantics
+                    .as_mut()
+                    .ok_or_else(|| fields.error("trap guards require executable semantics"))?;
+                crate::semantic::traps(source, node, &params, sem)?;
+                !sem.traps.is_empty()
+            }
+            _ => {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "expected possible, callee(parameter) or trap guards",
+                ));
+            }
+        };
+        if may_trap {
             traits.insert("MAY_TRAP".into());
         }
+    }
+    if let Some(semantics) = &semantics
+        && (!traits.contains("MAY_TRAP") || !semantics.traps.is_empty())
+    {
         crate::semantic::derive(
             source,
             fields.offset,
@@ -165,6 +198,7 @@ pub(super) fn parse(
     )?;
     let mut op = Op {
         allows_notrap,
+        trap_callee,
         declaration,
         offset: fields.offset,
         name: fields.name,

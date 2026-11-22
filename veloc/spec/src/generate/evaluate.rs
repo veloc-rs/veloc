@@ -31,11 +31,12 @@ impl Plan {
     pub(crate) fn folding_bodies(
         &self,
         defs: &Definitions,
+        selected: &std::collections::BTreeSet<String>,
         types: &str,
     ) -> BTreeMap<String, String> {
         self.operations
             .iter()
-            .filter(|op| !op.cases.is_empty())
+            .filter(|op| !op.cases.is_empty() && selected.contains(&defs.ops[op.opcode].name))
             .map(|op| {
                 (
                     defs.ops[op.opcode].name.clone(),
@@ -48,7 +49,9 @@ impl Plan {
     pub(crate) fn prepare(defs: &Definitions) -> Self {
         let mut operations = Vec::new();
         for (opcode, op) in defs.ops.iter().enumerate() {
-            let Some(sem) = &op.semantics else { continue };
+            let Some(sem) = op.executable_semantics() else {
+                continue;
+            };
             let mut cases = Vec::new();
             for instance in &sem.instances {
                 if !instance.scalar || instance.error.is_some() {

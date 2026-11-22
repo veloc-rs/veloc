@@ -20,15 +20,17 @@ pub(super) struct Case<'a> {
 
 pub(crate) struct Output {
     pub folds: String,
+    pub semantics: String,
     pub equivalences: String,
     pub rewrites: String,
 }
 
 pub(crate) fn generate(
     source: &Source,
-    defs: &Definitions,
+    defs: &mut Definitions,
     dialect: &str,
     rust: &str,
+    emit_semantics: bool,
 ) -> Result<Output, SourceError> {
     if !super::identifier(dialect) || !rust.split("::").all(super::identifier) {
         return Err(source.locate(Error::at(
@@ -37,6 +39,7 @@ pub(crate) fn generate(
             "invalid optimizer Rust binding",
         )));
     }
+    let folds = constant_folds(source, defs).map_err(|e| source.locate(e))?;
     let cases = cases(source, defs).map_err(|e| source.locate(e))?;
     let (rules, instructions) =
         expression::compile(source, defs, dialect, &cases).map_err(|e| source.locate(e))?;
@@ -44,11 +47,59 @@ pub(crate) fn generate(
     let types = format!("{rust}::Type");
     Ok(Output {
         folds: expression::emit_attributes(defs)
-            + &expression::emit_folds(defs, &rules, &opcode, &types),
+            + &expression::emit_folds(defs, &rules, &folds, &opcode, &types),
+        semantics: if emit_semantics {
+            crate::semantic::emit::generate(defs)
+        } else {
+            String::new()
+        },
         equivalences: equivalence::generate(defs, &rules, &opcode)
             + &expression::emit_plans(defs, &rules, &opcode, &types),
         rewrites: instruction::generate(source, defs, dialect, rust, &instructions)?,
     })
+}
+
+/// Attach checked trap guards to the selected scalar folds in this optimizer build.
+fn constant_folds(source: &Source, defs: &mut Definitions) -> Result<BTreeSet<String>, Error> {
+    let mut selected = BTreeSet::new();
+    for decl in source.declarations() {
+        if !matches!(&decl.kind, DeclKind::Fields(kind) if kind == "fold") {
+            continue;
+        }
+        let fail = |message: &str| Error::at(source.text(), decl.offset, message);
+        let op = defs
+            .ops
+            .iter_mut()
+            .find(|op| op.name == decl.name)
+            .ok_or_else(|| fail("unknown constant fold operation"))?;
+        if !selected.insert(op.name.clone()) {
+            return Err(fail("duplicate constant fold"));
+        }
+        if decl.fields.keys().any(|key| key != "traps") {
+            return Err(fail("constant folds only accept trap guards"));
+        }
+        let sem = op
+            .semantics
+            .as_mut()
+            .ok_or_else(|| fail("constant fold requires value semantics"))?;
+        if let Some(guards) = decl.fields.get("traps") {
+            if !op.traits.contains("MAY_TRAP") || !sem.traps.is_empty() {
+                return Err(fail(
+                    "fold guards require an operation with unspecified trap conditions",
+                ));
+            }
+            crate::semantic::traps(source.text(), guards.clone(), &op.params, sem)?;
+            let instances = crate::semantic::validate(source.text(), op, &defs.types)
+                .map_err(|e| fail(&e.message))?;
+            op.semantics.as_mut().unwrap().instances = instances;
+        }
+        if op.executable_semantics().is_none() {
+            return Err(fail(
+                "potentially trapping constant fold requires trap guards",
+            ));
+        }
+    }
+    Ok(selected)
 }
 
 pub(super) fn annotation(node: &Node) -> (&Node, Option<&[Node]>) {

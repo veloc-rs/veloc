@@ -85,6 +85,7 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
                     .collect::<Vec<_>>(),
                 crate::model::metadata::record_type(&defs.ops),
             ) + &defs.storage.instructions();
+            instructions.push_str(&trap_callee(defs));
             instructions.push_str(&methods);
             instructions.push_str(&ownership::generate(defs));
             instructions
@@ -204,6 +205,38 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
         ),
         _ => unreachable!("artifact routed by the generation driver"),
     }
+}
+
+/// Project the declared callee through the operation's checked storage mapping.
+fn trap_callee(defs: &Definitions) -> String {
+    if !defs.data.rust.contains("FuncId") && defs.ops.iter().all(|op| op.trap_callee.is_none()) {
+        return String::new();
+    }
+    let ty = defs.data.rust.qualified("FuncId");
+    let mut out = format!(
+        "impl crate::InstView<'_> {{ pub(crate) fn trap_callee(&self) -> Option<{ty}> {{ match (self.opcode(), self) {{\n"
+    );
+    for op in &defs.ops {
+        if let Some(param) = &op.trap_callee {
+            let format = defs
+                .storage
+                .formats
+                .iter()
+                .find(|f| f.name == op.format)
+                .unwrap();
+            let pattern = format.pattern("Self", |_, field| format!("_{}", field.name));
+            let callee =
+                op.inputs[param].emit(&|field| format!("*_{field}"), &|value| format!("{value}?"));
+            writeln!(
+                out,
+                "(crate::Opcode::{}, {pattern}) => Some({callee}),",
+                op.name
+            )
+            .unwrap();
+        }
+    }
+    out.push_str("_ => None, } } }\n");
+    out
 }
 
 /// Classifications depend only on declarations, never on runtime operand data.

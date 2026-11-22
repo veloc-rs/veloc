@@ -138,6 +138,7 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<Op, Error
     }
     Ok(Op {
         allows_notrap: false,
+        trap_callee: None,
         declaration: op.declaration.clone(),
         offset: alt.text.offset,
         name: op.name.clone(),

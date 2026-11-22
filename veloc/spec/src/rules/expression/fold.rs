@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, fmt::Write};
 pub(in crate::rules) fn emit_folds(
     defs: &crate::Definitions,
     rules: &[CheckedRule],
+    selected: &std::collections::BTreeSet<String>,
     opcode: &str,
     types: &str,
 ) -> String {
@@ -13,7 +14,8 @@ pub(in crate::rules) fn emit_folds(
     for rule in rules.iter().filter(|r| r.can_fold_locally()) {
         groups.entry(rule.opcode()).or_default().push(rule);
     }
-    let scalar_bodies = crate::generate::evaluate::Plan::prepare(defs).folding_bodies(defs, types);
+    let scalar_bodies =
+        crate::generate::evaluate::Plan::prepare(defs).folding_bodies(defs, selected, types);
     for op in scalar_bodies.keys() {
         groups.entry(op).or_default();
     }

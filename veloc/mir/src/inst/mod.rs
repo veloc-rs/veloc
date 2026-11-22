@@ -90,12 +90,10 @@ impl<'a> InstView<'a> {
         if !self.opcode().spec().may_trap() || self.is_notrap() {
             return false;
         }
-        match self {
-            Self::Call { func_id, .. } | Self::TailCall { func_id, .. } => {
-                !decls.get(*func_id).is_some_and(|decl| decl.notrap)
-            }
-            _ => true,
-        }
+        !self
+            .trap_callee()
+            .and_then(|callee| decls.get(callee))
+            .is_some_and(|decl| decl.notrap)
     }
 
     /// Deletion, speculation and commoning have different preconditions.

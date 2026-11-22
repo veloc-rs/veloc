@@ -431,8 +431,7 @@ before the branch. `ABORT` marks an abnormal exit that need not transfer remaini
 owned values and requires `TERMINATOR`. The generated operand visitor feeds one
 shared CFG dataflow analysis: it contains no opcode whitelist. Control lowering
 interfaces describe execution, not an implicit ownership contract.
-Their required `MAY_TRAP`/`TERMINATOR` traits are derived from the control
-primitive; operations need not repeat them. Memory effects remain explicit.
+Operations declare trap behavior with `traps` and mark terminators in metadata.
 
 ## Comparison predicates
 
@@ -496,8 +495,8 @@ representation remain in Rust. Ordinary `encoding` declarations describe defs-ow
 data, not `Type` or the shared memory contracts.
 
 Callable operations use ordinary signatures, `move` parameters, `verify`
-predicates and explicit metadata. Their definitions declare `MAY_TRAP`, and tail
-calls also declare `TERMINATOR`; there is no separate `control` contract or
+predicates and explicit metadata. Direct calls declare `traps = callee(func_id);`
+and indirect calls declare `traps = possible;`. Tail calls also declare `TERMINATOR`; there is no separate `control` contract or
 generated callable classification. Backends lower instruction views directly.
 The interpreter's callable lowering returns executable `ControlSite` data and
 records live roots at those operations and ordinary calls. Root recording is
@@ -762,7 +761,8 @@ Ownership transfer is attached to the logical parameter:
 
 ```text
 op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
-    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
+    traps = callee(func_id);
+    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
     mnemonic: "call",
     storage: Call { func_id: func_id, args: args },
     signature: function(func_id),
@@ -1368,29 +1368,28 @@ not a runtime SSA input. Property extraction follows the storage mapping.
 Bool is a distinct sort: bitwise and/or/xor support it, arithmetic does not.
 Zero extension explicitly converts Bool to a zero-or-one bitvector.
 
-Operation-level traps are explicit, typed guards over the same graph:
+An operation declares `traps = possible;` when it may trap. Direct calls use
+`traps = callee(func_id);` so the instruction query can consult the function
+declaration. An opcode with neither declaration nor a trap trait is trap-free.
+A packed instruction with `modifiers = [notrap];` accepts a site-specific
+guarantee via the `.notrap` suffix or its typed builder.
+
+Scalar constant folding is enabled explicitly in the optimizer rules. A fold
+uses the operation's normal-result semantics and supplies any required trap
+guards, for example:
 
 ```text
-semantics: bv.sdiv(lhs, rhs),
-traps: [
-    DivisionByZero(bv.eq(rhs, bv.zero())),
-    IntegerOverflow(bv.and(bv.eq(lhs, bv.smin()), bv.eq(rhs, bv.ones())))
-]
+fold IAdd;
+fold IRemS {
+    traps = [DivisionByZero(bv.eq(rhs, bv.zero()))];
+}
 ```
 
-The first true guard wins; `MAY_TRAP` is inferred from these guards. Declaring
-`MAY_TRAP` with executable semantics but no guards is rejected. Guards model
-observable failures, not preconditions that remove inputs from SMT checks.
-Constant folding replaces an operation only when no guard fires; a known trap
-stays as an instruction. Lowering must separately preserve these outcomes;
-adding the contract does not generate backend trap checks automatically.
-
-A packed MIR operation can declare `modifiers = [notrap];` when its static
-traits include `MAY_TRAP`. This generates a `.notrap` text suffix and a
-`_notrap` typed builder. The guarantee belongs to the instruction site and
-travels with its stored fields through SSA copies and imports. Memory operations
-store this guarantee in their existing `MemFlags`, including vector memory options. Trap guards
-still define the opcode's behavior and its conservative speculation rules.
+A trapping fold requires precise guards. The first true guard identifies the
+trap and folding leaves the instruction in place. The same guards appear in the
+optimizer's offline semantic table. Definition modules can also supply precise
+guards directly. A standalone evaluator or offline table omits operations whose
+trap conditions are unspecified.
 
 Raw `bv.sdiv/udiv/srem/urem` use total SMT-LIB semantics. Signed remainder of
 MIN and -1 is zero, not an overflow trap. Raw `bv.shl/lshr/ashr` do not mask
@@ -1405,8 +1404,8 @@ The same signature enumeration drives `evaluation.rs`: only legal scalar types
 representable by MIR `Constant` are emitted, including legal conversion pairs.
 Widths, step references, masks and output layouts become Rust literals and local
 variables. Comparison properties remain parameters, avoiding a predicate/width
-Cartesian expansion. The optimizer calls this generated code; it
-does not instantiate or interpret a graph, and has no graph fallback. Exact
+Cartesian expansion. Selected optimizer folds use the same generator to emit specialized Rust
+code directly into the local folder. Exact
 signature dispatch also rejects unsupported calls without a second full type
 contract check. Multiple results become constant definitions while preserving
 SSA value IDs and use-def information.

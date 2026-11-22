@@ -49,10 +49,10 @@ block0():
   y: i32 = load p, offset=0
   return y
 
-// ----- full-overwrite-removes-covered-store
+// ----- full-overwrite-preserves-trapping-stack-store
 // run: o1
 // check: stack-slot
-// not: store i8(2)
+// check: store i8(2)
 // check: store i32(1)
 // check: call observe
 import function observe(ptr) -> void

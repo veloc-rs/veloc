@@ -265,11 +265,6 @@ pub(crate) fn validate(
             "executable semantics cannot describe control flow".into(),
         ));
     }
-    if op.traits.contains("MAY_TRAP") != !sem.traps.is_empty() {
-        return Err(fail(
-            "MAY_TRAP must agree with explicit semantic trap guards".into(),
-        ));
-    }
     let (Some(_inputs), Some(outputs)) = (
         op.signature.operands.patterns(),
         op.signature.results.patterns(),

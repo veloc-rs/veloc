@@ -9,7 +9,7 @@ pub(crate) fn generate(defs: &Definitions) -> String {
         pub static SPECS: &[veloc_semantics::SemanticSpec<Opcode>] = &[\n",
     );
     for op in &defs.ops {
-        if let Some(sem) = &op.semantics {
+        if let Some(sem) = op.executable_semantics() {
             writeln!(
                 code,
                 "veloc_semantics::SemanticSpec {{ opcode: Opcode::{}, program: {} }},",
@@ -21,8 +21,7 @@ pub(crate) fn generate(defs: &Definitions) -> String {
     }
     code.push_str("];\n");
     if defs.ops.iter().any(|op| {
-        op.semantics
-            .as_ref()
+        op.executable_semantics()
             .is_some_and(|sem| !sem.properties.is_empty())
     }) {
         code.push_str("#[allow(dead_code)] pub fn predicate(cc: IntCC) -> veloc_semantics::IntPredicate { veloc_semantics::IntPredicate::new(cc.is_signed(), cc.outcomes()) }\n");

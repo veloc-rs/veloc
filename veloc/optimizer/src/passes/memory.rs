@@ -110,8 +110,7 @@ pub fn run_memory(
                 continue;
             };
 
-            let may_trap =
-                view.may_trap(decls) && func.dfg().stack_slot_layout(access.base).is_none();
+            let may_trap = view.may_trap(decls);
             if may_trap {
                 // A trap can expose earlier writes before a later overwrite executes.
                 for cell in &mut cells {

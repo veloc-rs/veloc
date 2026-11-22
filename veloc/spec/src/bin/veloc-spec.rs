@@ -153,6 +153,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .emit
                 .iter()
                 .any(|e| matches!(e, Emit::Equivalences | Emit::LocalFolds | Emit::Rewrites))
+                || (args.emit.contains(&Emit::Semantics) && definitions.is_some())
             {
                 Some(Optimizations {
                     definitions: definitions

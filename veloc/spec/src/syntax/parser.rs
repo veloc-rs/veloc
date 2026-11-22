@@ -487,6 +487,14 @@ impl<'a> Parser<'a> {
             });
         }
         let name = self.name()?;
+        if declaration_name == "fold" && self.eat(TokenKind::Semi)? {
+            return Ok(Decl {
+                offset,
+                name,
+                kind: DeclKind::Fields("fold".into()),
+                fields: BTreeMap::new(),
+            });
+        }
         // Optimizer groups contain cases; named cross-IR rules contain fields
         // such as `match` and `emit`. Both may use an unqualified name.
         if declaration_name == "rule"
