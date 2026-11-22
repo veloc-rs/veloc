@@ -2,7 +2,7 @@
 use crate::Error;
 use crate::model::data::Types;
 use crate::model::expr::{Expr, Library};
-use crate::model::records::{PropertyType, RecordField};
+use crate::model::records::{PropertyType, RecordDef, RecordField};
 use crate::syntax::{Decl, Kind, Node};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -29,10 +29,12 @@ impl Metadata {
     }
 }
 
-pub(crate) struct Pending {
-    node: Node,
-    traits: Option<RecordField>,
-    memory: Option<RecordField>,
+pub(crate) struct Pending<'a> {
+    record: &'a RecordDef,
+    offset: usize,
+    fields: BTreeMap<String, Node>,
+    traits: Option<&'a RecordField>,
+    memory: Option<&'a RecordField>,
 }
 
 fn name(offset: usize, value: &str) -> Node {
@@ -51,52 +53,69 @@ fn method(receiver: Node, method: &str, args: Vec<Node>) -> Node {
     }
 }
 
-impl Pending {
-    pub fn new(source: &str, node: Node, types: &Types) -> Result<Self, Error> {
-        let Kind::Object(name, fields) = &node.kind else {
-            return Err(Error::at(
-                source,
-                node.offset,
-                "meta requires a typed record value",
-            ));
-        };
-        let record = types
-            .records
-            .iter()
-            .find(|r| r.name == *name)
-            .ok_or_else(|| {
-                Error::at(
-                    source,
-                    node.offset,
-                    format!("unknown metadata struct `{name}`"),
-                )
-            })?;
-        if types.contains_value(name) {
-            return Err(Error::at(
-                source,
-                node.offset,
-                "metadata cannot contain SSA Value fields",
-            ));
-        }
-        for (key, value) in fields {
-            if !record.fields.iter().any(|f| f.name == *key) {
+impl<'a> Pending<'a> {
+    pub fn new(
+        source: &str,
+        offset: usize,
+        node: Option<Node>,
+        types: &'a Types,
+    ) -> Result<Self, Error> {
+        let (record, fields) = if let Some(node) = node {
+            let Kind::Object(name, fields) = node.kind else {
                 return Err(Error::at(
                     source,
-                    value.offset,
-                    format!("unknown field `{key}` in {name}"),
+                    node.offset,
+                    "meta requires a typed record value",
+                ));
+            };
+            let record = types
+                .records
+                .iter()
+                .find(|r| r.name == name)
+                .ok_or_else(|| {
+                    Error::at(
+                        source,
+                        node.offset,
+                        format!("unknown metadata struct `{name}`"),
+                    )
+                })?;
+            if types.contains_value(&name) {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "metadata cannot contain SSA Value fields",
                 ));
             }
-        }
+            for (key, value) in &fields {
+                if !record.fields.iter().any(|f| f.name == *key) {
+                    return Err(Error::at(
+                        source,
+                        value.offset,
+                        format!("unknown field `{key}` in {name}"),
+                    ));
+                }
+            }
+            (record, fields)
+        } else {
+            if types.names.contains(&types.op_info.name) {
+                return Err(Error::at(
+                    source,
+                    offset,
+                    "generated OpInfo conflicts with a declared type",
+                ));
+            }
+            (&types.op_info, BTreeMap::new())
+        };
         let contract = types.rust.analysis.as_ref();
-        let field = |ty: Option<&String>| -> Result<Option<RecordField>, Error> {
+        let field = |ty: Option<&String>| -> Result<Option<&RecordField>, Error> {
             let mut fields = record.fields.iter().filter(|f| {
                 matches!(&f.ty, PropertyType::Named(n) if ty.is_some_and(|t| types.rust.rust(n) == types.rust.rust(t)))
             });
-            let first = fields.next().cloned();
+            let first = fields.next();
             if fields.next().is_some() {
                 return Err(Error::at(
                     source,
-                    node.offset,
+                    offset,
                     "ambiguous operation analysis fields",
                 ));
             }
@@ -105,8 +124,38 @@ impl Pending {
         Ok(Self {
             traits: field(contract.map(|m| &m.traits))?,
             memory: field(contract.map(|m| &m.memory))?,
-            node,
+            record,
+            fields,
+            offset,
         })
+    }
+
+    /// Lower a top-level memory declaration into the dialect's static metadata.
+    pub fn set_memory(&mut self, source: &str, node: Node, types: &Types) -> Result<(), Error> {
+        let field = self.memory.as_ref().ok_or_else(|| {
+            Error::at(
+                source,
+                node.offset,
+                "memory requires a memory analysis field in metadata",
+            )
+        })?;
+        if self.fields.contains_key(&field.name) {
+            return Err(Error::at(
+                source,
+                node.offset,
+                "memory effect declared twice",
+            ));
+        }
+        let contract = types.rust.analysis.as_ref().expect("checked memory field");
+        let value = match &node.kind {
+            Kind::Name(name) if name == "none" => contract.pure.clone(),
+            Kind::Name(name) if matches!(name.as_str(), "read" | "write" | "unknown") => {
+                member(node.offset, &contract.memory, &name.to_ascii_uppercase())
+            }
+            _ => node,
+        };
+        self.fields.insert(field.name.clone(), value);
+        Ok(())
     }
 
     pub fn finish(
@@ -117,10 +166,9 @@ impl Pending {
         vocabulary: super::Vocabulary<'_>,
         traits: &BTreeSet<String>,
         semantic: bool,
-        allows_notrap: bool,
     ) -> Result<Metadata, Error> {
-        let offset = self.node.offset;
-        if self.traits.is_none() && (allows_notrap || !traits.is_empty()) {
+        let offset = self.offset;
+        if self.traits.is_none() && !traits.is_empty() {
             return Err(Error::at(
                 source,
                 offset,
@@ -134,14 +182,9 @@ impl Pending {
                 "semantics require a MemoryEffect metadata field",
             ));
         }
-        let Kind::Object(name_, mut fields) = self.node.kind else {
-            unreachable!()
-        };
-        let record = types
-            .records
-            .iter()
-            .find(|r| r.name == name_)
-            .expect("checked metadata record");
+        let record = self.record;
+        let mut fields = self.fields;
+        let name_ = &record.name;
         let contract = types.rust.analysis.as_ref();
         let mut checks = Vec::new();
         if let Some(field) = &self.traits {
@@ -176,12 +219,6 @@ impl Pending {
                 },
                 "ABORT requires TERMINATOR".into(),
             ));
-            if allows_notrap {
-                checks.push((
-                    contains("MAY_TRAP"),
-                    "notrap modifier requires MAY_TRAP".into(),
-                ));
-            }
             if semantic {
                 // Derived facts are trusted primitive facts. Opaque user expressions
                 // must not add unproved algebraic/control/trap promises.
@@ -204,19 +241,12 @@ impl Pending {
         }
         if let Some(field) = &self.memory {
             let contract = contract.expect("analysis binding");
-            if !fields.contains_key(&field.name) {
-                if !semantic {
-                    return Err(Error::at(
-                        source,
-                        offset,
-                        "unmodeled operations must declare their memory effect",
-                    ));
-                }
-                fields.insert(field.name.clone(), contract.pure.clone());
-            }
+            let memory = fields
+                .entry(field.name.clone())
+                .or_insert_with(|| contract.pure.clone());
             if semantic {
                 checks.push((
-                    method(fields[&field.name].clone(), "is_none", vec![]),
+                    method(memory.clone(), "is_none", vec![]),
                     "executable semantics require no memory effects".into(),
                 ));
             }
@@ -284,7 +314,7 @@ impl Pending {
             })
             .collect::<Result<_, Error>>()?;
         Ok(Metadata {
-            name: name_,
+            name: name_.clone(),
             fields: values,
             checks,
             value_only,

@@ -9,17 +9,10 @@ impl crate::ControlFlow {
         matches!(self, Self::Branch | Self::Jump)
     }
 
-    /// A modeled path continues at the next instruction (or layout fallthrough).
-    /// Branch has both a taken path and a continuation; Jump has only targets,
-    /// including generic conditional branches with two explicit successors.
-    pub const fn may_continue(self) -> bool {
-        matches!(self, Self::Next | Self::Call | Self::Branch)
-    }
-
     /// A modeled path leaves the block without executing the next instruction.
     /// Ordinary calls resume locally; their other effects are described separately.
     pub const fn may_leave_block(self) -> bool {
-        matches!(self, Self::Branch | Self::Jump | Self::Return | Self::Trap)
+        matches!(self, Self::Branch) || !self.may_continue()
     }
 }
 

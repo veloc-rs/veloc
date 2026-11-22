@@ -9,7 +9,7 @@ import "formats.spec";
 // Allocation/ownership are effects: these operations are not arithmetic CSE/DCE.
 op ClosureNew(func_id: FuncId, move captures: sequence(Value), cleanup: FuncId) -> (result: Value<Callable>) {
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "closure-new";
     storage = ClosureNew { func_id, captures, cleanup };
     text = "{func_id}({captures}) : {function(func_id)}, {cleanup}";
@@ -31,7 +31,7 @@ op ClosureNew(func_id: FuncId, move captures: sequence(Value), cleanup: FuncId) 
 
 op ClosureLocal(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Callable>) {
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "closure-local";
     storage = Closure { func_id, captures };
     text = "{func_id}({captures}) : {function(func_id)}";
@@ -50,7 +50,7 @@ op ClosureLocal(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Ca
 
 op ClosureShared(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Callable>) {
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "closure-shared";
     storage = Closure { func_id, captures };
     text = "{func_id}({captures}) : {function(func_id)}";
@@ -68,9 +68,9 @@ op ClosureShared(func_id: FuncId, captures: sequence(Value)) -> (result: Value<C
 }
 
 op TailCall(func_id: FuncId, move args: sequence(Value)) -> () {
-    modifiers = [notrap];
     traps = callee(func_id);
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::UNKNOWN };
+    memory = callee(func_id);
+    control = terminator;
     mnemonic = "tail-call";
     storage = TailCall { func_id, args };
     text = "{func_id}({args}) : {function(func_id)}";
@@ -84,9 +84,9 @@ op TailCall(func_id: FuncId, move args: sequence(Value)) -> () {
 }
 
 op TailCallValue(move callee: Value<Callable>, move args: sequence(Value)) -> () {
-    modifiers = [notrap];
     traps = possible;
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
+    control = terminator;
     mnemonic = "tail-call-value";
     storage = CallValue { callee, args };
     text = "{callee}({args})";
@@ -100,9 +100,8 @@ op TailCallValue(move callee: Value<Callable>, move args: sequence(Value)) -> ()
 }
 
 op CallValue(move callee: Value<Callable>, move args: sequence(Value)) -> signature {
-    modifiers = [notrap];
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "call-value";
     storage = CallValue { callee, args };
     signature = callable(callee);
@@ -111,7 +110,7 @@ op CallValue(move callee: Value<Callable>, move args: sequence(Value)) -> signat
 
 op ClosureDrop(move callee: Value<Callable>) -> () {
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "closure-drop";
     storage = Unary { arg: callee };
 
@@ -121,28 +120,24 @@ op ClosureDrop(move callee: Value<Callable>) -> () {
 }
 
 op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "iadd";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.add(lhs, rhs)
 ; }
 
 op ISub<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "isub";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.sub(lhs, rhs)
 ; }
 
 op IMul<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "imul";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.mul(lhs, rhs)
 ; }
 
 op INeg<T: Integer>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "ineg";
     storage = Unary { arg };
     semantics = bv.sub(bv.zero(), arg)
@@ -150,7 +145,6 @@ op INeg<T: Integer>(arg: Value<T>) -> Value<T> {
 
 // Signed saturation: clamp to the signed range of each lane.
 op IAddSatS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "iadd-sat-s";
     storage = Binary { args: [lhs, rhs] };
     semantics = select(
@@ -161,7 +155,6 @@ op IAddSatS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 ; }
 
 op ISubSatS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "isub-sat-s";
     storage = Binary { args: [lhs, rhs] };
     semantics = select(
@@ -172,7 +165,6 @@ op ISubSatS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 ; }
 
 op IAddWithOverflow<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, Value<Type::BOOL>) {
-    meta = OpInfo {};
     mnemonic = "iadd-with-overflow";
     storage = Binary { args: [lhs, rhs] };
     // The result wraps; the flag reports SIGNED overflow, not unsigned carry.
@@ -183,7 +175,6 @@ op IAddWithOverflow<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>
 ; }
 
 op ISubWithOverflow<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, Value<Type::BOOL>) {
-    meta = OpInfo {};
     mnemonic = "isub-with-overflow";
     storage = Binary { args: [lhs, rhs] };
     semantics = [
@@ -193,7 +184,6 @@ op ISubWithOverflow<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>
 ; }
 
 op IMulWithOverflow<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, Value<Type::BOOL>) {
-    meta = OpInfo {};
     mnemonic = "imul-with-overflow";
     storage = Binary { args: [lhs, rhs] };
     // bv.sdiv is total; this does not introduce a division trap.
@@ -206,8 +196,6 @@ op IMulWithOverflow<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>
 ; }
 
 op IDivS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    modifiers = [notrap];
-    meta = OpInfo {};
     mnemonic = "idiv-s";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.sdiv(lhs, rhs);
@@ -215,8 +203,6 @@ op IDivS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 }
 
 op IDivU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    modifiers = [notrap];
-    meta = OpInfo {};
     mnemonic = "idiv-u";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.udiv(lhs, rhs);
@@ -224,8 +210,6 @@ op IDivU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 }
 
 op IRemS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    modifiers = [notrap];
-    meta = OpInfo {};
     mnemonic = "irem-s";
     storage = Binary { args: [lhs, rhs] };
     // Signed MIN % -1 returns zero; unlike signed division it does not trap.
@@ -234,8 +218,6 @@ op IRemS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 }
 
 op IRemU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    modifiers = [notrap];
-    meta = OpInfo {};
     mnemonic = "irem-u";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.urem(lhs, rhs);
@@ -243,133 +225,112 @@ op IRemU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 }
 
 op FAdd<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fadd";
     storage = Binary { args: [lhs, rhs] };
 }
 
 op FSub<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fsub";
     storage = Binary { args: [lhs, rhs] };
 }
 
 op FMul<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fmul";
     storage = Binary { args: [lhs, rhs] };
 }
 
 op FNeg<T: Float>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fneg";
     storage = Unary { arg };
 }
 
 op FDiv<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fdiv";
     storage = Binary { args: [lhs, rhs] };
 }
 
 op FMin<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fmin";
     storage = Binary { args: [lhs, rhs] };
 }
 
 op FMax<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fmax";
     storage = Binary { args: [lhs, rhs] };
 }
 
 op FCopysign<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fcopysign";
     storage = Binary { args: [lhs, rhs] };
 }
 
 op FAbs<T: Float>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fabs";
     storage = Unary { arg };
 }
 
 op FSqrt<T: Float>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fsqrt";
     storage = Unary { arg };
 }
 
 op FCeil<T: Float>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fceil";
     storage = Unary { arg };
 }
 
 op FFloor<T: Float>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "ffloor";
     storage = Unary { arg };
 }
 
 op FTrunc<T: Float>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "ftrunc";
     storage = Unary { arg };
 }
 
 op FNearest<T: Float>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fnearest";
     storage = Unary { arg };
 }
 
 op IAnd<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "iand";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.and(lhs, rhs)
 ; }
 
 op IOr<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "ior";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.or(lhs, rhs)
 ; }
 
 op IXor<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "ixor";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.xor(lhs, rhs)
 ; }
 
 op IShl<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "ishl";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.shl(lhs, bv.urem(rhs, bv.width()))
 ; }
 
 op IShrS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "ishr-s";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.ashr(lhs, bv.urem(rhs, bv.width()))
 ; }
 
 op IShrU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "ishr-u";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.lshr(lhs, bv.urem(rhs, bv.width()))
 ; }
 
 op IRotl<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "irotl";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.or(
@@ -379,7 +340,6 @@ op IRotl<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 ; }
 
 op IRotr<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "irotr";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.or(
@@ -389,35 +349,30 @@ op IRotr<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 ; }
 
 op IClz<T: Integer>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "iclz";
     storage = Unary { arg };
     semantics = bv.clz(arg)
 ; }
 
 op ICtz<T: Integer>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "ictz";
     storage = Unary { arg };
     semantics = bv.ctz(arg)
 ; }
 
 op IPopcnt<T: Integer>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "ipopcnt";
     storage = Unary { arg };
     semantics = bv.popcnt(arg)
 ; }
 
 op IEqz(arg: Value<ScalarInteger>) -> Value<Type::BOOL> {
-    meta = OpInfo {};
     mnemonic = "ieqz";
     storage = Unary { arg };
     semantics = bv.eq(arg, bv.zero())
 ; }
 
 op Icmp<T: ScalarInteger | Type::PTR>(kind: IntCC, lhs: Value<T>, rhs: Value<T>) -> Value<Type::BOOL> {
-    meta = OpInfo {};
     mnemonic = "icmp";
     storage = IntCompare { kind, args: [lhs, rhs] };
     text = "{kind} {lhs}, {rhs}";
@@ -428,14 +383,12 @@ op Icmp<T: ScalarInteger | Type::PTR>(kind: IntCC, lhs: Value<T>, rhs: Value<T>)
 }
 
 op Fcmp<T: ScalarFloat>(kind: FloatCC, lhs: Value<T>, rhs: Value<T>) -> Value<Type::BOOL> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "fcmp";
     storage = FloatCompare { kind, args: [lhs, rhs] };
     text = "{kind} {lhs}, {rhs}";
 }
 
 op ExtendS<T: Integer, U: Integer>(arg: Value<T>) -> Value<U> {
-    meta = OpInfo {};
     mnemonic = "extends";
     storage = Unary { arg };
     verify {
@@ -446,7 +399,6 @@ op ExtendS<T: Integer, U: Integer>(arg: Value<T>) -> Value<U> {
 ; }
 
 op ExtendU<T: Integer | Type::BOOL | vectors(Type::BOOL), U: Integer>(arg: Value<T>) -> Value<U> {
-    meta = OpInfo {};
     mnemonic = "extendu";
     storage = Unary { arg };
     verify {
@@ -457,7 +409,6 @@ op ExtendU<T: Integer | Type::BOOL | vectors(Type::BOOL), U: Integer>(arg: Value
 ; }
 
 op Wrap<T: Integer, U: Integer>(arg: Value<T>) -> Value<U> {
-    meta = OpInfo {};
     mnemonic = "wrap";
     storage = Unary { arg };
     verify {
@@ -468,7 +419,6 @@ op Wrap<T: Integer, U: Integer>(arg: Value<T>) -> Value<U> {
 ; }
 
 op FloatToIntSatS<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "float-to-int-sat-s";
     storage = Unary { arg };
     verify {
@@ -477,7 +427,6 @@ op FloatToIntSatS<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
 }
 
 op FloatToIntSatU<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "float-to-int-sat-u";
     storage = Unary { arg };
     verify {
@@ -487,7 +436,6 @@ op FloatToIntSatU<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
 
 op FloatToIntS<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "float-to-int-s";
     storage = Unary { arg };
     verify {
@@ -497,7 +445,6 @@ op FloatToIntS<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
 
 op FloatToIntU<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "float-to-int-u";
     storage = Unary { arg };
     verify {
@@ -506,7 +453,6 @@ op FloatToIntU<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
 }
 
 op IntToFloatS<T: Integer, U: Float>(arg: Value<T>) -> Value<U> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "int-to-float-s";
     storage = Unary { arg };
     verify {
@@ -515,7 +461,6 @@ op IntToFloatS<T: Integer, U: Float>(arg: Value<T>) -> Value<U> {
 }
 
 op IntToFloatU<T: Integer, U: Float>(arg: Value<T>) -> Value<U> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "int-to-float-u";
     storage = Unary { arg };
     verify {
@@ -524,19 +469,16 @@ op IntToFloatU<T: Integer, U: Float>(arg: Value<T>) -> Value<U> {
 }
 
 op FloatPromote(arg: Value<Type::F32>) -> Value<Type::F64> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "float-promote";
     storage = Unary { arg };
 }
 
 op FloatDemote(arg: Value<Type::F64>) -> Value<Type::F32> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "float-demote";
     storage = Unary { arg };
 }
 
 op Reinterpret(arg: Value<Number>) -> (result: Value<Number>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "reinterpret";
     storage = Unary { arg };
     verify {
@@ -545,37 +487,32 @@ op Reinterpret(arg: Value<Number>) -> (result: Value<Number>) {
 }
 
 op IntToPtr(arg: Value<ScalarInteger>) -> Value<Type::PTR> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "inttoptr";
     storage = IntToPtr { arg };
 }
 
 op PtrToInt(arg: Value<Type::PTR>) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "ptrtoint";
     storage = PtrToInt { arg };
 }
 
 op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
-    modifiers = [notrap];
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::READ) };
+    memory = read;
     mnemonic = "load";
     storage = Load { ptr, offset, flags };
     text = "{.flags} {ptr}, offset={offset}";
 }
 
 op Store(ptr: Value<Type::PTR>, value: Value<Any>, offset: u32, flags: MemFlags) -> () {
-    modifiers = [notrap];
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::WRITE) };
+    memory = write;
     mnemonic = "store";
     storage = Store { ptr, value, offset, flags };
     text = "{.flags} {value}, {ptr}, offset={offset}";
 }
 
 op GlobalAddr(global: GlobalId) -> Value<Type::PTR> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "global-addr";
     storage = GlobalAddr { global };
     text = "{global}";
@@ -585,7 +522,6 @@ op GlobalAddr(global: GlobalId) -> Value<Type::PTR> {
 }
 
 op FuncAddr(func_id: FuncId) -> Value<Type::PTR> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "func-addr";
     storage = FuncAddr { func_id };
     text = "{func_id}";
@@ -595,13 +531,11 @@ op FuncAddr(func_id: FuncId) -> Value<Type::PTR> {
 }
 
 op PtrOffset(ptr: Value<Type::PTR>, offset: i32) -> Value<Type::PTR> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "ptr-offset";
     storage = PtrOffset { ptr, offset };
 }
 
 op PtrIndex(ptr: Value<Type::PTR>, index: Value<ScalarInteger>, imm: PtrIndexImm) -> Value<Type::PTR> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "ptr-index";
     storage = PtrIndex { ptr, index, imm_id: imm };
     text = "{ptr}, {index}, scale={imm.scale}, offset={imm.offset}";
@@ -612,9 +546,8 @@ op PtrIndex(ptr: Value<Type::PTR>, index: Value<ScalarInteger>, imm: PtrIndexImm
 }
 
 op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
-    modifiers = [notrap];
     traps = callee(func_id);
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = callee(func_id);
     mnemonic = "call";
     storage = Call { func_id, args };
     signature = function(func_id);
@@ -623,9 +556,8 @@ op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
 
 
 op CallIndirect(sig_id: SigId, ptr: Value<Type::PTR>, move args: sequence(Value)) -> signature {
-    modifiers = [notrap];
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "call-indirect";
     storage = CallIndirect { ptr, args, sig_id };
     signature = sig_id;
@@ -638,9 +570,8 @@ op CallIndirect(sig_id: SigId, ptr: Value<Type::PTR>, move args: sequence(Value)
 }
 
 op CallIntrinsic(intrinsic: Intrinsic, sig_id: SigId, move args: sequence(Value)) -> signature {
-    modifiers = [notrap];
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "call-intrinsic";
     storage = CallIntrinsic { intrinsic, args, sig_id };
     signature = sig_id;
@@ -654,25 +585,25 @@ op CallIntrinsic(intrinsic: Intrinsic, sig_id: SigId, move args: sequence(Value)
 }
 
 op Jump(dest: successor) -> () {
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    control = terminator;
     mnemonic = "jump";
     storage = Jump { dest };
 }
 
 op Br(condition: Value<Type::BOOL>, then_dest: successor, else_dest: successor) -> () {
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    control = terminator;
     mnemonic = "br";
     storage = Br { condition, then_dest, else_dest };
 }
 
 op BrTable(index: Value<Type::I32>, cases: successors, default: successor) -> () {
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    control = terminator;
     mnemonic = "br-table";
     storage = BrTable { index, table: table(cases, default) };
 }
 
 op Return(move values: sequence(Value)) -> () {
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    control = terminator;
     mnemonic = "return";
     storage = Return { values };
 
@@ -682,32 +613,28 @@ op Return(move values: sequence(Value)) -> () {
 }
 
 op Select<T: Any>(condition: Value<Type::BOOL>, if_true: Value<T>, if_false: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "select";
     storage = Ternary { args: [condition, if_true, if_false] };
 }
 
 op Unreachable() -> () {
-    traps = possible;
-    meta = OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::ABORT), memory: MemoryEffect::NONE };
+    traps = always;
+    control = abort;
     mnemonic = "unreachable";
     storage = Unreachable {};
 }
 
 op Nop() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "nop";
     storage = Nop {};
 }
 
 op Splat<T: Scalar>(arg: Value<T>) -> Value<vector(T)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "splat";
     storage = Unary { arg };
 }
 
 op Shuffle<T: Vector, M: Integer & Vector, R: Vector>(lhs: Value<T>, rhs: Value<T>, mask: Value<M>) -> Value<R> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "shuffle";
     storage = Ternary { args: [lhs, rhs, mask] };
 
@@ -722,7 +649,6 @@ op Shuffle<T: Vector, M: Integer & Vector, R: Vector>(lhs: Value<T>, rhs: Value<
 
 op InsertElement<T: Vector>(vector: Value<T>, scalar: Value<element(T)>, index: Value<ScalarInteger>) -> Value<T> {
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "insertelement";
     storage = Ternary { args: [vector, scalar, index] };
     // Unsigned index; an index >= the runtime lane count traps.
@@ -730,7 +656,6 @@ op InsertElement<T: Vector>(vector: Value<T>, scalar: Value<element(T)>, index: 
 
 op ExtractElement<T: Vector>(vector: Value<T>, index: Value<ScalarInteger>) -> Value<element(T)> {
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "extractelement";
     storage = Binary { args: [vector, index] };
     // Unsigned index; an index >= the runtime lane count traps.
@@ -739,7 +664,6 @@ op ExtractElement<T: Vector>(vector: Value<T>, index: Value<ScalarInteger>) -> V
 // Add in increasing lane order, starting at lane 0 (no extra zero).
 // Integer addition wraps. Floating addition uses the scalar FAdd contract.
 op ReduceAdd<T: Number & Vector>(arg: Value<T>) -> Value<element(T)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "reduce-add";
     storage = Unary { arg };
 }
@@ -747,39 +671,33 @@ op ReduceAdd<T: Number & Vector>(arg: Value<T>) -> Value<element(T)> {
 // Integer extrema use signed comparison. Float extrema propagate NaN;
 // min(-0,+0) is -0, max(-0,+0) is +0. Fold in increasing lane order.
 op ReduceMin<T: Number & Vector>(arg: Value<T>) -> Value<element(T)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "reduce-min";
     storage = Unary { arg };
 }
 
 op ReduceMax<T: Number & Vector>(arg: Value<T>) -> Value<element(T)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "reduce-max";
     storage = Unary { arg };
 }
 
 op ReduceAnd<T: Integer & Vector | vectors(Type::BOOL)>(arg: Value<T>) -> Value<element(T)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "reduce-and";
     storage = Unary { arg };
 }
 
 op ReduceOr<T: Integer & Vector | vectors(Type::BOOL)>(arg: Value<T>) -> Value<element(T)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "reduce-or";
     storage = Unary { arg };
 }
 
 op ReduceXor<T: Integer & Vector | vectors(Type::BOOL)>(arg: Value<T>) -> Value<element(T)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "reduce-xor";
     storage = Unary { arg };
 }
 
 op LoadStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, mem: VectorMemOptions) -> (result: Value<Vector>) {
-    modifiers = [notrap];
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::READ) };
+    memory = read;
     mnemonic = "load-stride";
     storage = VectorLoadStrided { ptr, stride, ext: mem };
     text = "{mem.scale=1} {.mem.flags} {ptr}, stride={stride}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]";
@@ -791,9 +709,8 @@ op LoadStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, mem: VectorMe
 }
 
 op StoreStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, value: Value<Vector>, mem: VectorMemOptions) -> () {
-    modifiers = [notrap];
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::WRITE) };
+    memory = write;
     mnemonic = "store-stride";
     storage = VectorStoreStrided { args: [ptr, stride, value], ext: mem };
     text = "{mem.scale=1} {.mem.flags} {value}, {ptr}, stride={stride}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]";
@@ -805,9 +722,8 @@ op StoreStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, value: Value
 }
 
 op Gather<T: Integer & Vector, U: Vector>(ptr: Value<Type::PTR>, index: Value<T>, mem: VectorMemOptions) -> Value<U> {
-    modifiers = [notrap];
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::READ) };
+    memory = read;
     mnemonic = "gather";
     storage = VectorGather { ptr, index, ext: mem };
     text = "{.mem.flags} {ptr}, index={index}, scale={mem.scale}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]";
@@ -820,9 +736,8 @@ op Gather<T: Integer & Vector, U: Vector>(ptr: Value<Type::PTR>, index: Value<T>
 }
 
 op Scatter<T: Integer & Vector, U: Vector>(ptr: Value<Type::PTR>, index: Value<T>, value: Value<U>, mem: VectorMemOptions) -> () {
-    modifiers = [notrap];
     traps = possible;
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::WRITE) };
+    memory = write;
     mnemonic = "scatter";
     storage = VectorScatter { args: [ptr, index, value], ext: mem };
     text = "{.mem.flags} {value}, {ptr}, index={index}, scale={mem.scale}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]";

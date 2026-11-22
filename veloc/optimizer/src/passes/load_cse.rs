@@ -48,6 +48,7 @@ impl FunctionPass for LoadCsePass {
     ) -> PassOutcome {
         let layout = &config.data_layout;
         let dom = am.take_dominators();
+        let decls = am.decls();
         let func = am.function_mut();
         let order = func.cfg().compute_post_order(func.entry_block());
         let mut positions = HashMap::new();
@@ -58,7 +59,7 @@ impl FunctionPass for LoadCsePass {
             for (index, inst) in func.layout().block_insts(block).enumerate() {
                 positions.insert(inst, (block, index));
                 let view = func.dfg().inst(inst);
-                let effect = view.memory_effect();
+                let effect = view.memory_effect(decls);
                 let mut barrier = effect.may_free() || view.has_volatile_access();
                 if effect.may_write() {
                     let access = func.access(inst, layout);

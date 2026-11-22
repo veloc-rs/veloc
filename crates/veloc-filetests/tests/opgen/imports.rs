@@ -38,7 +38,7 @@ import "left.spec";
 import "right.spec";
 struct Unary { arg: Value }
 op Example<T: Small>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
+    mnemonic = "example";
     storage = Unary { arg };
 }
 "#,
@@ -101,7 +101,7 @@ import "helpers.spec";
 import "host.spec";
 struct Data { n: u32 }
 op Example(n: u32) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
+    mnemonic = "example";
     storage = Data { n: n };
     verify(ctx: Numbers) { require(Twice(ctx, n) > n, "expected a larger value"); }
 }
@@ -264,7 +264,7 @@ fn original_offsets_survive_unicode_imports_and_comments() {
 #[test]
 fn output_plan_errors_keep_the_imported_source_location() {
     let files = Files::new();
-    files.write("bad.spec", "import \"prelude.spec\"; struct Work {}\nop Work() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = \"emit\"; storage = Work {}; }");
+    files.write("bad.spec", "import \"prelude.spec\"; struct Work {}\nop Work() -> () { mnemonic = \"emit\"; storage = Work {}; }");
     files.write(
         "root.spec",
         "import \"prelude.spec\";\nimport \"bad.spec\";",
@@ -370,7 +370,6 @@ fn imports_are_file_local_even_when_siblings_are_loaded_first() {
 import "prelude.spec";
 struct Inputs { args: ValueList }
 op Consume(args: sequence(Ref)) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "consume"; storage = Inputs { args };
 }
 "#;

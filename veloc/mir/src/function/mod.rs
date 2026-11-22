@@ -13,10 +13,18 @@ pub use layout::{InstOrder, Layout};
 /// Module declarations indexed by the function IDs used in its bodies.
 pub type FuncDecls = cranelift_entity::PrimaryMap<crate::FuncId, FuncDecl>;
 
+/// Guarantees for the whole invocation, including any callees.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FuncEffects {
+    /// Valid arguments guarantee the call cannot trigger a MIR trap.
+    pub notrap: bool,
+    /// Upper bound on memory effects. An unspecified bound is unknown.
+    pub memory: veloc_types::MemoryEffect,
+}
+
 #[derive(Debug, Clone)]
 pub struct FuncDecl {
-    /// A direct call with valid arguments cannot trigger a MIR trap.
-    pub notrap: bool,
+    pub effects: FuncEffects,
     pub name: String,
     pub signature: SigId,
     pub linkage: Linkage,

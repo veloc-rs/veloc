@@ -28,11 +28,6 @@ type SymbolId = rust("crate::SymbolId");
 
 // Shared effect interfaces are imported from the Rust owner.
 
-struct OpInfo {
-    traits: OpTraits,
-    memory: MemoryEffect,
-}
-
 // Reusable checked arithmetic, not a special verifier query.
 fn is_power_of_two(value: u32) -> bool {
     value = value != 0 && (value & (value - 1)) == 0;

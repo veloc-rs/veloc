@@ -85,7 +85,12 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
                     .collect::<Vec<_>>(),
                 crate::model::metadata::record_type(&defs.ops),
             ) + &defs.storage.instructions();
-            instructions.push_str(&trap_callee(defs));
+            instructions.push_str(&callee_projection(defs, "trap_callee", |op| {
+                op.trap_callee.as_deref()
+            }));
+            instructions.push_str(&callee_projection(defs, "memory_callee", |op| {
+                op.memory_callee.as_deref()
+            }));
             instructions.push_str(&methods);
             instructions.push_str(&ownership::generate(defs));
             instructions
@@ -106,7 +111,7 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
             if let Some(ty) = crate::model::metadata::record_type(&defs.ops) {
                 writeln!(ops, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct OpSpec {{ pub mnemonic: &'static str, pub format: OpFormat, pub meta: crate::inst::{ty} }}").unwrap();
                 writeln!(ops, "impl Opcode {{ pub const fn meta(self) -> &'static crate::inst::{ty} {{ &self.spec().meta }} }}").unwrap();
-                let record = defs.data.records.iter().find(|r| r.name == ty).unwrap();
+                let record = defs.data.metadata_record(ty).unwrap();
                 if let Some(binding) = &defs.data.rust.analysis {
                     for (method, ty) in [
                         ("traits", &binding.traits),
@@ -208,16 +213,20 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
 }
 
 /// Project the declared callee through the operation's checked storage mapping.
-fn trap_callee(defs: &Definitions) -> String {
-    if !defs.data.rust.contains("FuncId") && defs.ops.iter().all(|op| op.trap_callee.is_none()) {
+fn callee_projection(
+    defs: &Definitions,
+    method: &str,
+    parameter: fn(&Op) -> Option<&str>,
+) -> String {
+    if !defs.data.rust.contains("FuncId") && defs.ops.iter().all(|op| parameter(op).is_none()) {
         return String::new();
     }
     let ty = defs.data.rust.qualified("FuncId");
     let mut out = format!(
-        "impl crate::InstView<'_> {{ pub(crate) fn trap_callee(&self) -> Option<{ty}> {{ match (self.opcode(), self) {{\n"
+        "impl crate::InstView<'_> {{ pub(crate) fn {method}(&self) -> Option<{ty}> {{ match (self.opcode(), self) {{\n"
     );
     for op in &defs.ops {
-        if let Some(param) = &op.trap_callee {
+        if let Some(param) = parameter(op) {
             let format = defs
                 .storage
                 .formats

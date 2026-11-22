@@ -3,7 +3,6 @@
 // check: unknown integer comparison property `missing`
 struct Compare { cc: IntCC, args: values(2) }
 op Test<T: ScalarInteger>(lhs: Value<T>, condition: IntCC, rhs: Value<T>) -> Value<Type::BOOL> {
-    meta = OpInfo {};
     mnemonic = "test"; storage = Compare { cc: condition, args: [lhs, rhs] };
     semantics = bv.cmp(missing, lhs, rhs)
 ; }
@@ -13,7 +12,6 @@ op Test<T: ScalarInteger>(lhs: Value<T>, condition: IntCC, rhs: Value<T>) -> Val
 // check: unknown semantic value `condition`
 struct Compare { cc: IntCC, args: values(2) }
 op Test<T: ScalarInteger>(lhs: Value<T>, condition: IntCC, rhs: Value<T>) -> Value<Type::BOOL> {
-    meta = OpInfo {};
     mnemonic = "test"; storage = Compare { cc: condition, args: [lhs, rhs] };
     semantics = bv.add(condition, lhs)
 ; }
@@ -23,7 +21,6 @@ op Test<T: ScalarInteger>(lhs: Value<T>, condition: IntCC, rhs: Value<T>) -> Val
 // check: invalid semantic types [Bv(Width(8)), Bv(Width(8))] -> [Bv(Width(8)), Bool]: expected bool, got bv8
 struct Binary { args: values(2) }
 op Pair<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, Value<Type::BOOL>) {
-    meta = OpInfo {};
     mnemonic = "pair"; storage = Binary { args: [lhs, rhs] };
     semantics = [bv.add(lhs, rhs), bv.add(lhs, rhs)]
 ; }
@@ -33,7 +30,6 @@ op Pair<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, Value<Type
 // check: semantic result count does not match signature
 struct Binary { args: values(2) }
 op Pair<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, Value<Type::BOOL>) {
-    meta = OpInfo {};
     mnemonic = "pair"; storage = Binary { args: [lhs, rhs] };
     semantics = bv.add(lhs, rhs)
 ; }
@@ -43,7 +39,6 @@ op Pair<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, Value<Type
 // check: invalid semantic types [Bv(Width(8)), Bv(Width(8))] -> [Bv(Width(8))]: expected bool, got bv8
 struct Binary { args: values(2) }
 op Divide<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "divide"; storage = Binary { args: [lhs, rhs] };
     semantics = bv.udiv(lhs, rhs);
     traps = [DivisionByZero(rhs)]
@@ -54,7 +49,6 @@ op Divide<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 // check: unknown trap `UnknownTrap`
 struct Binary { args: values(2) }
 op Divide<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "divide"; storage = Binary { args: [lhs, rhs] };
     semantics = bv.udiv(lhs, rhs);
     traps = [UnknownTrap(bv.eq(rhs, bv.zero()))]
@@ -65,7 +59,6 @@ op Divide<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 // check: trap guards require executable semantics
 struct Binary { args: values(2) }
 op Divide<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "divide"; storage = Binary { args: [lhs, rhs] };
 
     traps = [DivisionByZero(bv.eq(rhs, bv.zero()))]
@@ -76,7 +69,6 @@ op Divide<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 // check: invalid semantic types [Bv(Width(16))] -> [Bv(Width(8))]: cannot extend bv16 to bv8
 struct Unary { arg: Value }
 op Convert<T: Integer, U: Integer>(arg: Value<T>) -> (result: Value<U>) {
-    meta = OpInfo {};
     mnemonic = "convert"; storage = Unary { arg: arg };
     verify {
         require(U.same_shape(T), "input and result must have the same shape");
@@ -89,7 +81,6 @@ op Convert<T: Integer, U: Integer>(arg: Value<T>) -> (result: Value<U>) {
 // check: expected 2 results, got 1
 struct Unary { arg: Value }
 op Convert<T: Integer, U: Integer>(arg: Value<T>) -> (result: Value<U>) {
-    meta = OpInfo {};
     mnemonic = "convert"; storage = Unary { arg: arg };
     verify {
         require(U.same_shape(T), "input and result must have the same shape");
@@ -102,7 +93,6 @@ op Convert<T: Integer, U: Integer>(arg: Value<T>) -> (result: Value<U>) {
 // check: expected type(operand) or result(index)
 struct Unary { arg: Value }
 op Convert<T: Integer, U: Integer>(arg: Value<T>) -> (result: Value<U>) {
-    meta = OpInfo {};
     mnemonic = "convert"; storage = Unary { arg: arg };
     verify {
         require(U.same_shape(T), "input and result must have the same shape");
@@ -115,7 +105,6 @@ op Convert<T: Integer, U: Integer>(arg: Value<T>) -> (result: Value<U>) {
 // check: invalid semantic types [Bv(Width(8))] -> [Bv(Width(16))]: expected bv16, got bv8
 struct Unary { arg: Value }
 op Convert<T: Integer, U: Integer>(arg: Value<T>) -> (result: Value<U>) {
-    meta = OpInfo {};
     mnemonic = "convert"; storage = Unary { arg: arg };
     verify {
         require(U.same_shape(T), "input and result must have the same shape");
@@ -128,7 +117,6 @@ op Convert<T: Integer, U: Integer>(arg: Value<T>) -> (result: Value<U>) {
 // check: semantic recipes require a shared lane shape
 struct Unary { arg: Value }
 op Convert<T: Integer>(arg: Value<T>) -> (result: Value<Type::I32X4>) {
-    meta = OpInfo {};
     mnemonic = "convert"; storage = Unary { arg: arg };
     verify {
         require(result.element_bits()? > arg.ty().element_bits()?, "result must have more bits per lane than arg");
@@ -140,7 +128,6 @@ op Convert<T: Integer>(arg: Value<T>) -> (result: Value<Type::I32X4>) {
 // check: semantic recipes require a shared lane shape
 struct Unary { arg: Value }
 op Convert<T: Integer, U: Integer>(arg: Value<T>) -> Value<U> {
-    meta = OpInfo {};
     mnemonic = "convert"; storage = Unary { arg };
     verify { require(U.wider_than(T), "wider"); }
     semantics = bv.sext(arg, result(0))
@@ -151,7 +138,6 @@ op Convert<T: Integer, U: Integer>(arg: Value<T>) -> Value<U> {
 // check: semantic recipes require a shared lane shape
 struct Unary { arg: Value }
 op Convert<T: Integer & Vector, U: Integer & Vector>(arg: Value<T>) -> Value<U> {
-    meta = OpInfo {};
     mnemonic = "convert"; storage = Unary { arg };
     verify {
         require(U.lanes()? == T.lanes()?, "equal lane counts");
@@ -165,7 +151,7 @@ op Convert<T: Integer & Vector, U: Integer & Vector>(arg: Value<T>) -> Value<U> 
 // check: unknown type pattern `shape`
 struct Unary { arg: Value }
 op Convert<T: Integer>(arg: Value<T>) -> Value<shape(T, Integer)> {
-    meta = OpInfo {}; mnemonic = "convert"; storage = Unary { arg };
+    mnemonic = "convert"; storage = Unary { arg };
 }
 
 // ----- semantic-facts/algebraic-constants-are-typed-and-names-round-trip-1
@@ -173,7 +159,6 @@ op Convert<T: Integer>(arg: Value<T>) -> Value<shape(T, Integer)> {
 // check: unknown algebraic constant `Two`
 struct Args { args: values(2) }
 op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [lhs, rhs] };
              semantics = bv.add(lhs, rhs); identity = Two
 ; }
@@ -183,7 +168,6 @@ op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
 // check: bv.add does not support identity `One` at every supported width
 struct Args { args: values(2) }
 op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::COMMUTATIVE.union(OpTraits::ASSOCIATIVE), memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [lhs, rhs] };
              semantics = bv.add(lhs, rhs);  identity = One
 ; }
@@ -193,7 +177,6 @@ op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
 // check: bv.and does not support identity `Zero` at every supported width
 struct Args { args: values(2) }
 op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::COMMUTATIVE.union(OpTraits::ASSOCIATIVE), memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [lhs, rhs] };
              semantics = bv.and(lhs, rhs);  identity = Zero
 ; }
@@ -203,7 +186,6 @@ op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
 // check: bv.mul does not support absorbing `One` at every supported width
 struct Args { args: values(2) }
 op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::COMMUTATIVE.union(OpTraits::ASSOCIATIVE), memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [lhs, rhs] };
              semantics = bv.mul(lhs, rhs);  absorbing = One
 ; }
@@ -213,7 +195,6 @@ op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
 // check: bv.or does not support absorbing `Zero` at every supported width
 struct Args { args: values(2) }
 op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::COMMUTATIVE.union(OpTraits::ASSOCIATIVE), memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [lhs, rhs] };
              semantics = bv.or(lhs, rhs);  absorbing = Zero
 ; }
@@ -223,7 +204,6 @@ op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
 // check: bv.xor does not support absorbing `Zero` at every supported width
 struct Args { args: values(2) }
 op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::COMMUTATIVE.union(OpTraits::ASSOCIATIVE), memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [lhs, rhs] };
              semantics = bv.xor(lhs, rhs);  absorbing = Zero
 ; }
@@ -231,54 +211,60 @@ op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
 // ----- semantic-facts/rejects-traits-not-supported-by-the-semantic-primitive-1
 // run: opgen-const-error
 // check: semantics do not justify COMMUTATIVE
+struct Facts { traits: OpTraits, memory: MemoryEffect }
 struct Args { args: values(2) }
 op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::COMMUTATIVE, memory: MemoryEffect::NONE };
+    meta = Facts { traits: OpTraits::COMMUTATIVE, memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [lhs, rhs] };
 semantics = bv.sub(lhs, rhs); }
 
 // ----- semantic-facts/rejects-traits-not-supported-by-the-semantic-primitive-2
 // run: opgen-const-error
 // check: semantics do not justify ASSOCIATIVE
+struct Facts { traits: OpTraits, memory: MemoryEffect }
 struct Args { args: values(2) }
 op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::ASSOCIATIVE, memory: MemoryEffect::NONE };
+    meta = Facts { traits: OpTraits::ASSOCIATIVE, memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [lhs, rhs] };
 semantics = bv.sub(lhs, rhs); }
 
 // ----- semantic-facts/rejects-traits-not-supported-by-the-semantic-primitive-3
 // run: opgen-const-error
 // check: semantics do not justify COMMUTATIVE
+struct Facts { traits: OpTraits, memory: MemoryEffect }
 struct Args { args: values(1) }
 op Test<T: Integer>(arg: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::COMMUTATIVE, memory: MemoryEffect::NONE };
+    meta = Facts { traits: OpTraits::COMMUTATIVE, memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [arg] };
 semantics = bv.neg(arg); }
 
 // ----- semantic-facts/rejects-traits-not-supported-by-the-semantic-primitive-4
 // run: opgen-const-error
 // check: semantics do not justify IDEMPOTENT
+struct Facts { traits: OpTraits, memory: MemoryEffect }
 struct Args { args: values(2) }
 op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::COMMUTATIVE.union(OpTraits::ASSOCIATIVE).union(OpTraits::IDEMPOTENT), memory: MemoryEffect::NONE };
+    meta = Facts { traits: OpTraits::COMMUTATIVE.union(OpTraits::ASSOCIATIVE).union(OpTraits::IDEMPOTENT), memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [lhs, rhs] };
 semantics = bv.add(lhs, rhs); }
 
 // ----- semantic-facts/rejects-traits-not-supported-by-the-semantic-primitive-5
 // run: opgen-const-error
 // check: semantics do not justify IDEMPOTENT
+struct Facts { traits: OpTraits, memory: MemoryEffect }
 struct Args { args: values(2) }
 op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::COMMUTATIVE.union(OpTraits::ASSOCIATIVE).union(OpTraits::IDEMPOTENT), memory: MemoryEffect::NONE };
+    meta = Facts { traits: OpTraits::COMMUTATIVE.union(OpTraits::ASSOCIATIVE).union(OpTraits::IDEMPOTENT), memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [lhs, rhs] };
 semantics = bv.mul(lhs, rhs); }
 
 // ----- semantic-facts/rejects-traits-not-supported-by-the-semantic-primitive-6
 // run: opgen-const-error
 // check: semantics do not justify IDEMPOTENT
+struct Facts { traits: OpTraits, memory: MemoryEffect }
 struct Args { args: values(2) }
 op Test<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::COMMUTATIVE.union(OpTraits::ASSOCIATIVE).union(OpTraits::IDEMPOTENT), memory: MemoryEffect::NONE };
+    meta = Facts { traits: OpTraits::COMMUTATIVE.union(OpTraits::ASSOCIATIVE).union(OpTraits::IDEMPOTENT), memory: MemoryEffect::NONE };
              mnemonic = "test"; storage = Args { args: [lhs, rhs] };
 semantics = bv.xor(lhs, rhs); }
 
@@ -287,7 +273,7 @@ semantics = bv.xor(lhs, rhs); }
 // check: unknown projection function `MemoryEffects::unknown`
 struct Effectful {  }
 op Effectful() -> () {
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::unknown) };
+    memory = MemoryEffect::known(MemoryEffects::unknown);
 mnemonic = "effectful"; storage = Effectful {}; }
 
 // ----- effects/duplicate-behavior
@@ -295,17 +281,18 @@ mnemonic = "effectful"; storage = Effectful {}; }
 // check: constant contracts verified
 struct Effectful {  }
 op Effectful() -> () {
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::READ.union(MemoryEffects::READ)) };
+    memory = MemoryEffect::known(MemoryEffects::READ.union(MemoryEffects::READ));
 mnemonic = "effectful"; storage = Effectful {}; }
 
-// ----- effects/old-alias-is-not-supported
+// ----- effects/duplicate-memory-declaration
 // run: opgen-error
-// check: unknown field
+// check: duplicate field `memory`
 struct Effectful {  }
 op Effectful() -> () {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
-    mnemonic = "effectful"; storage = Effectful {}; memory = READ
-; }
+    memory = unknown;
+    memory = read;
+    mnemonic = "effectful"; storage = Effectful {};
+}
 
 // ----- effects/old-effect-declaration-is-not-supported
 // run: opgen-error
@@ -377,7 +364,7 @@ op Work() -> () { meta = Tuning { input: 0 }; mnemonic = "work"; storage = Work 
 // run: opgen-error
 // check: unknown field `traits`
 struct Work {  }
-op Work() -> () { meta = OpInfo { memory: MemoryEffect::UNKNOWN }; traits = OpTraits::empty(); mnemonic = "work"; storage = Work {}; }
+op Work() -> () { memory = unknown; traits = OpTraits::empty(); mnemonic = "work"; storage = Work {}; }
 
 // ----- metadata/analysis-fields-can-have-different-names
 // run: opgen

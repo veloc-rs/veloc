@@ -4,7 +4,7 @@ use super::common::{self, compile};
 const ADD: &str = r#"
 struct Pair { args: values(2) }
 op Add<T: Bits>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo {};
+    memory = none;
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 typeset Bits = ScalarInteger;
@@ -12,7 +12,7 @@ typeset Bits = ScalarInteger;
 
 #[test]
 fn effect_sets_use_the_declared_vocabulary() {
-    assert!(compile(&ADD.replace("OpInfo {}", "OpInfo { memory: MemoryEffect::NONE }")).is_ok());
+    assert!(compile(&ADD.replace("memory = none;", "")).is_ok());
     for value in [
         "MemoryEffect::known(MemoryEffects::READ)",
         "MemoryEffect::known(MemoryEffects::WRITE)",
@@ -21,7 +21,7 @@ fn effect_sets_use_the_declared_vocabulary() {
         "MemoryEffect::UNKNOWN",
     ] {
         common::const_rejected(
-            &ADD.replace("OpInfo {}", &format!("OpInfo {{ memory: {value} }}")),
+            &ADD.replace("memory = none;", &format!("memory = {value};")),
             "executable semantics require no memory effects",
         );
     }
@@ -37,7 +37,6 @@ fn analysis_contracts_are_not_hardcoded_rust_paths() {
 const PAIR: &str = r#"
 struct Pair { args: values(2) }
 op Add<T: DOMAIN>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 "#;
@@ -183,7 +182,6 @@ fn type_domains_and_semantics() {
             typeset Wide = Type::I32 | Type::I64;
             struct Pair { args: values(2) }
             op Add<T: Wide>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-        meta = OpInfo {};
                 mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
         "#;
@@ -233,7 +231,6 @@ fn type_domains_and_semantics() {
             typeset Floating = ScalarFloat;
             struct Literal { value: Float }
             op Literal(value: Float) -> (result: Value<Floating>) {
-        meta = OpInfo { memory: MemoryEffect::NONE };
                 mnemonic = "literal"; storage = Literal { value: value };
                 }
         "#;
@@ -253,7 +250,6 @@ fn shape_constraints() {
             struct Unary { arg: Value }
             typeset Lanes = ScalarInteger;
             op Element<T: Lanes>(arg: Value<T>) -> (result: Value<element(T)>) {
-        meta = OpInfo { memory: MemoryEffect::NONE };
                 mnemonic = "element"; storage = Unary { arg: arg }; }
         "#;
         common::raw_rejected(&common::source(source), "impossible element constraint");
@@ -268,7 +264,6 @@ fn shape_constraints() {
             struct Unary { arg: Value }
             op Convert<T: V4, U: V2>(arg: Value<T>) -> Value<U> {
         verify { require(U.same_shape(T), "input and result must have the same shape"); }
-        meta = OpInfo { memory: MemoryEffect::NONE };
                 mnemonic = "convert"; storage = Unary { arg: arg }; }
         "#;
         common::const_rejected(source, "no admissible type signature");

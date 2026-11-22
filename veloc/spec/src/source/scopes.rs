@@ -355,6 +355,28 @@ impl Checker<'_> {
                 }
             }
             DeclKind::Fields(kind) if kind == "encoding" => {}
+            DeclKind::Op(_) if record.fields.contains_key("storage") => {
+                for (field, value) in &record.fields {
+                    match (field.as_str(), &value.kind) {
+                        ("memory", Kind::Name(name))
+                            if matches!(name.as_str(), "none" | "read" | "write" | "unknown") => {}
+                        ("control", Kind::Name(name))
+                            if matches!(name.as_str(), "terminator" | "abort") => {}
+                        ("traps", Kind::Name(name))
+                            if matches!(name.as_str(), "possible" | "always") => {}
+                        // The operation checker resolves callee arguments against the signature.
+                        ("memory" | "traps", Kind::Call(name, _)) if name == "callee" => {}
+                        _ => self.node(value, None, &locals)?,
+                    }
+                }
+            }
+            DeclKind::Fields(kind) if kind == "storage" => {
+                for (field, value) in &record.fields {
+                    if field != "control_effects" {
+                        self.node(value, None, &locals)?;
+                    }
+                }
+            }
             _ => {
                 for value in record.fields.values() {
                     self.node(value, None, &locals)?;

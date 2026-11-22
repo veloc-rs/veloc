@@ -21,10 +21,10 @@ pub mod validator;
 pub use builder::{ModuleBuilder, SsaBuilder};
 pub use constant::{ConstData, Constant, Float, Int, ScalarConst, VectorConst};
 pub use error::{Error, Result};
-pub use function::{EdgeRef, FuncBody, FuncDecl, FuncDecls, FunctionRef, InstCursor};
+pub use function::{EdgeRef, FuncBody, FuncDecl, FuncDecls, FuncEffects, FunctionRef, InstCursor};
 pub use inst::type_methods;
 pub use inst::{
-    Arguments, FloatCC, Inst, InstFields, InstView, InstWriter, IntCC, MemFlags, Opcode, Region,
+    Arguments, FloatCC, Inst, InstFields, InstView, InstWriter, IntCC, MemFlags, MemoryEffect, MemoryEffects, Opcode, Region,
     Successor, Successors, VectorMemOptions,
 };
 pub use intrinsic::{Intrinsic, ids as intrinsic_ids};

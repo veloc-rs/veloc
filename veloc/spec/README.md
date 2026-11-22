@@ -492,9 +492,8 @@ representation remain in Rust. Ordinary `encoding` declarations describe defs-ow
 data, not `Type` or the shared memory contracts.
 
 Callable operations use ordinary signatures, `move` parameters, `verify`
-predicates and explicit metadata. Direct calls declare `traps = callee(func_id);`
-and indirect calls declare `traps = possible;`. Tail calls also declare `TERMINATOR`; there is no separate `control` contract or
-generated callable classification. Backends lower instruction views directly.
+predicates and explicit effects. Direct calls declare `traps = callee(func_id);`
+and indirect calls declare `traps = possible;`. Tail calls also declare `control = terminator;`. Backends lower instruction views directly.
 The interpreter's callable lowering returns executable `ControlSite` data and
 records live roots at those operations and ordinary calls. Root recording is
 a runtime requirement, not a consequence of `MAY_TRAP`. Native lowering retains
@@ -582,12 +581,12 @@ Type-set expressions also work directly in operation signatures; a named set
 is just a reusable alias, not a required declaration for every combination:
 
 ```text
-op IAnd<T: Integer | BOOL | vectors(BOOL)>(lhs: Value<T>, rhs: Value<T>) -> Value<T> { meta: OpInfo {}, ... }
+op IAnd<T: Integer | BOOL | vectors(BOOL)>(lhs: Value<T>, rhs: Value<T>) -> Value<T> { ... }
 op Gather<T: Integer & Vector, U: Vector>(ptr: Value<PTR>, index: Value<T>) -> Value<U> {
     verify { require(U.same_shape(T), "index and result must have the same shape"); }
-    meta: OpInfo {}, ...
+    ...
 }
-op Convert<T: I32 | I64, U: F32 | F64>(arg: Value<T>) -> Value<U> { meta: OpInfo {}, ... }
+op Convert<T: I32 | I64, U: F32 | F64>(arg: Value<T>) -> Value<U> { ... }
 ```
 
 `|` means union and `&` means intersection; `&` binds more tightly. Parentheses
@@ -643,8 +642,10 @@ import "../../defs/types.spec";
 struct Example {}
 
 op Example() -> () {
-    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ.union(MemoryEffects::WRITE)) },
-    mnemonic: "example", storage: Example {}
+    traps = possible;
+    memory = MemoryEffect::known(MemoryEffects::READ.union(MemoryEffects::WRITE));
+    mnemonic = "example";
+    storage = Example {};
 }
 ```
 
@@ -658,26 +659,37 @@ and do not generate Rust `Default` implementations. Nested struct and enum
 values are checked recursively; inline recursive types are rejected.
 There is no separate metadata schema or runtime attribute dictionary.
 
-Each compilation unit uses one metadata struct type, selected by its operations'
-`meta: StructName { ... }` values. That struct may contain arbitrary declared
-fields; it need not be named `OpInfo`. MIR stores it inline in each static
-`OpSpec`, and `Opcode::meta()` borrows that value. LIR emits its own typed
-`GenericOpcode::meta()` table. Neither stores metadata on each instruction.
+MIR and LIR generate an opcode metadata struct, `OpInfo`, from the bound
+traits and memory types. MIR stores it in each static `OpSpec`. LIR exposes
+its static table through `GenericOpcode::meta()`.
 
-The operation-contract adapter selects fields with the explicitly bound traits and
-memory interface types, regardless of field names; more than one field of either type
-is ambiguous and rejected. Other fields are just typed data. Semantic laws and
-LIR flow contracts populate inferred facts before final struct checking. Pure
-interface expressions may supply constant metadata fields explicitly. If a memory
-field exists, an unmodeled operation must supply it. A struct without a memory
-contract is conservatively unknown.
-Missing operation traits mean no additional declared traits, not inferred purity.
+A packed operation that ends its block declares `control = terminator;`.
+An aborting exit declares `control = abort;`, which also makes it a terminator.
+Only these two declarations mark a packed opcode as a terminator. The
+`traps` declaration describes trap behavior independently.
+Operand-storage dialects declare the effect of each terminating flow variant
+once in the storage definition:
 
-The former top-level `traits` / `memory` entries and named `effect`
-declarations are rejected. `MemoryEffect::NONE` means no memory effects; `MemoryEffect::UNKNOWN`
-is a separate enum variant, not a flag or every known member combined.
-The `MemoryEffect` enum and its trusted methods remain in Rust; they implement
-memory interference, deletion and possible behaviors.
+```text
+control = ControlFlow::Next;
+control_effects = { Jump: terminator, Return: terminator, Trap: abort };
+```
+
+Each operation selects a variant with `flow`. Omitted variants in the map
+allow execution to continue. The generator uses this map for opcode traits
+and the flow enum's `may_continue()` query.
+
+A dialect can select its own metadata type with `meta = StructName { ... };`
+on each operation. Fields matching the bound analysis types receive the
+derived traits and memory effect. Other fields must be supplied explicitly.
+A metadata type without a memory field has an unknown memory bound.
+
+Declare the memory bound with `memory = none;`, `read`, `write`, `unknown`,
+or a typed constant expression. The field can also be supplied in an explicit
+metadata record. Spec rejects declaring both. For packed direct calls,
+`memory = callee(func_id);` selects a function declaration at the instruction
+site and emits an unknown bound in the static opcode table. The trap source is
+declared independently.
 Per-access volatility belongs to `MemFlags`; MIR atomic ordering is not
 currently modeled. Addresses and widths belong to access contracts and alias
 analysis.
@@ -696,28 +708,28 @@ struct Binary {
 }
 
 op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta: OpInfo {},
-    mnemonic: "iadd",
-    storage: Binary { args: [lhs, rhs] },
-    semantics: bv.add(lhs, rhs)
+    mnemonic = "iadd";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.add(lhs, rhs);
 }
 
-op ExtendU<T: Integer | BOOL | vectors(BOOL), U: Integer>(arg: Value<T>) -> Value<U> {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "extendu",
-    storage: Unary { arg: arg },
+op ExtendU<T: Integer | Type::BOOL | vectors(Type::BOOL), U: Integer>(arg: Value<T>) -> Value<U> {
+    mnemonic = "extend-u";
+    storage = Unary { arg };
     verify {
         require(U.same_shape(T), "input and result must have the same shape");
         require(U.wider_than(T), "result must have more bits per lane than arg");
     }
-    }
+    semantics = bv.zext(arg, result(0));
+}
 
-op Load(ptr: Value<PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
-    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) },
-    mnemonic: "load",
-    storage: Load { ptr: ptr, offset: offset, flags: flags },
-    text: "{.flags} {ptr}, offset={offset}",
-    }
+op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
+    traps = possible;
+    memory = read;
+    mnemonic = "load";
+    storage = Load { ptr, offset, flags };
+    text = "{.flags} {ptr}, offset={offset}";
+}
 ```
 
 Type requirements use the same `verify { require(predicate, diagnostic); }`
@@ -747,7 +759,12 @@ layout constraints remain local to that layout.
 normalized base, byte offset, width and memory flags. For a stack slot base,
 MIR producers guarantee that every executed access fits within the slot.
 The interpreter checks the byte range when selecting direct stack bytecode.
-Instructions with unknown ranges still report effects through `InstView::memory_effect()`.
+Instructions with unknown ranges still report effects through `InstView::memory_effect(decls)`.
+Direct calls and tail calls use the callee's declared memory effects, including
+effects of nested calls. A function header can declare `memory(none)`,
+`memory(read)`, or a combination such as `memory(read, write)`. Other flags are
+`allocate` and `free`. Omitting the attribute leaves memory effects unknown.
+The memory attribute is independent of `notrap` and does not guarantee return.
 
 ### Ownership transfer
 
@@ -756,12 +773,12 @@ Ownership transfer is attached to the logical parameter:
 ```text
 op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
     traps = callee(func_id);
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
-    mnemonic: "call",
-    storage: Call { func_id: func_id, args: args },
-    signature: function(func_id),
-    text: "{func_id}({args}) : {function(func_id)}",
-     }
+    memory = callee(func_id);
+    mnemonic = "call";
+    storage = Call { func_id, args };
+    signature = function(func_id);
+    text = "{func_id}({args}) : {function(func_id)}";
+}
 ```
 
 `move` consumes owned values; ordinary scalar, pointer and reusable callable
@@ -1200,12 +1217,13 @@ An explicit projection changes notation without changing the builder API or
 storage layout:
 
 ```text
-op Store(ptr: Value<PTR>, value: Value<Any>, offset: u32, flags: MemFlags) -> () {
-    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::WRITE) },
-    mnemonic: "store",
-    storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },
-    text: "{.flags} {value}, {ptr}, offset={offset}",
-     }
+op Store(ptr: Value<Type::PTR>, value: Value<Any>, offset: u32, flags: MemFlags) -> () {
+    traps = possible;
+    memory = write;
+    mnemonic = "store";
+    storage = Store { ptr, value, offset, flags };
+    text = "{.flags} {value}, {ptr}, offset={offset}";
+}
 ```
 
 The template generates both the parser and canonical printer at build time;
@@ -1340,9 +1358,8 @@ operation or a per-lane operation, not an entire vector, memory or machine-state
 model. Absent expressions mean **unmodeled**,
 not a claim that an operation is pure or verified.
 
-Executable semantic expressions infer `MemoryEffect::NONE`. A complete `access` contract
-also supplies its memory summary; other unmodeled operations must declare their
-memory effect in `meta` explicitly. The metadata traits field may be omitted.
+Executable value semantics require an empty memory effect. The default
+`memory = none;` satisfies this requirement.
 
 The semantic backend supports modular arithmetic, bitwise operations, comparison,
 selection, shifts, division, bit counts, signed/zero extension, truncation and
@@ -1365,8 +1382,10 @@ Zero extension explicitly converts Bool to a zero-or-one bitvector.
 An operation declares `traps = possible;` when it may trap. Direct calls use
 `traps = callee(func_id);` so the instruction query can consult the function
 declaration. An opcode with neither declaration nor a trap trait is trap-free.
-A packed instruction with `modifiers = [notrap];` accepts a site-specific
-guarantee via the `.notrap` suffix or its typed builder.
+Packed instructions with possible, callee-dependent, or explicitly guarded traps
+accept a site-specific guarantee via the `.notrap` suffix or their typed builder.
+An instruction that traps whenever executed declares `traps = always;` and
+rejects `.notrap`.
 
 Scalar constant folding is enabled explicitly in the optimizer rules. A fold
 uses the operation's normal-result semantics and supplies any required trap

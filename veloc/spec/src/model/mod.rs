@@ -94,6 +94,7 @@ pub(crate) struct Slot {
 pub(crate) struct Op {
     pub allows_notrap: bool,
     pub trap_callee: Option<String>,
+    pub memory_callee: Option<String>,
     pub declaration: crate::syntax::Signature,
     pub offset: usize,
     pub name: String,
@@ -146,6 +147,26 @@ pub(crate) enum Binding {
     Name(String),
     Array(Vec<Binding>),
     Table { cases: String, default: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Control {
+    Terminator,
+    Abort,
+}
+
+impl Control {
+    pub(crate) fn parse(source: &str, node: &Node) -> Result<Self, Error> {
+        match &node.kind {
+            Kind::Name(name) if name == "terminator" => Ok(Self::Terminator),
+            Kind::Name(name) if name == "abort" => Ok(Self::Abort),
+            _ => Err(Error::at(
+                source,
+                node.offset,
+                "expected terminator or abort",
+            )),
+        }
+    }
 }
 
 pub(crate) enum SignatureSource {

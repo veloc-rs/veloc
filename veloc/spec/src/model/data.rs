@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use crate::Error;
 use crate::model::encoding::Encodings;
-use crate::model::records::{PropertyType, RecordDef};
+use crate::model::records::{PropertyType, RecordDef, RecordField};
 use crate::model::{Fields, identifier, list};
 use crate::syntax::{Decl, DeclKind, Kind, Node};
 
@@ -71,11 +71,12 @@ pub(crate) struct EnumDef {
     pub variants: Vec<(String, Vec<PropertyType>)>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Types {
     pub rust: super::records::RustTypes,
     pub names: BTreeSet<String>,
     pub records: Vec<RecordDef>,
+    pub op_info: RecordDef,
     pub enums: Vec<EnumDef>,
 }
 
@@ -137,7 +138,23 @@ impl Types {
                 variants,
             });
         }
+        let op_info = RecordDef {
+            name: "OpInfo".into(),
+            fields: rust
+                .analysis
+                .iter()
+                .flat_map(|analysis| [("traits", &analysis.traits), ("memory", &analysis.memory)])
+                .map(|(name, ty)| RecordField {
+                    name: name.into(),
+                    rust: rust.qualified(ty),
+                    ty: PropertyType::Named(ty.clone()),
+                    policy: rust.policy(ty),
+                    logical: None,
+                })
+                .collect(),
+        };
         let types = Self {
+            op_info,
             rust,
             names,
             records,
@@ -320,6 +337,14 @@ impl Types {
         }
     }
 
+    pub fn metadata_record(&self, name: &str) -> Option<&RecordDef> {
+        if name == self.op_info.name && !self.names.contains(name) {
+            Some(&self.op_info)
+        } else {
+            self.records.iter().find(|r| r.name == name)
+        }
+    }
+
     fn emitted_records(&self, layouts: &[String], metadata: Option<&str>) -> Vec<RecordDef> {
         // Storage is a use of a record, not its Rust data representation. A record
         // also referenced as a field, enum payload or metadata still needs a struct.
@@ -341,11 +366,16 @@ impl Types {
             })
             .chain(metadata)
             .collect::<BTreeSet<_>>();
-        self.records
+        let mut records = self
+            .records
             .iter()
             .filter(|r| !layouts.contains(&r.name) || referenced.contains(r.name.as_str()))
             .cloned()
-            .collect()
+            .collect::<Vec<_>>();
+        if metadata == Some(&self.op_info.name) && !self.names.contains(&self.op_info.name) {
+            records.push(self.op_info.clone());
+        }
+        records
     }
 
     pub(crate) fn validate_sequences(

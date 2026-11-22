@@ -8,7 +8,6 @@ fn checked(predicate: &str) -> Result<veloc_spec::Artifacts, veloc_spec::Error> 
 fn Double(n: u64) -> u64 {{ value = n * 2; }}
 struct Custom {{ bits: u64, yes: bool }}
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {{
-    meta = OpInfo {{ memory: MemoryEffect::NONE }};
     mnemonic = "example"; storage = Custom {{ bits: number, yes: flag }};
     verify {{
         {predicate};
@@ -101,7 +100,6 @@ fn Above(items: array(u32, 2), limit: i128) -> bool {{
 type Bytes = rust("crate::Bytes") {{ view = borrowed; }}
 struct Buffers {{ first: Bytes, second: Bytes }}
 op Example(data: Bytes, other: Bytes) -> Value<Vector> {{
-    meta = OpInfo {{ memory: MemoryEffect::NONE }};
     mnemonic = "example"; storage = Buffers {{ first: data, second: other }};
     text = "{{data:bytes}}, {{other:bytes}}";
     verify {{
@@ -147,7 +145,7 @@ fn Next(ctx: &Snapshot, n: u64) -> u64 { value = ctx.next(n)?; }
 fn Successor(ctx: &Snapshot, n: u64) -> u64 { value = Next(ctx, n); }
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<Type::I32> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
+    mnemonic = "example";
     storage = Custom { bits: number, yes: flag };
     verify(ctx: Arithmetic) {
         let snapshot = ctx.snapshot();
@@ -289,7 +287,6 @@ enum Payload { variants = [Tag(Tag), Number(i64)]; }
 storage Operands { opcode = Code; view = View; reader = Read; writer = Build; register = Cell; attributes = Payload; }
 struct Pair { tag: optional(Tag), right: Cell, high: Cell, left: Cell, low: Cell }
 op Pair(move first: Value<Type::I32>, second: Value<Type::I64>, tag: Tag) -> (low: Value<Type::I32>, high: Value<Type::I64>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     storage = Pair { tag: some(tag), right: second, high, left: first, low };
     text = "{first}, {second}, tag={tag.bits}";
     verify(ctx: Limits) {
@@ -333,7 +330,6 @@ enum SigField { variants = [Sig(SigId), Number(i64)]; }
 storage Operands { opcode = SigCode; view = SigView; reader = SigRead; writer = SigBuild; register = Cell; attributes = SigField; }
 struct Call { outputs: sequence(Cell), sig: SigId, args: sequence(Cell) }
 op Invoke(sig: SigId, args: sequence(Value)) -> signature {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     storage = Call { outputs: results(), sig, args };
     signature = sig;
 }

@@ -10,7 +10,7 @@ fn shuffle_uses_constant_operand() {
         vec![veloc_mir::Type::I32X4],
         CallConv::Platform,
     );
-    let func = module.declare_function("pooled".into(), sig, Linkage::Local, false);
+    let func = module.declare_function("pooled".into(), sig, Linkage::Local, Default::default());
     {
         let mut builder = module.define(func);
         let ptr = builder.func().params()[0];
@@ -39,7 +39,12 @@ fn shuffle_uses_constant_operand() {
 fn test_simple_vector_add_fixed() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
-    let func_id = mb.declare_function("test_vadd".to_string(), sig_id, Linkage::Export, false);
+    let func_id = mb.declare_function(
+        "test_vadd".to_string(),
+        sig_id,
+        Linkage::Export,
+        Default::default(),
+    );
     let mut builder = mb.define(func_id);
 
     let v4i32 = Type::I32
@@ -65,7 +70,12 @@ fn test_simple_vector_add_fixed() {
 fn test_vector_splat() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
-    let func_id = mb.declare_function("test_splat".to_string(), sig_id, Linkage::Export, false);
+    let func_id = mb.declare_function(
+        "test_splat".to_string(),
+        sig_id,
+        Linkage::Export,
+        Default::default(),
+    );
     let mut builder = mb.define(func_id);
 
     let v8i32 = Type::I32
@@ -98,7 +108,12 @@ fn test_vector_splat() {
 fn test_vector_reduction_ops() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
-    let func_id = mb.declare_function("test_reduction".to_string(), sig_id, Linkage::Export, false);
+    let func_id = mb.declare_function(
+        "test_reduction".to_string(),
+        sig_id,
+        Linkage::Export,
+        Default::default(),
+    );
     let mut builder = mb.define(func_id);
 
     let v4f32 = Type::F32
@@ -132,7 +147,7 @@ fn test_vector_extract_insert() {
         "test_extract_insert".to_string(),
         sig_id,
         Linkage::Export,
-        false,
+        Default::default(),
     );
     let mut builder = mb.define(func_id);
 
@@ -160,7 +175,12 @@ fn test_vector_extract_insert() {
 fn test_vector_with_mask_evl() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
-    let func_id = mb.declare_function("test_masked".to_string(), sig_id, Linkage::Export, false);
+    let func_id = mb.declare_function(
+        "test_masked".to_string(),
+        sig_id,
+        Linkage::Export,
+        Default::default(),
+    );
     let mut builder = mb.define(func_id);
 
     let scalable_v4i32 = Type::I32
@@ -200,7 +220,12 @@ fn test_vector_with_mask_evl() {
 fn test_gather_load() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
-    let func_id = mb.declare_function("test_gather".to_string(), sig_id, Linkage::Export, false);
+    let func_id = mb.declare_function(
+        "test_gather".to_string(),
+        sig_id,
+        Linkage::Export,
+        Default::default(),
+    );
     let mut builder = mb.define(func_id);
 
     let v4i32 = Type::I32
@@ -244,7 +269,12 @@ fn test_gather_load() {
 fn test_strided_load_store() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::Platform);
-    let func_id = mb.declare_function("test_strided".to_string(), sig_id, Linkage::Export, false);
+    let func_id = mb.declare_function(
+        "test_strided".to_string(),
+        sig_id,
+        Linkage::Export,
+        Default::default(),
+    );
     let mut builder = mb.define(func_id);
 
     let v8f32 = Type::F32

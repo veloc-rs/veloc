@@ -355,7 +355,7 @@ mod tests {
     fn compile_single_function_to_object() {
         let mut mb = ModuleBuilder::new();
         let sig = mb.make_signature(vec![], vec![], CallConv::Platform);
-        let func_id = mb.declare_function("main".into(), sig, Linkage::Export, false);
+        let func_id = mb.declare_function("main".into(), sig, Linkage::Export, Default::default());
         {
             let mut fb = mb.define(func_id);
             fb.ins().ret(&[]);
@@ -379,9 +379,10 @@ mod tests {
     fn compile_module_to_object_keeps_defined_and_imported_symbols() {
         let mut mb = ModuleBuilder::new();
         let sig = mb.make_signature(vec![], vec![], CallConv::Platform);
-        mb.declare_function("ext_func".into(), sig, Linkage::Import, false);
-        let main_id = mb.declare_function("main".into(), sig, Linkage::Export, false);
-        let local_id = mb.declare_function("helper".into(), sig, Linkage::Local, false);
+        mb.declare_function("ext_func".into(), sig, Linkage::Import, Default::default());
+        let main_id = mb.declare_function("main".into(), sig, Linkage::Export, Default::default());
+        let local_id =
+            mb.declare_function("helper".into(), sig, Linkage::Local, Default::default());
         {
             let mut fb = mb.define(main_id);
             fb.ins().ret(&[]);
@@ -419,8 +420,9 @@ mod tests {
     fn compile_module_to_object_emits_call_relocation() {
         let mut mb = ModuleBuilder::new();
         let sig = mb.make_signature(vec![], vec![], CallConv::Platform);
-        let ext_id = mb.declare_function("ext_func".into(), sig, Linkage::Import, false);
-        let main_id = mb.declare_function("main".into(), sig, Linkage::Export, false);
+        let ext_id =
+            mb.declare_function("ext_func".into(), sig, Linkage::Import, Default::default());
+        let main_id = mb.declare_function("main".into(), sig, Linkage::Export, Default::default());
         {
             let mut fb = mb.define(main_id);
             fb.ins().call(ext_id, &[]);

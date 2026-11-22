@@ -97,9 +97,12 @@ impl CodeGenContext {
                         } else {
                             Linkage::Import
                         };
-                        let id = self
-                            .module
-                            .declare_function(name.clone(), sig, linkage, false);
+                        let id = self.module.declare_function(
+                            name.clone(),
+                            sig,
+                            linkage,
+                            Default::default(),
+                        );
                         self.functions.insert(name, FunctionSymbol { id, ty: *ty });
                     } else {
                         let old = self.functions.get_mut(&name).unwrap();

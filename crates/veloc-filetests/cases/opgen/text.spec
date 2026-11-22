@@ -5,7 +5,6 @@ struct Pair {
     inputs: values(2),
 }
 op Difference<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "difference";
     storage = Pair { inputs: [left, right] };
 }
@@ -26,7 +25,6 @@ struct Pair {
     inputs: values(2),
 }
 op Difference<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "difference";
     storage = Pair { inputs: [left, right] };
 }
@@ -47,7 +45,6 @@ struct Pair {
     inputs: values(2),
 }
 op Difference<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "difference";
     storage = Pair { inputs: [left, right] };
 }
@@ -68,7 +65,6 @@ struct Pair {
     inputs: values(2),
 }
 op Difference<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "difference";
     storage = Pair { inputs: [left, right] };
 }
@@ -97,7 +93,6 @@ struct Pair {
     inputs: values(2),
 }
 op Difference<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "difference";
     storage = Pair { inputs: [left, right] };
 }
@@ -116,7 +111,7 @@ layout Extended {
 // check: pub fn example
 struct Example{value:u32,}
 op Example(value:u32,)->Value<Type::I32>{
-    meta = OpInfo{memory:MemoryEffect::NONE,}; // 中文注释
+    // 中文注释
     mnemonic = "example";storage = Example{value:value,};
     verify {
         require(value>=0&&value<=4294967295,"valid // not a comment");
@@ -133,7 +128,7 @@ op Example() - > () {}
 // check: invalid or out-of-range integer literal
 struct Empty {}
 op Example() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example"; storage = Empty {};
+    mnemonic = "example"; storage = Empty {};
     verify {
         170141183460469231731687303715884105728 > 0;
     }
@@ -149,7 +144,7 @@ encoding TooWide { storage = u64; fields = [bits(4294967296)]; }
 // check: pub fn empty
 struct Empty {}
 op Example() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example"; storage = Empty {};
+    mnemonic = "example"; storage = Empty {};
     verify {
         require(true, "quotes: \" / slash: \\ / newline: \n / UTF-8: 字符 } ]");
     }
@@ -160,7 +155,7 @@ op Example() -> () {
 // check: invalid string escape
 struct Empty {}
 op Example() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; storage = Empty {};
+    storage = Empty {};
     mnemonic = "bad\q"
 ; }
 

@@ -76,9 +76,14 @@ impl<'a> InstView<'a> {
         self.opcode().spec().is_terminator()
     }
 
-    /// Coarse behavior only; per-access volatility is checked separately.
-    pub fn memory_effect(&self) -> MemoryEffect {
-        self.opcode().spec().memory_effect()
+    /// Direct calls inherit the declared memory bound. Volatility is checked separately.
+    pub fn memory_effect(&self, decls: &crate::FuncDecls) -> MemoryEffect {
+        self.memory_callee()
+            .and_then(|callee| decls.get(callee))
+            .map_or_else(
+                || self.opcode().spec().memory_effect(),
+                |decl| decl.effects.memory,
+            )
     }
 
     pub fn has_volatile_access(&self) -> bool {
@@ -93,17 +98,17 @@ impl<'a> InstView<'a> {
         !self
             .trap_callee()
             .and_then(|callee| decls.get(callee))
-            .is_some_and(|decl| decl.notrap)
+            .is_some_and(|decl| decl.effects.notrap)
     }
 
-    /// Deletion, speculation and commoning have different preconditions.
+    /// Memory guarantees alone do not make a call removable: it might never return.
     pub fn can_erase(&self, decls: &crate::FuncDecls) -> bool {
         let spec = self.opcode().spec();
         !spec.is_terminator()
             && !self.may_trap(decls)
             && !self.opcode().transfers_ownership()
             && !self.has_volatile_access()
-            && self.memory_effect().can_erase()
+            && spec.memory_effect().can_erase()
     }
 
     /// Conservative, context-free speculation. Analyses may prove more.
@@ -111,7 +116,6 @@ impl<'a> InstView<'a> {
         self.opcode().spec().is_pure()
             && !self.opcode().transfers_ownership()
             && !self.has_volatile_access()
-            && self.memory_effect().is_none()
     }
 
     /// Context-free commoning excludes mutable reads and fresh identities.
@@ -124,7 +128,7 @@ impl<'a> InstView<'a> {
         spec.is_terminator()
             || self.may_trap(decls)
             || self.has_volatile_access()
-            || self.memory_effect().has_side_effects()
+            || spec.memory_effect().has_side_effects()
     }
 }
 

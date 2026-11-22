@@ -658,6 +658,7 @@ fn compile_function<'a>(
                 InstView::Ternary {
                     opcode: Opcode::Select,
                     args,
+                    ..
                 } => {
                     let [result] = results_of_inst else {
                         return Err(unsupported("select result arity"));
@@ -759,6 +760,7 @@ fn compile_function<'a>(
                 InstView::Unary {
                     opcode: Opcode::IEqz,
                     arg,
+                    ..
                 } => {
                     let [result] = results_of_inst else {
                         return Err(unsupported("eqz result arity"));
@@ -787,6 +789,7 @@ fn compile_function<'a>(
                 InstView::Unary {
                     opcode: opcode @ (Opcode::FNeg | Opcode::FAbs),
                     arg,
+                    ..
                 } => {
                     let [result] = results_of_inst else {
                         return Err(unsupported("float sign arity"));
@@ -818,6 +821,7 @@ fn compile_function<'a>(
                 InstView::Unary {
                     opcode: opcode @ (Opcode::FloatToIntS | Opcode::FloatToIntU),
                     arg,
+                    ..
                 } => {
                     let [result] = results_of_inst else {
                         return Err(unsupported("float-to-int arity"));
@@ -847,6 +851,7 @@ fn compile_function<'a>(
                 InstView::Unary {
                     opcode: opcode @ (Opcode::IntToFloatS | Opcode::IntToFloatU),
                     arg,
+                    ..
                 } => {
                     let [result] = results_of_inst else {
                         return Err(unsupported("int-to-float arity"));
@@ -880,6 +885,7 @@ fn compile_function<'a>(
                 InstView::Unary {
                     opcode: opcode @ (Opcode::ICtz | Opcode::IClz),
                     arg,
+                    ..
                 } => {
                     let [result] = results_of_inst else {
                         return Err(unsupported("bit count result arity"));
@@ -941,6 +947,7 @@ fn compile_function<'a>(
                 InstView::Unary {
                     opcode: Opcode::ExtendU | Opcode::Wrap | Opcode::Reinterpret,
                     arg,
+                    ..
                 } => {
                     let [result] = results_of_inst else {
                         return Err(unsupported("conversion result arity"));
@@ -977,6 +984,7 @@ fn compile_function<'a>(
                 InstView::Unary {
                     opcode: Opcode::ExtendS,
                     arg,
+                    ..
                 } => {
                     let [result] = results_of_inst else {
                         return Err(unsupported("extension result arity"));

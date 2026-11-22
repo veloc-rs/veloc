@@ -157,17 +157,16 @@ impl Module {
         self.types_mut().insert_signature(signature)
     }
 
-    /// Set `notrap` when every direct call with valid arguments is guaranteed
-    /// to execute without a MIR trap.
+    /// Declare the guarantees that callers can rely on for valid arguments.
     pub fn declare_function(
         &mut self,
         name: String,
         signature: SigId,
         linkage: Linkage,
-        notrap: bool,
+        effects: crate::FuncEffects,
     ) -> FuncId {
         self.decls.push(FuncDecl {
-            notrap,
+            effects,
             name,
             signature,
             linkage,

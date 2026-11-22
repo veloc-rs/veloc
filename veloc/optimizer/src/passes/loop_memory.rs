@@ -12,6 +12,7 @@ impl FunctionPass for LoopMemoryPass {
     }
     fn run(&self, am: &mut AnalysisManager<'_>, _: &OptConfig, metrics: &Profile) -> PassOutcome {
         let dom = am.take_dominators();
+        let decls = am.decls();
         let f = am.function_mut();
         let loops = LoopInfo::compute(f.cfg(), &dom);
         let mut changed = 0;
@@ -78,6 +79,7 @@ impl FunctionPass for LoopMemoryPass {
                     safe = false;
                     break;
                 }
+                let effect = view.memory_effect(decls);
                 match view {
                     InstView::Store {
                         ptr: p,
@@ -100,7 +102,7 @@ impl FunctionPass for LoopMemoryPass {
                     {
                         loads += 1
                     }
-                    _ if view.memory_effect().may_write() || view.memory_effect().may_free() => {
+                    _ if effect.may_write() || effect.may_free() => {
                         safe = false;
                         break;
                     }
@@ -127,10 +129,8 @@ impl FunctionPass for LoopMemoryPass {
                     initial = Some(v);
                     break;
                 }
-                if view.has_volatile_access()
-                    || view.memory_effect().may_write()
-                    || view.memory_effect().may_free()
-                {
+                let effect = view.memory_effect(decls);
+                if view.has_volatile_access() || effect.may_write() || effect.may_free() {
                     break;
                 }
             }

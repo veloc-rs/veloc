@@ -72,6 +72,8 @@ type MemoryEffect = rust("veloc_types::MemoryEffect") {
     analysis = memory(MemoryEffect::NONE);
     const NONE: Self;
     const UNKNOWN: Self;
+    const READ: Self;
+    const WRITE: Self;
     const fn known(effects: MemoryEffects) -> Self;
     const fn is_none(self) -> bool;
 }

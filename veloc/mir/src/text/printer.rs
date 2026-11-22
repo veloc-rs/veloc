@@ -251,8 +251,24 @@ impl<'a> FuncPrinter<'a> {
 
     pub fn print(&self, f: &mut dyn Write) -> Result {
         self.fmt_signature(f)?;
-        if self.func.decl.notrap {
+        if self.func.decl.effects.notrap {
             f.write_str(" notrap")?;
+        }
+        if let crate::MemoryEffect::Known(flags) = self.func.decl.effects.memory {
+            f.write_str(" memory(")?;
+            if flags.is_empty() {
+                f.write_str("none")?;
+            } else if !crate::MemoryEffects::all().contains(flags) {
+                write!(f, "{:#x}", flags.bits())?;
+            } else {
+                for (index, (name, _)) in flags.iter_names().enumerate() {
+                    if index != 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_str(&name.to_ascii_lowercase())?;
+                }
+            }
+            f.write_char(')')?;
         }
         writeln!(f)?;
         let Some(body) = self.func.body else {

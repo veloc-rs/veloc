@@ -104,8 +104,18 @@ pub fn run_memory(
                 continue;
             }
             let Some(access) = func.access(inst, layout) else {
-                if !view.memory_effect().is_none() || view.may_trap(decls) {
+                let effect = view.memory_effect(decls);
+                if effect.may_write() || effect.may_free() {
                     cells.clear();
+                } else if effect.may_read()
+                    || view.may_trap(decls)
+                    || matches!(view, InstView::Call { .. })
+                {
+                    // A read, trap, or call that never returns can expose the prior store.
+                    // On normal continuation the recorded bytes still have their old value.
+                    for cell in &mut cells {
+                        cell.pending_store = None;
+                    }
                 }
                 continue;
             };

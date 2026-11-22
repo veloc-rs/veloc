@@ -114,7 +114,17 @@ impl Operands {
         let mut out = String::from("// @generated from storage definitions.\n");
         out.push_str(&"#[derive(Debug, Clone, Copy)] pub struct AttributeList<'a, T> { fields: FieldView<'a>, start: usize, decode: fn($ATTRSRef<'a>) -> T }\nimpl<'a, T> AttributeList<'a, T> { pub fn iter(&self) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator + '_ { (self.start..self.fields.len()).map(|i| (self.decode)(self.fields.read(i))) } pub fn len(&self) -> usize { self.fields.len() - self.start } pub fn is_empty(&self) -> bool { self.len() == 0 } }\n".replace("$ATTRS", attrs));
         out.push_str(&crate::generate::opcode_enum(defs, &self.opcode));
-        if let Some((control, _, _)) = &self.control {
+        if let Some(flow) = &self.control {
+            let control = &flow.name;
+            writeln!(
+                out,
+                "impl {control} {{ pub const fn may_continue(self) -> bool {{ match self {{"
+            )
+            .unwrap();
+            for (variant, effect) in &flow.variants {
+                writeln!(out, "Self::{variant} => {},", effect.is_none()).unwrap();
+            }
+            out.push_str("} } }\n");
             writeln!(
                 out,
                 "impl {opcode} {{ pub const fn control(self) -> {control} {{ match self {{"

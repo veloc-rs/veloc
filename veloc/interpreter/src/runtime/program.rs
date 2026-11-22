@@ -452,7 +452,7 @@ mod tests {
     ) -> (Module, FuncId) {
         let mut module = ModuleBuilder::new();
         let signature = module.make_signature(params, returns, CallConv::Platform);
-        let function = module.declare_function(name.into(), signature, linkage, false);
+        let function = module.declare_function(name.into(), signature, linkage, Default::default());
         if linkage != Linkage::Import {
             let mut builder = module.define(function);
             builder.ins().ret(&[]);

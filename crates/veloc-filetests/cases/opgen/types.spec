@@ -3,13 +3,11 @@
 // check: pub enum Opcode
 struct Unary { arg: Value }
 op Scalar(arg: Value<Type::I32>) -> Value<Type::I32> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "scalar";
     storage = Unary { arg };
     verify { require(arg.ty() == Type::I32, "expected i32"); }
 }
 op Vector(arg: Value<Type::I32X4>) -> Value<Type::I32X4> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "vector";
     storage = Unary { arg };
     verify { require(arg.ty().lanes()? == 4, "expected four lanes"); }
@@ -23,7 +21,6 @@ type SCALABLE = vector(Type::I32, scalable(8));
 typeset Shapes = WIDE | SCALABLE | Type::I32X4;
 struct Unary { arg: Value }
 op Copy<T: Shapes>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "copy";
     storage = Unary { arg };
 }
@@ -49,7 +46,6 @@ type WORD = int(32);
 typeset Wide = Type::I32 | Type::F64;
 struct Pair { args: values(2) }
 op Add<T: Wide>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -61,7 +57,6 @@ typeset V2 = Type::I64X2;
 struct Unary { arg: Value }
 op Convert<T: V4, U: V2>(arg: Value<T>) -> Value<U> {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "convert"; storage = Unary { arg: arg }; }
 
 // ----- type-sets/exact-shapes-detect-impossible-relations-at-definition-time-2
@@ -72,7 +67,6 @@ typeset V2 = Type::I64;
 struct Unary { arg: Value }
 op Convert<T: V4, U: V2>(arg: Value<T>) -> Value<U> {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "convert"; storage = Unary { arg: arg }; }
 
 // ----- type-sets/vector-constants-reject-unrepresentable-or-invalid-types-1
@@ -197,7 +191,6 @@ typeset Later = Type::I64 | Type::I32;
 typeset Lanes = vectors(Wide) & Vector;
 struct Pair { args: values(2) }
 op Add<T: Lanes>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add";
     storage = Pair { args: [lhs, rhs] };
     semantics = bv.add(lhs, rhs);
@@ -213,14 +206,11 @@ class Legacy { members = [Type::I32]; }
 // check: no admissible type signature
 struct Unary { arg: Value }
 op Copy(arg: Value<Type::I32 | Type::I64>) -> Value<Type::I32 | Type::I64> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "copy"; storage = Unary { arg: arg }; }
 op Lane<T: vectors(Type::I32 | Type::I64)>(arg: Value<T>) -> Value<element(T)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "lane"; storage = Unary { arg: arg }; }
 op Convert<T: Type::I32 | Type::I64, U: Float & Vector>(arg: Value<T>) -> Value<U> {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "convert"; storage = Unary { arg: arg }; }
 
 // ----- type-expressions/direct-patterns-and-shape-constraints-accept-expressions-2
@@ -228,14 +218,11 @@ mnemonic = "convert"; storage = Unary { arg: arg }; }
 // check: unknown type or typeset `T`
 struct Unary { arg: Value }
 op Copy(arg: Value<Type::I32 | Type::I64>) -> Value<Type::I32 | Type::I64> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "copy"; storage = Unary { arg: arg }; }
 op Lane<T: vectors(T)>(arg: Value<T>) -> Value<element(T)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "lane"; storage = Unary { arg: arg }; }
 op Convert<T: Type::I32 | Type::I64, U: Float & Scalar>(arg: Value<T>) -> Value<U> {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "convert"; storage = Unary { arg: arg }; }
 
 // ----- type-expressions/expression-nesting-is-bounded-but-flat-unions-are-not-recursive-1
@@ -243,7 +230,6 @@ mnemonic = "convert"; storage = Unary { arg: arg }; }
 // check: definition nesting exceeds 64 levels
 struct Pair { args: values(2) }
 op Add<T: ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((Type::I32))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -252,7 +238,6 @@ op Add<T: ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
 // check: type constraint must not be empty
 struct Pair { args: values(2) }
 op Add<T: Integer & Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -261,7 +246,6 @@ op Add<T: Integer & Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 // check: type constraint must not be empty
 struct Pair { args: values(2) }
 op Add<T: vectors(Type::I32) & Type::I32>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -270,7 +254,6 @@ op Add<T: vectors(Type::I32) & Type::I32>(lhs: Value<T>, rhs: Value<T>) -> Value
 // check: unknown type or typeset `Missing`
 struct Pair { args: values(2) }
 op Add<T: Integer | Missing>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -279,7 +262,6 @@ op Add<T: Integer | Missing>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 // check: unknown type or typeset `Missing`
 struct Pair { args: values(2) }
 op Add<T: (Type::I32 & Type::F32) & Missing>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -288,7 +270,6 @@ op Add<T: (Type::I32 & Type::F32) & Missing>(lhs: Value<T>, rhs: Value<T>) -> Va
 // check: vectors() requires a set of non-pointer scalar types
 struct Pair { args: values(2) }
 op Add<T: vectors(Type::I32 | Type::PTR)>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -297,7 +278,6 @@ op Add<T: vectors(Type::I32 | Type::PTR)>(lhs: Value<T>, rhs: Value<T>) -> Value
 // check: expected a name
 struct Pair { args: values(2) }
 op Add<T: Integer |>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -306,7 +286,6 @@ op Add<T: Integer |>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 // check: expected `,`
 struct Pair { args: values(2) }
 op Add<T: Integer || Type::BOOL>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -315,7 +294,6 @@ op Add<T: Integer || Type::BOOL>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 // check: expected `,`
 struct Pair { args: values(2) }
 op Add<T: Integer && Vector>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -324,7 +302,6 @@ op Add<T: Integer && Vector>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 // check: expected `,`
 struct Pair { args: values(2) }
 op Add<T: Integer + Type::BOOL>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -333,7 +310,6 @@ op Add<T: Integer + Type::BOOL>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 // check: expected `)`
 struct Pair { args: values(2) }
 op Add<T: (Integer | Type::BOOL>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -342,7 +318,6 @@ op Add<T: (Integer | Type::BOOL>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 // check: expected a name
 struct Pair { args: values(2), }
 op Add<T: ()>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -361,7 +336,6 @@ typeset A = Type::I32 | vectors(B); typeset B = A & Scalar;
 // check: invalid semantic types [Bool, Bool] -> [Bool]: expected a bitvector, got bool
 struct Pair { args: values(2), }
 op Add<T: Type::BOOL | vectors(Type::BOOL)>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -370,7 +344,6 @@ op Add<T: Type::BOOL | vectors(Type::BOOL)>(lhs: Value<T>, rhs: Value<T>) -> Val
 // check: floating-point execution semantics are not modeled
 struct Pair { args: values(2), }
 op Add<T: Type::I32 | Type::F64>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
 ; }
 
@@ -379,6 +352,5 @@ op Add<T: Type::I32 | Type::F64>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
 // check: float text atoms require a scalar float first result
 struct Literal { value: Float, }
 op Literal<T: Float & Vector>(value: Float) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "literal"; storage = Literal { value: value };
 }

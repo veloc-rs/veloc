@@ -208,13 +208,13 @@ mod tests {
         ];
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(types.to_vec(), types.to_vec(), CallConv::Platform);
-        let callee = module.declare_function("callee".into(), sig, Linkage::Local, false);
+        let callee = module.declare_function("callee".into(), sig, Linkage::Local, Default::default());
         {
             let mut builder = module.define(callee);
             let params = builder.func().params().to_vec();
             builder.ins().ret(&params);
         }
-        let caller = module.declare_function("caller".into(), sig, Linkage::Local, false);
+        let caller = module.declare_function("caller".into(), sig, Linkage::Local, Default::default());
         let (target, last_param) = {
             let mut builder = module.define(caller);
             let args = builder.func().params().to_vec();
@@ -267,7 +267,7 @@ mod tests {
     fn branch_tables_require_a_default_destination() {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(vec![], vec![], CallConv::Platform);
-        let func = module.declare_function("empty-table".into(), sig, Linkage::Local, false);
+        let func = module.declare_function("empty-table".into(), sig, Linkage::Local, Default::default());
         {
             let mut builder = module.define(func);
             let entry = builder.func().entry_block();
@@ -300,7 +300,7 @@ mod tests {
         let mut module = ModuleBuilder::new();
         let signature = module.make_signature(vec![], vec![], CallConv::Platform);
         let function =
-            module.declare_function("test".to_string(), signature, Linkage::Export, false);
+            module.declare_function("test".to_string(), signature, Linkage::Export, Default::default());
         let mut builder = module.define(function);
 
         builder.ins().ret(&[]);
@@ -316,7 +316,7 @@ mod tests {
     fn constant_validation_reports_invalid_size_without_panicking() {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(vec![], vec![], CallConv::Platform);
-        let id = module.declare_function("invalid-size".into(), sig, Linkage::Local, false);
+        let id = module.declare_function("invalid-size".into(), sig, Linkage::Local, Default::default());
         {
             let mut builder = module.define(id);
             builder.ins().vconst(crate::VectorConst::dense(

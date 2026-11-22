@@ -128,8 +128,12 @@ fn values_construction_handles_inline_fixed_opcode_and_nullary_layouts() {
 fn generated_memory_builders_preserve_field_order() {
     let mut module = ModuleBuilder::new();
     let signature = module.make_signature(vec![Type::PTR, Type::PTR], vec![], CallConv::Platform);
-    let function =
-        module.declare_function("memory_fields".into(), signature, Linkage::Export, false);
+    let function = module.declare_function(
+        "memory_fields".into(),
+        signature,
+        Linkage::Export,
+        Default::default(),
+    );
     let mut builder = module.define(function);
     let ptr = builder.func().params()[0];
     let value = builder.func().params()[1];
@@ -182,8 +186,12 @@ fn generated_memory_builders_preserve_field_order() {
 fn constant_values_preserve_bit_patterns() {
     let mut module = ModuleBuilder::new();
     let signature = module.make_signature(vec![], vec![], CallConv::Platform);
-    let function =
-        module.declare_function("constant_bits".into(), signature, Linkage::Export, false);
+    let function = module.declare_function(
+        "constant_bits".into(),
+        signature,
+        Linkage::Export,
+        Default::default(),
+    );
     let mut builder = module.define(function);
 
     let bits = 0xfedc_ba98_7654_3210;
@@ -240,7 +248,7 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
 
     let mut module = ModuleBuilder::new();
     let sig = module.make_signature(vec![], vec![], CallConv::Platform);
-    let func = module.declare_function("constants".into(), sig, Linkage::Local, false);
+    let func = module.declare_function("constants".into(), sig, Linkage::Local, Default::default());
     let mut builder = module.define(func);
     let bytes: Vec<_> = [1i32, -2, 3, 4]
         .into_iter()
@@ -299,7 +307,8 @@ fn vector_constant_construction_defers_data_checks_to_validation() {
     ] {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(vec![], vec![], CallConv::Platform);
-        let func = module.declare_function("constant".into(), sig, Linkage::Local, false);
+        let func =
+            module.declare_function("constant".into(), sig, Linkage::Local, Default::default());
         let mut builder = module.define(func);
         let result = builder.ins().dense_const(bytes, ty);
         let value = builder.func().dfg().as_const(result).unwrap();
@@ -321,9 +330,18 @@ fn vector_constant_construction_defers_data_checks_to_validation() {
 fn roundtrip_preserves_notrap_on_declarations_and_calls() {
     let mut builder = ModuleBuilder::new();
     let sig = builder.make_signature(vec![], vec![], CallConv::Platform);
-    let caller = builder.declare_function("caller".into(), sig, Linkage::Local, false);
-    let trusted = builder.declare_function("trusted".into(), sig, Linkage::Import, true);
-    let unknown = builder.declare_function("unknown".into(), sig, Linkage::Import, false);
+    let caller = builder.declare_function("caller".into(), sig, Linkage::Local, Default::default());
+    let trusted = builder.declare_function(
+        "trusted".into(),
+        sig,
+        Linkage::Import,
+        veloc_mir::FuncEffects {
+            notrap: true,
+            ..Default::default()
+        },
+    );
+    let unknown =
+        builder.declare_function("unknown".into(), sig, Linkage::Import, Default::default());
     let mut body = builder.define(caller);
     let inherited = body.ins().call(trusted, &[]);
     let explicit = body.ins().call_notrap(unknown, &[]);

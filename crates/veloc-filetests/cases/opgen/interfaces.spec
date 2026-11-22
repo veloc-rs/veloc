@@ -42,7 +42,7 @@ type Numbers = rust("crate::host::Numbers") {
 fn Count(ctx: &Numbers, n: u32) -> u32 { value = ctx.next(n)?; }
 struct Data { n: u32 }
 op Example(n: u32) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
+    mnemonic = "example";
     storage = Data { n: n };
     verify(ctx: Numbers) { require(Count(ctx, n) > n, "no next value"); }
 }
@@ -53,7 +53,7 @@ op Example(n: u32) -> () {
 fn Count(ctx: &VerifyContext, sig: SigId) -> i128 { value = len(ctx.signature(sig)?.params()); }
 struct Data { sig: SigId }
 op Example(sig: SigId) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
+    mnemonic = "example";
     storage = Data { sig: sig };
     verify(ctx: VerifyContext) { require(Count(ctx, sig) > 0, "expected parameters"); }
 }
@@ -96,7 +96,7 @@ context query {}
 type Unused = rust("crate::host::Unused") { fn number(&self) -> u32; }
 struct Data { n: u32 }
 op Example(n: u32) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
+    mnemonic = "example";
     storage = Data { n: n };
 }
 
@@ -116,7 +116,7 @@ enum EntryResult { variants = [Some(Token), None]; }
 type Token = rust("crate::tokens::Token");
 struct Empty {}
 op Example() -> Value<Token> {
-    mnemonic = "example"; meta = OpInfo { memory: MemoryEffect::NONE }; storage = Empty {};
+    mnemonic = "example"; storage = Empty {};
 }
 
 // ----- rust-types/foreign-types-are-not-structural-type-aliases
@@ -184,7 +184,7 @@ type Token = rust("crate::tokens::Token") {
 type Tokens = rust("crate::host::Tokens") { fn read(&self, number: u32) -> Token; }
 struct Input { number: u32 }
 op Check(number: u32) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "check"; storage = Input { number };
+    mnemonic = "check"; storage = Input { number };
     verify(ctx: Tokens) { require(ctx.read(number).twice() > 0, "positive"); }
 }
 
@@ -198,7 +198,7 @@ type Token = rust("crate::tokens::Token") {
 type Tokens = rust("crate::host::Tokens") { fn read(&self, number: u32) -> Token; }
 struct Input { number: u32 }
 op Check(number: u32) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "check"; storage = Input { number };
+    mnemonic = "check"; storage = Input { number };
     verify(ctx: Tokens) { require(ctx.read(number).number() > 0, "positive"); }
 }
 
@@ -212,7 +212,7 @@ fn wrong(ty: Type) -> bool { value = ty.undeclared(); }
 // check: unknown projection function `Type::ty`
 struct Unary { arg: Value }
 op Check(arg: Value<Type::I8>) -> (result: Value<Type::I16>) {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "check"; storage = Unary { arg };
+    mnemonic = "check"; storage = Unary { arg };
     verify { require(result.ty().is_scalar(), "scalar"); }
 }
 
@@ -221,7 +221,7 @@ op Check(arg: Value<Type::I8>) -> (result: Value<Type::I16>) {
 // check: veloc_types::Type::element_bits(results[0])
 struct Empty {}
 op Check<T: Integer>() -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "check"; storage = Empty {};
+    mnemonic = "check"; storage = Empty {};
     verify { require(T.element_bits()? > 8, "wide"); }
 }
 
@@ -230,7 +230,7 @@ op Check<T: Integer>() -> (result: Value<T>) {
 // check: duplicate parameter
 struct Unary { arg: Value }
 op Check<T: Integer>(T: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "check"; storage = Unary { arg: T };
+    mnemonic = "check"; storage = Unary { arg: T };
 }
 
 // ----- type-methods/rust-query-signature-is-checked
@@ -254,7 +254,7 @@ fn old(ty: Type) -> bool = intrinsic("type.is_owned");
 fn runtime_only(ty: Type) -> bool = rust("crate::Type::is_valid");
 struct Unary { arg: Value }
 op Check<T: Integer>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "check"; storage = Unary { arg };
+    mnemonic = "check"; storage = Unary { arg };
     verify { require(runtime_only(T), "valid"); }
     semantics = bv.neg(arg)
 ; }
@@ -265,7 +265,7 @@ op Check<T: Integer>(arg: Value<T>) -> Value<T> {
 fn runtime_only(ty: Type) -> bool = rust("crate::Type::is_scalable");
 struct Unary { arg: Value }
 op Check<T: Integer>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "check"; storage = Unary { arg };
+    mnemonic = "check"; storage = Unary { arg };
     verify { require(runtime_only(T), "scalable"); }
 }
 
@@ -292,7 +292,7 @@ type Token = rust("crate::tokens::Token") {
 // check: Opcode::Check
 struct Unary { arg: Value }
 op Check<T: ScalarInteger | Type::PTR>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "check"; storage = Unary { arg };
+    mnemonic = "check"; storage = Unary { arg };
     verify { require(!T.is_ptr() && T.element_bits()? > 0, "sized integer"); }
     semantics = bv.neg(arg)
 ; }
@@ -313,7 +313,7 @@ struct Input { number: u32 }
 struct Boxed { token: Token }
 fn unwrap(boxed: Boxed) -> u32 { value = (boxed) . token . number(); }
 op Check(number: u32) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "check"; storage = Input { number };
+    mnemonic = "check"; storage = Input { number };
     verify(ctx: Tokens) { require(unwrap(Boxed { token: ctx . read(number) }) > 0, "positive"); }
 }
 
@@ -324,7 +324,7 @@ struct Pair { lhs: u32, rhs: u32 }
 fn same(pair: Pair) -> bool { value = (pair).lhs == pair.rhs; }
 struct Empty {}
 op Check() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "check"; storage = Empty {};
+    mnemonic = "check"; storage = Empty {};
     verify { require(same(Pair { lhs: 3 * 7, rhs: 21 }), "same"); }
 }
 
@@ -391,7 +391,7 @@ const fn twice(number: u32) -> u32 { value = runtime(number) * 2; }
 // check: associated constants are values, not functions
 struct Empty {}
 op Check() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE() }; mnemonic = "check"; storage = Empty {};
+    memory = MemoryEffect::NONE(); mnemonic = "check"; storage = Empty {};
 }
 
 // ----- type-methods/associated-constants-do-not-use-dot
@@ -399,7 +399,7 @@ op Check() -> () {
 // check: unknown expression name or operation: MemoryEffect
 struct Empty {}
 op Check() -> () {
-    meta = OpInfo { memory: MemoryEffect.NONE }; mnemonic = "check"; storage = Empty {};
+    memory = MemoryEffect.NONE; mnemonic = "check"; storage = Empty {};
 }
 
 // ----- type-methods/associated-path-requires-a-namespace
@@ -407,7 +407,7 @@ op Check() -> () {
 // check: :: requires a type or namespace path
 struct Empty {}
 op Check() -> () {
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::empty())::NONE };
+    memory = MemoryEffect::known(MemoryEffects::empty())::NONE;
     mnemonic = "check"; storage = Empty {};
 }
 
@@ -452,7 +452,6 @@ fn Nonzero(n: u32) -> bool { value = n; }
 // check: projection type mismatch
 struct Data { n: u64 }
 op Example(n: u64) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Data { n: n };
     verify {
         require(is_power_of_two(n), "bad alignment");
@@ -486,7 +485,7 @@ fn count(token: &Token) -> u32 { value = token.consume(); }
 // check: context requires a Rust-bound type
 struct Empty {}
 op Example() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example"; storage = Empty {};
+    mnemonic = "example"; storage = Empty {};
     verify(ctx: Empty) { true; }
 }
 
@@ -506,6 +505,6 @@ interface Old { count = u32; }
 struct Info { count: u32 }
 struct Empty {}
 op A() -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "a"; storage = Empty {};
+    mnemonic = "a"; storage = Empty {};
     implements = [Info { count: 1 }];
 }

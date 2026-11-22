@@ -3,7 +3,6 @@
 // check: constraint is always false: ((1 + (2 * 3)) == 9)
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         1 + 2 * 3 == 9;
@@ -15,7 +14,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: binary expression operand types differ
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         number && flag;
@@ -27,7 +25,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: binary expression operand types differ
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         number == flag;
@@ -39,7 +36,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: unknown expression name or operation
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         unknown != 0;
@@ -51,7 +47,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: field access requires a struct
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         number.field != 0;
@@ -63,7 +58,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: all expects finite sequences or optional values
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         all(number, |x| true);
@@ -75,7 +69,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: all expects sequences followed by a predicate
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         all(number, flag);
@@ -87,7 +80,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: len expects a sequence
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         len(flag) == 0;
@@ -99,7 +91,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: unknown projection function `u64::ty`
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> (result: Value<ScalarInteger>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         number.ty() == result;
@@ -111,7 +102,6 @@ op Example(number: u64, flag: bool) -> (result: Value<ScalarInteger>) {
 // check: unknown expression name or operation: missing
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> (result: Value<ScalarInteger>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         missing == result;
@@ -123,7 +113,6 @@ op Example(number: u64, flag: bool) -> (result: Value<ScalarInteger>) {
 // check: unknown projection function `IntCC::Unknown`
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         IntCC::Unknown == IntCC::Eq;
@@ -135,7 +124,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: projection type mismatch: expected Named("IntCC"), found Named("FloatCC")
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         IntCC::Eq == FloatCC::Eq;
@@ -147,7 +135,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: expected value of type bool
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         recurse(number);
@@ -159,7 +146,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: unsupported expression operator or operand type
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         flag + flag;
@@ -171,7 +157,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: require expects a predicate and a diagnostic string
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         require(flag);
@@ -183,7 +168,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: expected value of type bool
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         VectorConstant;
@@ -195,7 +179,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: expected value of type bool
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         nonzero(number);
@@ -207,7 +190,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: expression arithmetic overflow
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         170141183460469231731687303715884105727 + 1 == 0;
@@ -219,7 +201,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 // check: unknown expression name or operation
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { bits: number, yes: flag };
     verify {
         true || missing > 0;
@@ -232,7 +213,6 @@ op Example(number: u64, flag: bool) -> Value<ScalarInteger> {
 type Bytes = rust("crate::Bytes") { view = borrowed; }
 struct Custom { data: Bytes }
 op Example(data: Bytes) -> (result: Value<Vector>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { data };
     text = "{data:bytes}";
     verify {
@@ -246,7 +226,6 @@ op Example(data: Bytes) -> (result: Value<Vector>) {
 type Bytes = rust("crate::Bytes") { view = borrowed; }
 struct Custom { data: Bytes }
 op Example(data: Bytes) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Custom { data };
     text = "{data:bytes}";
     verify {
@@ -269,7 +248,6 @@ struct PtrIndex {
 }
 
 op PtrIndex(ptr: Value<Type::PTR>, index: Value<ScalarInteger>, imm: PtrIndexImm) -> Value<Type::PTR> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "ptr-index";
     storage = PtrIndex { ptr: ptr, index: index, imm_id: imm };
     text = "{ptr}, {index}, scale={imm.scale}, offset={imm.offset}";
@@ -284,7 +262,6 @@ op PtrIndex(ptr: Value<Type::PTR>, index: Value<ScalarInteger>, imm: PtrIndexImm
 // check: no admissible type signature
 struct Unary { arg: Value }
 op Example<T: Integer>(input: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Unary { arg: input };
     verify {
         input.ty().is_ptr(); input.ty().lanes()? > 0;
@@ -303,7 +280,6 @@ fn double_bits(from: Type, to: Type) -> bool {
     value = to.element_bits()? == from.element_bits()? * 2
 ; }
 op Widen<T: Integer, U: Integer>(src: Value<T>) -> (dst: Value<U>) {
-    meta = OpInfo {};
     storage = Unary { dst, src };
     verify {
         require(U.same_shape(T), "input and result must have the same shape");
@@ -317,7 +293,6 @@ op Widen<T: Integer, U: Integer>(src: Value<T>) -> (dst: Value<U>) {
 // check: unknown field
 struct Unary { arg: Value }
 op Old(arg: Value<Type::I8>) -> (result: Value<Type::I16>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "old"; storage = Unary { arg };
     where = [wider(arg, result)];
 }
@@ -327,7 +302,6 @@ op Old(arg: Value<Type::I8>) -> (result: Value<Type::I16>) {
 // check: no admissible semantic signature
 struct Unary { arg: Value }
 op Impossible<T: Integer>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "impossible"; storage = Unary { arg };
     verify { require(arg.ty().element_bits()? > 128, "too wide"); }
     semantics = bv.neg(arg)
@@ -338,7 +312,6 @@ op Impossible<T: Integer>(arg: Value<T>) -> Value<T> {
 // check: Opcode::IntegerOnly
 struct Unary { arg: Value }
 op IntegerOnly<T: ScalarInteger | Type::PTR>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "integer-only"; storage = Unary { arg };
     verify { require(!arg.ty().is_ptr(), "no pointers"); }
     semantics = bv.neg(arg)
@@ -349,7 +322,6 @@ op IntegerOnly<T: ScalarInteger | Type::PTR>(arg: Value<T>) -> Value<T> {
 // check: short circuit
 struct Unary { arg: Value }
 op Guarded<T: Integer>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "guarded"; storage = Unary { arg };
     verify { require(arg.ty().is_scalar() || arg.ty().shape()? == arg.ty().shape()?, "short circuit"); }
     semantics = bv.neg(arg)
@@ -379,7 +351,6 @@ fn same(a: optional(u32), b: optional(u32)) -> bool {
     value = all(a, b, |x, y| x == y);
 }
 op Example(left: u32, right: u32) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "example"; storage = Data { left, right };
     verify { require(same(some(left), some(right)), "expected equal values"); }
 }

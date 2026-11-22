@@ -18,13 +18,14 @@ impl FunctionPass for MemoryValidityPass {
         metrics: &Profile,
     ) -> PassOutcome {
         let layout = &config.data_layout;
+        let decls = am.decls();
         let f = am.function_mut();
         let mut dead = Vec::new();
         for block in f.layout().block_order() {
             let mut reads = Vec::<Access>::new();
             for inst in f.layout().block_insts(block) {
                 let view = f.dfg().inst(inst);
-                if view.memory_effect().may_free() || view.has_volatile_access() {
+                if view.memory_effect(decls).may_free() || view.has_volatile_access() {
                     reads.clear();
                     continue;
                 }

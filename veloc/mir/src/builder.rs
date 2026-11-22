@@ -30,9 +30,9 @@ impl ModuleBuilder {
         name: String,
         sig_id: SigId,
         linkage: Linkage,
-        notrap: bool,
+        effects: crate::FuncEffects,
     ) -> FuncId {
-        self.data.declare_function(name, sig_id, linkage, notrap)
+        self.data.declare_function(name, sig_id, linkage, effects)
     }
 
     pub fn make_signature(

@@ -96,7 +96,7 @@ impl RuntimeFunctions {
 
         let mut import = |name: &str, params, returns| {
             let sig = ir.make_signature(params, returns, CallConv::Platform);
-            ir.declare_function(name.into(), sig, Linkage::Import, false)
+            ir.declare_function(name.into(), sig, Linkage::Import, Default::default())
         };
 
         Self {
@@ -609,7 +609,7 @@ fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmM
         // 构造正确的函数签名
         let sig_id = wasm_sig.intern_veloc_sig(ir);
 
-        let func_id = ir.declare_function(func_name.clone(), sig_id, linkage, false);
+        let func_id = ir.declare_function(func_name.clone(), sig_id, linkage, Default::default());
         metadata.functions[i].func_id = func_id;
 
         // 仅为本地定义的函数生成 Array-to-Wasm Trampoline
@@ -620,7 +620,12 @@ fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmM
             let tramp_params = vec![VelocType::PTR, VelocType::PTR, VelocType::PTR];
             let tramp_sig_id =
                 ir.make_signature(tramp_params, vec![VelocType::I64], CallConv::Platform);
-            let tramp_id = ir.declare_function(tramp_name, tramp_sig_id, Linkage::Export, false);
+            let tramp_id = ir.declare_function(
+                tramp_name,
+                tramp_sig_id,
+                Linkage::Export,
+                Default::default(),
+            );
 
             let sig = &metadata.signatures[ty_idx as usize];
 
@@ -696,7 +701,7 @@ fn generate_veloc_init(
         "__veloc_init".to_string(),
         init_sig_id,
         Linkage::Export,
-        false,
+        Default::default(),
     );
 
     let mut builder = ir.define(init_func_id);

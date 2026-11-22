@@ -36,15 +36,18 @@ impl fmt::Display for MemoryEffects {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MemoryEffect {
     Known(MemoryEffects),
+    #[default]
     Unknown,
 }
 
 impl MemoryEffect {
     pub const NONE: Self = Self::Known(MemoryEffects::empty());
     pub const UNKNOWN: Self = Self::Unknown;
+    pub const READ: Self = Self::Known(MemoryEffects::READ);
+    pub const WRITE: Self = Self::Known(MemoryEffects::WRITE);
 
     pub const fn known(effects: MemoryEffects) -> Self {
         Self::Known(effects)
@@ -60,7 +63,9 @@ impl MemoryEffect {
 
     const fn may(self, effect: MemoryEffects) -> bool {
         match self {
-            Self::Known(effects) => effects.intersects(effect),
+            Self::Known(effects) => {
+                !MemoryEffects::all().contains(effects) || effects.intersects(effect)
+            }
             Self::Unknown => true,
         }
     }

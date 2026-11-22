@@ -180,18 +180,10 @@ The generated Rust contains opcodes, views, builders, decoding checks and direct
 type validation. Construction does not run validation.
 
 ```text
-type Reg = rust("crate::Reg");
-enum FieldValue { variants: [Imm(i64)] }
-storage Operands {
-    opcode: GenericOpcode, view: InstView,
-    reader: InstRead, writer: InstBuild,
-    register: Reg, attributes: FieldValue,
-}
 struct BinaryReg { dst: Reg, lhs: Reg, rhs: Reg }
-op Add<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    storage: BinaryReg { dst, lhs, rhs },
-    semantics: bv.add(lhs, rhs)
+op Add<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    storage = BinaryReg { dst, lhs, rhs };
+    semantics = bv.add(lhs, rhs);
 }
 ```
 
@@ -280,10 +272,10 @@ only the required reader lookups and share MIR's contract emission. Shared `Type
 `Signature`, linkage, condition codes and some entity identifiers still come
 from `veloc-mir`.
 
-The optional `control: ControlFlow::Next` storage setting names an ordinary
-enum and its default variant. Opcode `flow` values are checked against that
-enum. Effects and traits are declared separately in metadata, not inferred by
-the storage generator from control variant names.
+The storage setting `control = ControlFlow::Next;` names the flow enum and
+its default variant. The `control_effects` map classifies `Jump` and `Return`
+as terminators and `Trap` as an aborting terminator. An opcode's `flow`
+selects its control traits. The same map generates `ControlFlow::may_continue()`.
 Control descriptors are shared by generic and selected instructions:
 `Next` and `Call` continue, `Branch` has explicit targets plus fallthrough,
 `Jump` has only explicit targets, and `Return`/`Trap` have no successors.

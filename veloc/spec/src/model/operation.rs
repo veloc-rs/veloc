@@ -24,6 +24,19 @@ pub(crate) fn mnemonic(name: &str) -> String {
     text
 }
 
+/// A site guarantee is meaningful only when the instruction can avoid trapping.
+pub(crate) fn allows_notrap(record: &Decl) -> bool {
+    record
+        .fields
+        .get("traps")
+        .is_some_and(|node| match &node.kind {
+            Kind::Name(name) => name == "possible",
+            Kind::Call(name, _) => name == "callee",
+            Kind::List(guards) => !guards.is_empty(),
+            _ => false,
+        })
+}
+
 pub(super) fn parse(
     source: &str,
     record: Decl,
@@ -42,6 +55,8 @@ pub(super) fn parse(
         type_bindings,
     } = signature(source, record.offset, sig.clone(), vocabulary)?;
     let declaration = sig.clone();
+    let allows_notrap =
+        matches!(storage_defs.strategy, storage::Strategy::Packed) && allows_notrap(&record);
     let mut fields = Fields::new(source, record);
     let mnemonic = match fields.optional("mnemonic") {
         Some(Node {
@@ -62,17 +77,21 @@ pub(super) fn parse(
             "expected storage: Layout { field mappings }",
         ));
     };
-    let projection = match &storage_defs.strategy {
+    let (projection, control) = match &storage_defs.strategy {
         storage::Strategy::Packed => {
             let mut packing = BTreeMap::new();
             for (field, node) in mappings {
                 packing.insert(field, binding(source, node)?);
             }
-            Projection::Packed(packing)
+            let control = fields
+                .optional("control")
+                .map(|node| Control::parse(source, &node))
+                .transpose()?;
+            (Projection::Packed(packing), control)
         }
         storage::Strategy::Operands(operands) => {
             let flow = fields.optional("flow");
-            Projection::Operands(operands.project(
+            let projection = operands.project(
                 source,
                 storage.offset,
                 &format,
@@ -81,7 +100,12 @@ pub(super) fn parse(
                 &types,
                 &slots,
                 flow,
-            )?)
+            )?;
+            let control = operands
+                .control
+                .as_ref()
+                .and_then(|c| c.variants[&projection.flow]);
+            (Projection::Operands(projection), control)
         }
     };
     let signature_source = fields
@@ -101,26 +125,19 @@ pub(super) fn parse(
             )),
         })
         .transpose()?;
-    let allows_notrap = if let Some(modifiers) = fields.optional("modifiers") {
-        if !matches!(storage_defs.strategy, storage::Strategy::Packed)
-            || !matches!(&modifiers.kind, Kind::List(items) if matches!(items.as_slice(),
-                [Node { kind: Kind::Name(name), .. }] if name == "notrap"))
-        {
-            return Err(Error::at(
-                source,
-                modifiers.offset,
-                "expected modifiers = [notrap] on a packed instruction",
-            ));
-        }
-        true
-    } else {
-        false
-    };
     let text = fields.optional("text");
-    let mut meta_node = fields.take("meta")?;
-    expressions.metadata(source, &mut meta_node, vocabulary)?;
-    let meta = crate::model::metadata::Pending::new(source, meta_node, data)?;
+    let mut meta_node = fields.optional("meta");
+    if let Some(node) = &mut meta_node {
+        expressions.metadata(source, node, vocabulary)?;
+    }
+    let mut meta = crate::model::metadata::Pending::new(source, fields.offset, meta_node, data)?;
     let mut traits = BTreeSet::new();
+    if let Some(control) = control {
+        traits.insert("TERMINATOR".into());
+        if control == Control::Abort {
+            traits.insert("ABORT".into());
+        }
+    }
     let constraints = fields.optional("verify");
     let mut identity = fields
         .optional("identity")
@@ -134,25 +151,37 @@ pub(super) fn parse(
         .optional("semantics")
         .map(|node| crate::semantic::parse(source, node, &params))
         .transpose()?;
+    let mut memory_callee = None;
+    if let Some(mut node) = fields.optional("memory") {
+        if matches!(&node.kind, Kind::Call(kind, _) if kind == "callee") {
+            memory_callee = Some(callee(source, &node, &params, &projection)?);
+            if semantics.is_some() {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "executable semantics require no memory effects",
+                ));
+            }
+            node.kind = Kind::Name("unknown".into());
+        }
+        meta.set_memory(source, node, data)?;
+    }
     let mut trap_callee = None;
     if let Some(node) = fields.optional("traps") {
         let may_trap = match &node.kind {
             Kind::Name(name) if name == "possible" => true,
-            Kind::Call(kind, args) if kind == "callee" && args.len() == 1 => {
-                let param = name(source, args[0].clone())?;
-                if !matches!(&projection, Projection::Packed(_))
-                    || !params.iter().any(|p| {
-                        p.name == param
-                            && matches!(&p.kind, ParamKind::Property(ty) if ty == "FuncId")
-                    })
-                {
+            Kind::Name(name) if name == "always" => {
+                if semantics.is_some() {
                     return Err(Error::at(
                         source,
                         node.offset,
-                        "callee requires a packed FuncId parameter",
+                        "an always-trapping operation cannot declare normal-result semantics",
                     ));
                 }
-                trap_callee = Some(param);
+                true
+            }
+            Kind::Call(kind, _) if kind == "callee" => {
+                trap_callee = Some(callee(source, &node, &params, &projection)?);
                 true
             }
             Kind::List(_) => {
@@ -166,7 +195,7 @@ pub(super) fn parse(
                 return Err(Error::at(
                     source,
                     node.offset,
-                    "expected possible, callee(parameter) or trap guards",
+                    "expected possible, always, callee(parameter) or trap guards",
                 ));
             }
         };
@@ -194,11 +223,11 @@ pub(super) fn parse(
         vocabulary,
         &traits,
         semantics.is_some(),
-        allows_notrap,
     )?;
     let mut op = Op {
         allows_notrap,
         trap_callee,
+        memory_callee,
         declaration,
         offset: fields.offset,
         name: fields.name,
@@ -226,6 +255,33 @@ pub(super) fn parse(
         vocabulary,
     )?;
     Ok(op)
+}
+
+fn callee(
+    source: &str,
+    node: &Node,
+    params: &[Param],
+    projection: &Projection,
+) -> Result<String, Error> {
+    if let Kind::Call(_, args) = &node.kind
+        && let [
+            Node {
+                kind: Kind::Name(name),
+                ..
+            },
+        ] = args.as_slice()
+        && matches!(projection, Projection::Packed(_))
+        && params.iter().any(|p| {
+            p.name == *name && matches!(&p.kind, ParamKind::Property(ty) if ty == "FuncId")
+        })
+    {
+        return Ok(name.clone());
+    }
+    Err(Error::at(
+        source,
+        node.offset,
+        "callee requires a packed FuncId parameter",
+    ))
 }
 
 pub(crate) struct CheckedSignature {

@@ -14,12 +14,12 @@ struct Next { next: Destination }
 struct Routes { routes: Destinations }
 op Next(next: successor) -> () {
     mnemonic = "next";
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    control = terminator;
     storage = Next { next };
 }
 op Routes(cases: successors, default: successor) -> () {
     mnemonic = "routes";
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    control = terminator;
     storage = Routes { routes: table(cases, default) };
 }
 
@@ -32,7 +32,6 @@ enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue; }
 struct Pair { right: Reg, upper: Reg, left: Reg, lower: Reg }
 op Pair(first: Value<Type::I32>, second: Value<Type::I64>) -> (low: Value<Type::I32>, high: Value<Type::I64>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     storage = Pair { right: second, upper: high, left: first, lower: low };
 }
 
@@ -43,7 +42,7 @@ type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue; }
 struct Empty {}
-op Stop() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Empty {}; }
+op Stop() -> () { storage = Empty {}; }
 
 // ----- storage/bare-layout-names-are-removed
 // run: opgen-error
@@ -52,7 +51,7 @@ type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  }
 struct Empty {}
-op Example() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Empty; }
+op Example() -> () { storage = Empty; }
 
 // ----- storage/missing-result-binding
 // run: opgen-error
@@ -61,7 +60,7 @@ type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  }
 struct Input { arg: Reg }
-op Example(arg: Value<Type::I32>) -> (value: Value<Type::I32>) { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Input { arg }; }
+op Example(arg: Value<Type::I32>) -> (value: Value<Type::I32>) { storage = Input { arg }; }
 
 // ----- storage/repeated-result-binding
 // run: opgen-error
@@ -70,7 +69,7 @@ type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  }
 struct Pair { a: Reg, b: Reg }
-op Example() -> (first: Value<Type::I32>, second: Value<Type::I32>) { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Pair { a: first, b: first }; }
+op Example() -> (first: Value<Type::I32>, second: Value<Type::I32>) { storage = Pair { a: first, b: first }; }
 
 // ----- storage/repeated-input-binding
 // run: opgen-error
@@ -79,7 +78,7 @@ type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  }
 struct Pair { a: Reg, b: Reg }
-op Example(arg: Value<Type::I32>) -> () { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Pair { a: arg, b: arg }; }
+op Example(arg: Value<Type::I32>) -> () { storage = Pair { a: arg, b: arg }; }
 
 // ----- storage/register-role-comes-from-mapping-not-field-name
 // run: opgen
@@ -88,7 +87,7 @@ type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  }
 struct Output { dst: Reg }
-op Example(arg: Value<Type::I32>) -> () { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Output { dst: arg }; }
+op Example(arg: Value<Type::I32>) -> () { storage = Output { dst: arg }; }
 
 // ----- storage/optional-presence-is-not-inferred
 // run: opgen-error
@@ -97,7 +96,7 @@ type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  }
 struct Maybe { value: optional(Reg) }
-op Example(value: Value<Type::I32>) -> () { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Maybe { value }; }
+op Example(value: Value<Type::I32>) -> () { storage = Maybe { value }; }
 
 // ----- storage/omitted-operands-can-precede-required-fields
 // run: opgen
@@ -106,7 +105,7 @@ type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  }
 struct Pair { optional: optional(Reg), required: Reg }
-op Example(value: Value<Type::I32>) -> () { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Pair { optional: none, required: value }; }
+op Example(value: Value<Type::I32>) -> () { storage = Pair { optional: none, required: value }; }
 
 // ----- storage/tied-input-and-output-are-explicit
 // run: opgen
@@ -116,7 +115,7 @@ type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue; }
 struct Update { next: Reg, previous: Reg }
-op Update(previous: Value<Type::PTR>) -> (next: Value<Type::PTR>) { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Update { next, previous }; }
+op Update(previous: Value<Type::PTR>) -> (next: Value<Type::PTR>) { storage = Update { next, previous }; }
 
 // ----- storage/absent-optional-fields-still-require-a-mapping
 // run: opgen-error
@@ -125,7 +124,7 @@ type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  }
 struct Maybe { value: optional(Reg) }
-op Example() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Maybe {}; }
+op Example() -> () { storage = Maybe {}; }
 
 // ----- storage/declaration-fields-do-not-use-value-shorthand
 // run: opgen-error
@@ -192,7 +191,6 @@ op Work() -> () {
 struct Settings { scale: u8 }
 struct Work { settings: Settings }
 op Work(settings: Settings) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "work"; storage = Work { settings: settings };
     text = "{settings.scale=256}"
 ; }
@@ -203,7 +201,6 @@ op Work(settings: Settings) -> () {
 struct Settings { scale: u8 }
 struct Work { settings: Settings }
 op Work(settings: Settings) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "work"; storage = Work { settings: settings };
     text = "{settings.scale=1} {settings.scale}"
 ; }
@@ -245,7 +242,7 @@ layout Missing { accessor = missing; }
 struct Write {
 
 }
-op Write() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "write"; storage = Write {}; }
+op Write() -> () { mnemonic = "write"; storage = Write {}; }
 
 // ----- packing/pool-bindings-are-typed-and-consume-the-complete-struct-1
 // run: opgen-error
@@ -260,7 +257,6 @@ struct Indexed {
     imm_id: PtrIndexImm,
 }
 op Indexed(ptr: Value<Type::PTR>, index: Value<Type::I32>, imm: PtrIndexImm) -> (result: Value<Type::PTR>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "indexed"; storage = Indexed { ptr: ptr, index: index, imm_id: pool() };
 }
 
@@ -277,7 +273,6 @@ struct Indexed {
     imm_id: PtrIndexImm,
 }
 op Indexed(ptr: Value<Type::PTR>, index: Value<Type::I32>, imm: Bytes) -> (result: Value<Type::PTR>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "indexed"; storage = Indexed { ptr: ptr, index: index, imm_id: imm };
 }
 
@@ -294,7 +289,6 @@ struct Indexed {
     imm_id: PtrIndexImm,
 }
 op Indexed(ptr: Value<Type::PTR>, index: Value<Type::I32>, imm: PtrIndexImm, unused: PtrIndexImm) -> (result: Value<Type::PTR>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "indexed"; storage = Indexed { ptr: ptr, index: index, imm_id: imm };
 }
 
@@ -312,7 +306,6 @@ struct Indexed {
     other: PtrIndexImm,
 }
 op Indexed(ptr: Value<Type::PTR>, index: Value<Type::I32>, imm: PtrIndexImm) -> (result: Value<Type::PTR>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "indexed"; storage = Indexed { ptr: ptr, index: index, imm_id: imm, other: imm };
 }
 
@@ -329,7 +322,6 @@ struct Indexed {
     imm_id: PtrIndexImm,
 }
 op Indexed(ptr: Value<Type::PTR>, index: Value<Type::I32>, imm: PtrIndexImmId) -> (result: Value<Type::PTR>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "indexed"; storage = Indexed { ptr: ptr, index: index, imm_id: imm };
 }
 
@@ -346,7 +338,6 @@ struct Indexed {
     imm_id: PtrIndexImm,
 }
 op Indexed(ptr: Value<Type::PTR>, index: Value<Type::I32>, imm: Bytes) -> (result: Value<Type::PTR>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "indexed"; storage = Indexed { ptr: ptr, index: index, imm_id: imm };
 }
 
@@ -363,7 +354,6 @@ struct Indexed {
     imm_id: PtrIndexImm,
 }
 op Indexed(ptr: Value<Type::PTR>, index: Value<Type::I32>, imm: VectorExtId) -> (result: Value<Type::PTR>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "indexed"; storage = Indexed { ptr: ptr, index: index, imm_id: imm };
 }
 
@@ -380,7 +370,6 @@ struct Indexed {
     imm_id: PtrIndexImm,
 }
 op Indexed(ptr: Value<Type::PTR>, index: Value<Type::I32>, imm: VectorMemExtId) -> (result: Value<Type::PTR>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "indexed"; storage = Indexed { ptr: ptr, index: index, imm_id: imm };
 }
 
@@ -389,7 +378,6 @@ op Indexed(ptr: Value<Type::PTR>, index: Value<Type::I32>, imm: VectorMemExtId) 
 // check: storage field `args` requires 3 arguments
 struct Triple { args: values(3) }
 op Triple<T: Integer>(a: Value<T>, b: Value<T>, c: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "triple"; storage = Triple { args: [a, b] }; }
 
 // ----- packing/pooled-value-lists-and-inline-arrays-keep-distinct-bindings-2
@@ -397,7 +385,6 @@ mnemonic = "triple"; storage = Triple { args: [a, b] }; }
 // check: parameter `a` is stored more than once
 struct Triple { args: values(3) }
 op Triple<T: Integer>(a: Value<T>, b: Value<T>, c: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "triple"; storage = Triple { args: [a, a, c] }; }
 
 // ----- packing/signature-sources-are-explicit-and-match-their-parameter-types-1
@@ -408,7 +395,7 @@ struct Invoke {
     args: ValueList,
 }
 op Invoke(callee: FuncId, args: sequence(Value)) -> signature {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "invoke"; storage = Invoke { callee: callee, args: args };
 }
 
@@ -420,7 +407,7 @@ struct Invoke {
     args: ValueList,
 }
 op Invoke(callee: FuncId, args: sequence(Value)) -> signature {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "invoke"; storage = Invoke { callee: callee, args: args };
 signature = callee; }
 
@@ -432,7 +419,7 @@ struct Invoke {
     args: ValueList,
 }
 op Invoke(callee: FuncId, args: sequence(Value)) -> signature {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "invoke"; storage = Invoke { callee: callee, args: args };
 signature = function(missing); }
 
@@ -444,7 +431,7 @@ struct Invoke {
     args: ValueList,
 }
 op Invoke(callee: FuncId, args: sequence(Value)) -> () {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "invoke"; storage = Invoke { callee: callee, args: args };
 signature = function(callee); }
 
@@ -456,7 +443,7 @@ struct Table {
     table: JumpTable,
 }
 op Table(index: Value<Type::I32>, cases: successors, default: successor) -> () {
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    control = terminator;
     mnemonic = "table"; storage = Table { index: index, table: table(cases) };
 }
 
@@ -468,7 +455,7 @@ struct Table {
     table: JumpTable,
 }
 op Table(index: Value<Type::I32>, cases: successors, default: successor) -> () {
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    control = terminator;
     mnemonic = "table"; storage = Table { index: index, table: table(cases, cases) };
 }
 
@@ -480,7 +467,7 @@ struct Table {
     table: JumpTable,
 }
 op Table(index: Value<Type::I32>, cases: successors, default: successors) -> () {
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    control = terminator;
     mnemonic = "table"; storage = Table { index: index, table: table(cases, default) };
 }
 
@@ -492,7 +479,7 @@ struct Table {
     table: JumpTable,
 }
 op Table(index: Value<Type::I32>, cases: successors, default: successor) -> () {
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    control = terminator;
     mnemonic = "table"; storage = Table { index: index, table: cases };
 }
 
@@ -500,21 +487,21 @@ op Table(index: Value<Type::I32>, cases: successors, default: successor) -> () {
 // run: opgen-error
 // check: conflicting instruction constructor `a_b`
 struct AB {  }
-op AB() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "ab"; storage = AB {}; }
+op AB() -> () { mnemonic = "ab"; storage = AB {}; }
 struct A_b {  }
-op A_b() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "a_b"; storage = A_b {}; }
+op A_b() -> () { mnemonic = "a_b"; storage = A_b {}; }
 
 // ----- packing/writer-constructor-api-collision
 // run: opgen-error
 // check: conflicting instruction constructor `copy`
 struct Copy {  }
-op Copy() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "operands"; storage = Copy {}; }
+op Copy() -> () { mnemonic = "operands"; storage = Copy {}; }
 
 // ----- packing/draft-constructor-keyword
 // run: opgen-error
 // check: invalid generated identifier `match`
 struct Match {  }
-op Match() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "match"; storage = Match {}; }
+op Match() -> () { mnemonic = "match"; storage = Match {}; }
 
 // ----- packing/field-contract-rejects-cycles
 // run: opgen-error
@@ -549,7 +536,6 @@ struct Pair {
     args: values(2),
 }
 op Add<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<element(T)>) {
-    meta = OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE };
     mnemonic = "pair-add"; storage = Pair { args: [lhs, rhs] };
 }
 
@@ -560,7 +546,6 @@ struct Pair {
     args: values(2),
 }
 op Add<T: Vector>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<vector(T)>) {
-    meta = OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE };
     mnemonic = "pair-add"; storage = Pair { args: [lhs, rhs] };
 }
 
@@ -572,7 +557,6 @@ struct Pair {
 }
 op Add<T: ScalarInteger, U: Vector>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<U>) {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
-    meta = OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE };
     mnemonic = "pair-add"; storage = Pair { args: [lhs, rhs] };
 }
 
@@ -583,12 +567,10 @@ struct Pair {
     args: values(2),
 }
 op Add<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE };
     mnemonic = "pair-add"; storage = Pair { args: [lhs, rhs] };
 }
 
 op Other<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE };
 mnemonic = "pair_add"; storage = Pair { args: [lhs, rhs] };  }
 
 // ----- storage/declared-control-and-optional-attributes
@@ -602,7 +584,6 @@ enum Flow { variants = [Continue, Transfer]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = Payload; control = Flow::Continue; }
 struct Transfer { hint: optional(i64), target: Reg }
 op Transfer(target: Value<Type::PTR>, hint: i64) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     storage = Transfer { hint: some(hint), target };
     flow = Transfer;
     verify { require(hint >= 0, "hint must be nonnegative"); }
@@ -619,6 +600,5 @@ struct Data { values: sequence(i64) }
 struct AccessOptions { flags: MemFlags }
 struct Access { flags: MemFlags, options: AccessOptions }
 op Access(flags: MemFlags, options: AccessOptions) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     storage = Access { flags, options };
 }

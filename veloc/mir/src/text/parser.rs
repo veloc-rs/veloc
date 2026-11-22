@@ -5,8 +5,8 @@
 
 use super::lexer::{Cursor, Kind, Location};
 use crate::{
-    Block, CallConv, FuncBody, FuncId, Linkage, MemFlags, Module, Opcode, Region, Result, SigId,
-    Signature, SuccessorData, Type, Value,
+    Block, CallConv, FuncBody, FuncEffects, FuncId, Linkage, MemFlags, MemoryEffect, MemoryEffects,
+    Module, Opcode, Region, Result, SigId, Signature, SuccessorData, Type, Value,
 };
 use alloc::boxed::Box;
 use alloc::{
@@ -46,7 +46,7 @@ impl core::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 struct FunctionHeader {
-    notrap: bool,
+    effects: FuncEffects,
     name: String,
     linkage: Linkage,
     signature: Signature,
@@ -112,7 +112,7 @@ impl Functions {
             header.name.clone(),
             signature,
             header.linkage,
-            header.notrap,
+            header.effects,
         );
         self.entries[symbol].declaration = Some(id);
         Ok(id)
@@ -927,17 +927,56 @@ fn parse_function_header(
         Vec::new()
     };
     let convention = parse_call_conv(input)?;
-    let notrap = input.is("notrap");
-    if notrap {
-        input.advance();
+    let mut effects = FuncEffects::default();
+    while input.is("notrap") || input.is("memory") {
+        if input.is("notrap") {
+            if effects.notrap {
+                return Err(input.error("duplicate notrap"));
+            }
+            input.advance();
+            effects.notrap = true;
+        } else {
+            if !effects.memory.is_unknown() {
+                return Err(input.error("duplicate memory effect"));
+            }
+            input.advance();
+            effects.memory = parse_memory_effect(input)?;
+        }
     }
     Ok(FunctionHeader {
-        notrap,
+        effects,
         name,
         linkage,
         signature: Signature::new(params, returns, convention).with_variadic(variadic),
         params: names,
     })
+}
+
+fn parse_memory_effect(input: &mut Cursor<'_>) -> ParseResult<MemoryEffect> {
+    input.expect(Kind::LParen)?;
+    let mut effects = MemoryEffects::empty();
+    if input.is("none") {
+        input.advance();
+    } else {
+        loop {
+            let location = input.location();
+            let name = input.word()?;
+            let flag = if let Some(bits) = name.strip_prefix("0x") {
+                u8::from_str_radix(bits, 16)
+                    .ok()
+                    .map(MemoryEffects::from_bits_retain)
+            } else {
+                MemoryEffects::from_name(&name.to_ascii_uppercase())
+            }
+            .ok_or_else(|| location.error(format!("unknown memory effect `{name}`")))?;
+            effects.insert(flag);
+            if !input.eat(Kind::Comma) {
+                break;
+            }
+        }
+    }
+    input.expect(Kind::RParen)?;
+    Ok(MemoryEffect::known(effects))
 }
 
 fn parse_global(

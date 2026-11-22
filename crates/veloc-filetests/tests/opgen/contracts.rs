@@ -54,7 +54,8 @@ const CALL_VALUE: &str = r#"
         args: ValueList,
     }
     op Apply(move callee: Value<Callable>, move args: sequence(Value)) -> signature {
-    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+        traps = possible;
+        memory = unknown;
         mnemonic = "apply-value";
         storage = ApplyValue { callee: callee, args: args };
         signature = callable(callee);
@@ -121,7 +122,7 @@ fn the_actual_mir_definitions_compile_deterministically() {
 const BINARY: &str = "type Reg = rust(\"crate::Reg\");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue; }\nstruct Binary { dst: Reg, lhs: Reg, rhs: Reg }";
-const ADD: &str = "op Sum<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) { meta = OpInfo {}; storage = Binary { dst, lhs, rhs }; semantics = bv.add(lhs, rhs); }";
+const ADD: &str = "op Sum<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) { storage = Binary { dst, lhs, rhs }; semantics = bv.add(lhs, rhs); }";
 
 #[test]
 fn packed_layout_contracts() {
@@ -185,7 +186,6 @@ fn packed_layout_contracts() {
             right: Value,
         }
         op Add<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE };
             mnemonic = "add"; storage = Pair { left: left, right: right };
              }
     "#;
@@ -344,7 +344,6 @@ fn output_plan_diagnostics() {
         let base = r#"
     struct Custom { arg: Value }
     op Example<T: Integer>(arg: Value<T>) -> Value<T> {
-        meta = OpInfo { memory: MemoryEffect::NONE };
         mnemonic = "example"; storage = Custom { arg: arg };
     }
     "#;
@@ -414,7 +413,7 @@ storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; w
             (
                 "type Reg = rust(\"crate::Reg\");
 enum FieldValue { variants = [Imm(i64)]; }
-storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  } struct Bad { values: sequence(Reg), dst: Reg } op Bad(dst: Value<Type::I32>, values: sequence(Value)) -> () { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Bad { values, dst }; }"
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  } struct Bad { values: sequence(Reg), dst: Reg } op Bad(dst: Value<Type::I32>, values: sequence(Value)) -> () { storage = Bad { values, dst }; }"
                     .into(),
                 "only one trailing sequence",
             ),

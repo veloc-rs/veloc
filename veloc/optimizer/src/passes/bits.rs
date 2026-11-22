@@ -49,6 +49,7 @@ impl FunctionPass for BitsPass {
             if let veloc_mir::InstView::Unary {
                 opcode: Opcode::ExtendS,
                 arg,
+                ..
             } = f.dfg().inst(inst)
                 && matches!(
                     f.dfg().value_type(arg),
@@ -189,6 +190,7 @@ fn simplify_conversions(
         InstView::Unary {
             opcode: op @ (Opcode::ExtendS | Opcode::ExtendU),
             arg,
+            ..
         } => {
             let Some(def) = f.dfg().value_inst(arg) else {
                 return false;
@@ -196,6 +198,7 @@ fn simplify_conversions(
             if let InstView::Unary {
                 opcode: inner @ (Opcode::ExtendS | Opcode::ExtendU),
                 arg: original,
+                ..
             } = f.dfg().inst(def)
                 && (inner == op || inner == Opcode::ExtendU)
             {
@@ -205,6 +208,7 @@ fn simplify_conversions(
             let InstView::Unary {
                 opcode: Opcode::Wrap,
                 arg: original,
+                ..
             } = f.dfg().inst(def)
             else {
                 return false;
@@ -244,6 +248,7 @@ fn simplify_conversions(
                 let InstView::Unary {
                     opcode: Opcode::Wrap,
                     arg: original,
+                    ..
                 } = f.dfg().inst(def)
                 else {
                     continue;

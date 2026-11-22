@@ -8,6 +8,7 @@ fn low_bits(f: &FuncBody, mut value: Value, bits: u32) -> Value {
         if let InstView::Unary {
             opcode: Opcode::Wrap | Opcode::ExtendU | Opcode::ExtendS,
             arg,
+            ..
         } = f.dfg().inst(inst)
             && f.dfg()
                 .value_type(arg)
@@ -105,10 +106,8 @@ pub(super) fn narrow_stores(f: &mut FuncBody, decls: &FuncDecls, insts: &[Inst])
                     break;
                 }
                 let view = f.dfg().inst(inst);
-                if view.has_volatile_access()
-                    || view.memory_effect().may_write()
-                    || view.memory_effect().may_free()
-                {
+                let effect = view.memory_effect(decls);
+                if view.has_volatile_access() || effect.may_write() || effect.may_free() {
                     break;
                 }
                 cursor = f.layout().next_inst(inst);

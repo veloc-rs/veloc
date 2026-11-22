@@ -7,7 +7,8 @@ struct CallIndirect {
     sig_id: SigId,
 }
 op CallIndirect(sig_id: SigId, args: sequence(Value), ptr: Value<Type::PTR>) -> signature {
-    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    traps = possible;
+    memory = unknown;
     mnemonic = "call-indirect";
     storage = CallIndirect { ptr: ptr, args: args, sig_id: sig_id };
     text = "{ptr}({args}) : {sig_id}";
@@ -21,7 +22,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> Value<Integer> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
 verify {
@@ -35,7 +35,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> Value<Integer> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
 verify {
@@ -49,7 +48,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) ->  {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
 }
@@ -61,7 +59,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (T {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
 }
@@ -73,7 +70,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> T, Type::BOOL {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -85,7 +81,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (T Type::BOOL) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -97,7 +92,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (result:) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -109,7 +103,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (shape(T, Integer): T) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -121,7 +114,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (@result: T) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -133,7 +125,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (Value<[T]>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -145,7 +136,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> result: T {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -157,7 +147,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer, T: Float>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -169,7 +158,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Missing>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -181,7 +169,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<Undeclared>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -193,7 +180,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: ScalarInteger>(left: Value<T>, right: Value<element(T)>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -205,7 +191,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Vector>(left: Value<T>, right: Value<vector(T)>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -218,7 +203,6 @@ struct Pair {
 }
 op PairAdd<T: ScalarInteger, U: Vector>(left: Value<T>, right: Value<U>) -> (result: Value<T>) {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -230,7 +214,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, left: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -242,7 +225,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (left: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -254,7 +236,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>, result: Value<Type::BOOL>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -268,7 +249,8 @@ struct Load {
     flags: MemFlags,
 }
 op Load(ptr: Value<Type::PTR>, ptr: u32, flags: MemFlags) -> (result: Value<Any>) {
-    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
+    traps = possible;
+    memory = read;
     mnemonic = "load";
     storage = Load { ptr: ptr, offset: offset, flags: flags };
     text = "{.flags} {ptr}, offset={offset}";
@@ -283,7 +265,8 @@ struct Load {
     flags: MemFlags,
 }
 op Load(ptr: Value<Type::PTR>, offset: i32, flags: MemFlags) -> (result: Value<Any>) {
-    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
+    traps = possible;
+    memory = read;
     mnemonic = "load";
     storage = Load { ptr: ptr, offset: offset, flags: flags };
     text = "{.flags} {ptr}, offset={offset}";
@@ -298,7 +281,8 @@ struct Load {
     flags: MemFlags,
 }
 op Load(ptr: Value<Type::PTR>, offset: u32, flags: bool) -> (result: Value<Any>) {
-    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
+    traps = possible;
+    memory = read;
     mnemonic = "load";
     storage = Load { ptr: ptr, offset: offset, flags: flags };
     text = "{.flags} {ptr}, offset={offset}";
@@ -313,7 +297,8 @@ struct Load {
     flags: MemFlags,
 }
 op Load(ptr: Value<Type::PTR>, offset: Type::I32, flags: MemFlags) -> (result: Value<Any>) {
-    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
+    traps = possible;
+    memory = read;
     mnemonic = "load";
     storage = Load { ptr: ptr, offset: offset, flags: flags };
     text = "{.flags} {ptr}, offset={offset}";
@@ -328,7 +313,8 @@ struct Load {
     flags: MemFlags,
 }
 op Load(ptr: u32, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
-    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
+    traps = possible;
+    memory = read;
     mnemonic = "load";
     storage = Load { ptr: ptr, offset: offset, flags: flags };
     text = "{.flags} {ptr}, offset={offset}";
@@ -343,7 +329,8 @@ struct CallIndirect {
     sig_id: SigId,
 }
 op CallIndirect(sig_id: SigId, ptr: Value<Type::PTR>, args: successor) -> signature {
-    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    traps = possible;
+    memory = unknown;
     mnemonic = "call-indirect";
     storage = CallIndirect { ptr: ptr, args: args, sig_id: sig_id };
     text = "{ptr}({args}) : {sig_id}";
@@ -357,7 +344,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair {  };
     }
@@ -369,7 +355,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, left] };
     }
@@ -381,7 +366,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, unknown] };
     }
@@ -393,7 +377,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right], extra: left };
     }
@@ -405,7 +388,6 @@ struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: Value<T>, right: Value<T>, unused: Value<T>) -> (result: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "pair-add";
     storage = Pair { args: [left, right] };
     }
@@ -419,18 +401,20 @@ struct Load {
     flags: MemFlags,
 }
 op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
-    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
+    traps = possible;
+    memory = read;
     mnemonic = "load";
     storage = Load { ptr: ptr, offset: offset };
     text = "{.flags} {ptr}, offset={offset}";
      }
 
-// ----- control/control-is-not-a-separate-operation-contract
+// ----- control/invalid-control-effect
 // run: opgen-error
-// check: unknown field `control`
+// check: expected terminator or abort
 struct Apply { cont: Value, args: ValueList, }
 op Apply(cont: Value<Callable>, args: sequence(Value)) -> () {
-    meta = OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP), memory: MemoryEffect::UNKNOWN };
+    traps = possible;
+    memory = unknown;
     mnemonic = "apply"; storage = Apply { cont, args };
     control = tail_call_value(cont, args);
 }
@@ -445,16 +429,17 @@ typeset Callable = Type::I32;
 // check: move requires a value operand
 struct Take { function: FuncId, }
 op Take(move function: FuncId) -> () {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "take"; storage = Take { function: function };
 }
 
 // ----- control/abort-is-an-exit-contract
 // run: opgen-const-error
 // check: ABORT requires TERMINATOR
+struct Facts { traits: OpTraits, memory: MemoryEffect }
 struct Stop {  }
 op Stop() -> () {
-    meta = OpInfo { traits: OpTraits::ABORT, memory: MemoryEffect::NONE };
+    meta = Facts { traits: OpTraits::ABORT, memory: MemoryEffect::NONE };
 mnemonic = "stop"; storage = Stop {};  }
 
 // ----- control/signature-query-is-typed
@@ -462,7 +447,6 @@ mnemonic = "stop"; storage = Stop {};  }
 // check: projection type mismatch: expected Named("FuncId"), found Named("u32")
 struct Check { n: u32, }
 op Check(n: u32) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "check"; storage = Check { n: n };
     verify(ctx: VerifyContext) {
         len(ctx.function_signature(n)?.params()) == 0;
@@ -474,7 +458,6 @@ op Check(n: u32) -> () {
 // check: slice expects a sequence
 struct Check { n: u32, }
 op Check(n: u32) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "check"; storage = Check { n: n };
     verify {
         len(prefix(n, 0)) == 0;
@@ -487,7 +470,6 @@ op Check(n: u32) -> () {
 type Ref = rust("crate::Value") { field = operand; }
 struct SequenceArgs { args: ValueList, }
 op Consume(move args: sequence(Ref)) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "consume"; storage = SequenceArgs { args };
 }
 
@@ -496,7 +478,6 @@ op Consume(move args: sequence(Ref)) -> () {
 // check: operand sequence element must be a declared SSA reference type
 struct SequenceArgs { args: ValueList, }
 op Consume(args: sequence(u32)) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "consume"; storage = SequenceArgs { args };
 }
 
@@ -505,7 +486,6 @@ op Consume(args: sequence(u32)) -> () {
 // check: operand sequence requires one declared element type
 struct SequenceArgs { args: ValueList, }
 op Consume(args: sequence(Value, Value)) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "consume"; storage = SequenceArgs { args };
 }
 
@@ -514,7 +494,7 @@ op Consume(args: sequence(Value, Value)) -> () {
 // check: unknown property type `T`
 struct Input { arg: Value, }
 op Identity<T: Integer>(arg: T) -> Value<T> {
-    meta = OpInfo {}; mnemonic = "identity"; storage = Input { arg };
+    mnemonic = "identity"; storage = Input { arg };
 }
 
 // ----- signatures/result-requires-explicit-value-role
@@ -522,7 +502,7 @@ op Identity<T: Integer>(arg: T) -> Value<T> {
 // check: expected Value<T> for an SSA value
 struct Input { arg: Value, }
 op Identity<T: Integer>(arg: Value<T>) -> T {
-    meta = OpInfo {}; mnemonic = "identity"; storage = Input { arg };
+    mnemonic = "identity"; storage = Input { arg };
 }
 
 // ----- signatures/value-constructor-requires-one-type
@@ -530,7 +510,7 @@ op Identity<T: Integer>(arg: Value<T>) -> T {
 // check: expected Value<T> for an SSA value
 struct Input { arg: Value, }
 op Identity<T: Integer>(arg: Value<T, T>) -> Value<T> {
-    meta = OpInfo {}; mnemonic = "identity"; storage = Input { arg };
+    mnemonic = "identity"; storage = Input { arg };
 }
 
 // ----- signatures/value-constructor-follows-reference-declaration
@@ -539,5 +519,5 @@ op Identity<T: Integer>(arg: Value<T, T>) -> Value<T> {
 type Ref = rust("crate::Value") { field = operand; }
 struct Input { arg: Value, }
 op Identity<T: Integer>(arg: Ref<T>) -> Ref<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "identity"; storage = Input { arg };
+    mnemonic = "identity"; storage = Input { arg };
 }

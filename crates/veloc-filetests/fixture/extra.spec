@@ -5,7 +5,6 @@ import "../../../veloc/mir/defs/module.spec";
 fn NextSize(size: u32) -> u32 { value = size + 1; }
 struct CheckedSize { size: u32 }
 op CheckedSize(size: u32) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "checked-size"; storage = CheckedSize { size };
     text = "size={size}";
     verify {
@@ -19,7 +18,6 @@ struct VectorLiteral {
 }
 // Codec and result type follow the parameter type; validation is explicit.
 op VectorLiteral(data: VectorConst) -> Value<type(data)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "vector-literal"; storage = VectorLiteral { payload: data };
     verify {
         require(!data.is_dense() || len(data.bytes()?) == data.encoded_size()?, "dense vector constant byte count must match its type");
@@ -27,7 +25,7 @@ op VectorLiteral(data: VectorConst) -> Value<type(data)> {
 }
 
 op Rebind(move value: Value<Callable>) -> (result: Value<Callable>) {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
     mnemonic = "rebind"; storage = Unary { arg: value };
 
     verify {
@@ -39,11 +37,12 @@ struct MoveBranch {
     dest: Successor,
 }
 op MoveBranch(move value: Value<Callable>, dest: successor) -> () {
-    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::UNKNOWN };
+    control = terminator;
+    memory = unknown;
     mnemonic = "move-branch"; storage = MoveBranch { value, dest };
 }
 op Observe(value: Value<Callable>) -> () {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    memory = unknown;
 mnemonic = "observe"; storage = Unary { arg: value }; }
 
 struct FunctionOperand {
@@ -56,11 +55,9 @@ struct WideRef {
     high: u64,
 }
 op WideRef(target: FuncId, low: u64, high: u64) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "wide-ref"; storage = WideRef { target, low, high };
 }
 op FunctionOperand(target: FuncId) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "function-operand"; storage = FunctionOperand { target };
 text = "{target}"; }
 struct ExplicitCall {
@@ -69,7 +66,6 @@ struct ExplicitCall {
     sig: SigId,
 }
 op ExplicitCall(target: FuncId, args: sequence(Value), sig: SigId) -> signature {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "explicit-call"; storage = ExplicitCall { target, args, sig };
     signature = sig;
 text = "{target}({args}) : {sig}"; }
@@ -90,7 +86,6 @@ struct Grouped {
     after: Value,
 }
 op Grouped(before: Value<Type::I32>, after: Value<Type::I32>, group: TestOperands) -> Value<Type::I32> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "grouped"; storage = Grouped { before, group, after };
     text = "{before}, {after}, token={group.token}[, optional={group.optional}], tag={group.tag}";
 }
@@ -102,7 +97,6 @@ struct Routed {
     tail: VectorExtData,
 }
 op Routed(input: Value<Type::I32>, group: TestOperands, tail: VectorExtData, dest: successor) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "routed";
     storage = Routed { operands: input, group, dest, tail };
     text = "{input}, {dest}, token={group.token}[, optional={group.optional}], tag={group.tag}, mask={tail.mask}[, evl={tail.evl}]";
@@ -112,28 +106,21 @@ struct Quinary { args: values(5) }
 struct Empty {  }
 
 op Many<A: Any, B: Any, C: Any, D: Any, E: Any>(a: Value<A>, b: Value<B>, c: Value<C>, d: Value<D>, e: Value<E>) -> (Value<E>, Value<A>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "many"; storage = Quinary { args: [a, b, c, d, e] }; }
 op ThreeResults<A: Any, B: Any>(a: Value<A>, b: Value<B>) -> (Value<B>, Value<A>, Value<Type::BOOL>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "three-results"; storage = Binary { args: [a, b] }; }
 op Output<T: Integer>() -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "output"; storage = Empty {}; }
 op Sized<T: Scalar>(arg: Value<T>) -> (result: Value<Type::I8>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "sized"; storage = Unary { arg };
 verify {
         require(result.element_bits()? > arg.ty().element_bits()?, "result must have more bits per lane than arg");
     } }
 op First<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "first"; storage = Binary { args: [lhs, rhs] }; }
 op Second<U: Integer>(a: Value<U>, b: Value<U>) -> Value<U> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "second"; storage = Binary { args: [a, b] }; }
 op FloatOnly<U: Float>(a: Value<U>, b: Value<U>) -> Value<U> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "float-only"; storage = Binary { args: [a, b] }; }
 
 struct Pair { inputs: values(2) }
@@ -143,26 +130,20 @@ struct Immediate { value: Value, displacement: i32 }
 struct Compare { cc: IntCC, args: values(2) }
 
 op Difference<T: Integer>(left: Value<T>, right: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "difference"; storage = Pair { inputs: [left, right] }; }
 op ReverseText<T: Integer>(left: Value<T>, right: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "reverse-text"; storage = FieldPair { right: left, left: right };
 text = "{right}, {left}"; }
 op SelectType<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<Integer> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "select-type"; storage = Pair { inputs: [lhs, rhs] }; }
 op WidePair<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, wide: Value<Type::I64>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "wide-pair"; storage = Pair { inputs: [lhs, rhs] };
 verify {
         require(wide.element_bits()? > lhs.ty().element_bits()?, "wide must have more bits per lane than lhs");
     } }
 op Triple<T: Integer>(base: Value<T>, index: Value<T>, increment: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "triple"; storage = Triple { args: [base, index, increment] }; }
 op Offset(arg: Value<Type::PTR>, amount: i32) -> Value<Type::PTR> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "offset"; storage = Immediate { value: arg, displacement: amount };
 text = "{arg}, amount={amount}"; }
 struct Extended {
@@ -176,47 +157,36 @@ layout Extended {
 
 typeset Wide = Type::I32 | Type::I64;
 op Named<T: Wide>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "named"; storage = Binary { args: [lhs, rhs] }; }
 op Inline<T: (Type::I64 | Type::I32) & Scalar>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "inline"; storage = Binary { args: [lhs, rhs] }; }
 op Lane<T: vectors(Type::I32 | Type::I64)>(arg: Value<T>) -> Value<element(T)> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "lane"; storage = Unary { arg }; }
 op Convert<T: Type::I32 | Type::I64, U: Float & Scalar>(arg: Value<T>) -> Value<U> {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
-    meta = OpInfo { memory: MemoryEffect::NONE };
 mnemonic = "convert"; storage = Unary { arg }; }
 
 op Direct<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "direct"; storage = Binary { args: [lhs, rhs] }; semantics = bv.sub(lhs, rhs)
 ; }
 op Reversed<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "reversed"; storage = Binary { args: [lhs, rhs] }; semantics = bv.sub(rhs, lhs)
 ; }
 op Composed<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "composed"; storage = Binary { args: [lhs, rhs] }; semantics = bv.add(lhs, bv.sub(rhs, bv.one()))
 ; }
 op Trapping<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "trapping"; storage = Binary { args: [lhs, rhs] }; semantics = bv.udiv(lhs, rhs);
     traps = [DivisionByZero(bv.eq(rhs, bv.zero()))]
 ; }
 op Multiple<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, Value<Type::BOOL>) {
-    meta = OpInfo {};
     mnemonic = "multiple"; storage = Binary { args: [lhs, rhs] }; semantics = [bv.add(lhs, rhs), bv.eq(lhs, rhs)]
 ; }
 op CompareValue<T: ScalarInteger>(lhs: Value<T>, condition: IntCC, rhs: Value<T>) -> Value<Type::BOOL> {
-    meta = OpInfo {};
     mnemonic = "compare-value"; storage = Compare { cc: condition, args: [lhs, rhs] };
     semantics = bv.cmp(condition, lhs, rhs)
 ; }
 op VectorOnly<T: vectors(ScalarInteger)>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "vector-only"; storage = Unary { arg }; semantics = bv.sub(bv.zero(), arg)
 ; }
 
@@ -240,18 +210,16 @@ struct TestMetadata {
 // Deliberately reverse declaration order to exercise canonical set emission.
 struct EffectSet {  }
 op EffectSet() -> () {
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::WRITE.union(MemoryEffects::READ)) };
+    memory = MemoryEffect::known(MemoryEffects::WRITE.union(MemoryEffects::READ));
 mnemonic = "effect-set"; storage = EffectSet {}; }
 
 // One field declaration can serve as both a primary layout and a nested property.
 struct LiteralPayload { bits: u32 }
 struct WrappedPayload { inner: LiteralPayload }
 op Payload(bits: u32) -> Value<Type::I32> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "payload"; storage = LiteralPayload { bits }
 ; }
 op Wrapped(inner: LiteralPayload) -> Value<Type::I32> {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "wrapped"; storage = WrappedPayload { inner };
     text = "{inner.bits}"
 ; }
@@ -261,7 +229,6 @@ struct StampRecord { stamp: Stamp }
 enum StampResult { variants = [Present(Stamp), Absent]; }
 struct StampInput { number: u32 }
 op ReadStamp(number: u32) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "read-stamp"; storage = StampInput { number };
     text = "{number}";
 }
@@ -271,7 +238,6 @@ fn double_bits(from: Type, to: Type) -> bool {
 ; }
 
 op DoubleWidth<T: Integer, U: Integer>(arg: Value<T>) -> (result: Value<U>) {
-    meta = OpInfo {};
     mnemonic = "double-width";
     storage = Unary { arg };
     verify {
@@ -283,7 +249,6 @@ op DoubleWidth<T: Integer, U: Integer>(arg: Value<T>) -> (result: Value<U>) {
 ; }
 
 op FourLane<T: Integer>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo {};
     mnemonic = "four-lane";
     storage = Unary { arg };
     verify {
@@ -294,7 +259,7 @@ op FourLane<T: Integer>(arg: Value<T>) -> Value<T> {
 
 fn scalable(ty: Type) -> bool = rust("crate::Type::is_scalable");
 op RuntimeScalable<T: Integer>(arg: Value<T>) -> Value<T> {
-    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "runtime-scalable"; storage = Unary { arg };
+    mnemonic = "runtime-scalable"; storage = Unary { arg };
     verify { require(scalable(T), "scalable only"); }
 }
 
@@ -303,7 +268,6 @@ struct RoutedTable {
     targets: Destinations,
 }
 op RoutedTable(index: Value<Type::I32>, cases: successors, default: successor) -> () {
-    meta = OpInfo { memory: MemoryEffect::NONE };
     mnemonic = "routed-table";
     storage = RoutedTable { index, targets: table(cases, default) };
     text = "{index}, {cases}, {default}";

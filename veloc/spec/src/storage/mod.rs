@@ -528,7 +528,9 @@ fn parse_layout(
         }
     }
     let record = binding.unwrap_or(record);
-    let allows_notrap = users.iter().any(|op| op.fields.contains_key("modifiers"));
+    let allows_notrap = users
+        .iter()
+        .any(|op| crate::model::operation::allows_notrap(op));
     let notrap = NotrapStorage::resolve(&fields, records, allows_notrap)
         .map_err(|message| Error::at(source, record.offset, message))?;
 

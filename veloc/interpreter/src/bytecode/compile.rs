@@ -1270,11 +1270,13 @@ impl<'a> Compiler<'a> {
                 func_id,
                 captures,
                 cleanup,
+                ..
             } => self.closure_site(inst, *func_id, captures, Some(*cleanup)),
             InstView::Closure {
                 opcode: IrOpcode::ClosureLocal | IrOpcode::ClosureShared,
                 func_id,
                 captures,
+                ..
             } => self.closure_site(inst, *func_id, captures, None),
             InstView::TailCall { func_id, args, .. } => ControlSite::TailCall {
                 function: *func_id,
@@ -1304,6 +1306,7 @@ impl<'a> Compiler<'a> {
             InstView::Unary {
                 opcode: IrOpcode::ClosureDrop,
                 arg,
+                ..
             } => ControlSite::Drop {
                 callee: self.mapper.reg(*arg),
             },
@@ -1469,7 +1472,7 @@ impl<'a> Compiler<'a> {
             InstView::Unreachable => {
                 emit::Unreachable(&mut self.code);
             }
-            InstView::Ternary { opcode, args } if *opcode == IrOpcode::Select => {
+            InstView::Ternary { opcode, args, .. } if *opcode == IrOpcode::Select => {
                 let cond_reg = self.mapper.reg(args[0]);
                 let then_reg = self.mapper.reg(args[1]);
                 let else_reg = self.mapper.reg(args[2]);
@@ -1562,7 +1565,12 @@ mod tests {
             vec![veloc_mir::Type::I32X4],
             CallConv::Platform,
         );
-        let func = module.declare_function("vector_identity".into(), sig, Linkage::Local, false);
+        let func = module.declare_function(
+            "vector_identity".into(),
+            sig,
+            Linkage::Local,
+            Default::default(),
+        );
         {
             let mut builder = module.define(func);
             let param = builder.func().params()[0];
@@ -1587,7 +1595,12 @@ mod tests {
 
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(Vec::new(), vec![Type::I32], CallConv::Platform);
-        let func = module.declare_function("block_params".into(), sig, Linkage::Local, false);
+        let func = module.declare_function(
+            "block_params".into(),
+            sig,
+            Linkage::Local,
+            Default::default(),
+        );
 
         {
             let mut builder = module.define(func);

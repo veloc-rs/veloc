@@ -16,8 +16,15 @@ pub(crate) struct Operands {
     pub(crate) register_rust: String,
     pub(crate) attributes: String,
     pub(crate) payloads: Option<super::payload::Payloads>,
-    pub(crate) control: Option<(String, String, BTreeSet<String>)>,
+    pub(crate) control: Option<Flow>,
 }
+#[derive(Debug)]
+pub(crate) struct Flow {
+    pub name: String,
+    default: String,
+    pub variants: BTreeMap<String, Option<model::Control>>,
+}
+
 #[derive(Debug)]
 pub(crate) struct Format {
     pub(crate) name: String,
@@ -165,11 +172,35 @@ pub(crate) fn compile(
         if en.variants.iter().any(|(_, args)| !args.is_empty()) {
             return Err(config.error("control variants cannot have payloads"));
         }
-        let names: BTreeSet<_> = en.variants.iter().map(|(n, _)| n.clone()).collect();
-        if !names.contains(default) {
+        let mut variants: BTreeMap<_, _> =
+            en.variants.iter().map(|(n, _)| (n.clone(), None)).collect();
+        if !variants.contains_key(default) {
             return Err(config.error("unknown default control variant"));
         }
-        Some((owner.to_owned(), default.to_owned(), names))
+        if let Some(node) = config.optional("control_effects") {
+            let Kind::Record(entries) = node.kind else {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "expected a map of flow variants to control effects",
+                ));
+            };
+            for (variant, effect) in entries {
+                let entry = variants.get_mut(&variant).ok_or_else(|| {
+                    Error::at(
+                        source,
+                        effect.offset,
+                        format!("unknown control flow variant `{variant}`"),
+                    )
+                })?;
+                *entry = Some(model::Control::parse(source, &effect)?);
+            }
+        }
+        Some(Flow {
+            name: owner.to_owned(),
+            default: default.to_owned(),
+            variants,
+        })
     } else {
         None
     };
@@ -449,12 +480,12 @@ impl Operands {
             return Err(fail("storage mapping must bind every field exactly once"));
         }
         let flow = match (&self.control, flow) {
-            (Some((_, default, names)), flow) => {
+            (Some(control), flow) => {
                 let name = flow
                     .map(|n| model::name(source, n))
                     .transpose()?
-                    .unwrap_or_else(|| default.clone());
-                if !names.contains(&name) {
+                    .unwrap_or_else(|| control.default.clone());
+                if !control.variants.contains_key(&name) {
                     return Err(fail("unknown control flow variant"));
                 }
                 name

@@ -200,7 +200,7 @@ fn make_wrapper(module: &mut Module, callee: FuncId) -> Option<FuncBody> {
         suffix += 1;
     };
     let sig = module.intern_signature(signature);
-    let helper = module.declare_function(name, sig, Linkage::Local, false);
+    let helper = module.declare_function(name, sig, Linkage::Local, Default::default());
     module.define_function(helper, outlined);
 
     // The wrapper retains the original entry and fast return. Its cold block
