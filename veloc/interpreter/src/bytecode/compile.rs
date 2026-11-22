@@ -1309,6 +1309,17 @@ impl<'a> Compiler<'a> {
         })
     }
 
+    /// Direct stack bytecode bypasses the generic memory handler.
+    fn stack_offset(&self, inst: Inst) -> Option<u32> {
+        let access = self.func.access(inst, &crate::DATA_LAYOUT)?;
+        let (size, _) = self.func.dfg().stack_slot_layout(access.base)?;
+        let offset = u32::try_from(access.offset).ok()?;
+        if access.flags.is_volatile() || offset.checked_add(access.bytes)? > size {
+            return None;
+        }
+        self.stack.offsets[access.base].checked_add(offset)
+    }
+
     fn compile_inst(&mut self, inst: Inst) -> Option<()> {
         let dfg = self.func.dfg();
         // Fuse per use, not per literal: a constant used by a call may still
@@ -1379,39 +1390,30 @@ impl<'a> Compiler<'a> {
             InstView::Binary { opcode, args } => self.emit_binary(inst, *opcode, args)?,
             InstView::IntCompare { kind, args, .. } => self.emit_icmp(inst, *kind, args)?,
             InstView::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args)?,
-            InstView::Load { ptr, offset, flags } => {
-                if !flags.is_volatile()
-                    && let Some(location) = self.func.memory_location(inst, &crate::DATA_LAYOUT)
-                    && let Some((object, offset)) = self.func.stack_access(location, *flags)
-                {
+            InstView::Load { ptr, offset, .. } => {
+                if let Some(frame_offset) = self.stack_offset(inst) {
                     let result = self.func.dfg().first_result(inst).unwrap();
                     let dst = self.mapper.reg(result);
                     emit::StackLoad(
                         &mut self.code,
                         dst,
                         self.func.dfg().value_type(result),
-                        self.stack.offsets[object] + offset,
+                        frame_offset,
                     );
                 } else {
                     self.emit_load(inst, *ptr, *offset)?;
                 }
             }
             InstView::Store {
-                ptr,
-                value,
-                offset,
-                flags,
+                ptr, value, offset, ..
             } => {
-                if !flags.is_volatile()
-                    && let Some(location) = self.func.memory_location(inst, &crate::DATA_LAYOUT)
-                    && let Some((object, offset)) = self.func.stack_access(location, *flags)
-                {
+                if let Some(frame_offset) = self.stack_offset(inst) {
                     let src = self.mapper.reg(*value);
                     emit::StackStore(
                         &mut self.code,
                         src,
                         self.func.dfg().value_type(*value),
-                        self.stack.offsets[object] + offset,
+                        frame_offset,
                     );
                 } else {
                     self.emit_store(*ptr, *value, *offset)?;

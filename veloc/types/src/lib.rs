@@ -28,7 +28,7 @@ pub use signature::{CallConv, SigId, Signature, SignatureError, Signatures};
 mod layout;
 pub use layout::{DataLayout, TypeLayout};
 mod memory;
-pub use memory::MemoryLocation;
+pub use memory::{MemoryLocation, ranges_may_overlap};
 
 /// Callable environment contracts, not a CPS calling convention.
 /// Lifetime and call multiplicity are distinct; these are the combinations

@@ -5,14 +5,12 @@
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use std::collections::{BTreeMap, HashSet};
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{Inst, InstView, Type, Value, function::EdgeRef};
+use veloc_mir::{Inst, InstView, Type, Value, function::EdgeRef, memory::Access};
 
 pub struct PromotePass;
 #[derive(Clone)]
 struct Cell {
-    object: Value,
-    offset: u32,
-    bytes: u32,
+    access: Access,
     ty: Type,
     accesses: Vec<Inst>,
 }
@@ -60,54 +58,48 @@ impl FunctionPass for PromotePass {
                         }
                     };
                     if flags.is_volatile()
-                        || f.memory_location(inst, &layout)
-                            .and_then(|location| f.stack_access(location, flags))
-                            .is_none()
+                        || f.access(inst, &layout).is_none_or(|a| a.base != allocation)
                     {
                         escaped.insert(allocation);
                     }
                 }
             }
         }
-        let mut cells = BTreeMap::<(Value, u32), Cell>::new();
+        let mut cells = BTreeMap::<(Value, i64), Cell>::new();
         for &inst in &insts {
-            let (ty, flags) = match f.dfg().inst(inst) {
-                InstView::Load { flags, .. } => (
-                    f.dfg()
-                        .value_type(f.dfg().first_result(inst).expect("load result")),
-                    flags,
-                ),
-                InstView::Store { value, flags, .. } => (f.dfg().value_type(value), flags),
+            let value = match f.dfg().inst(inst) {
+                InstView::Load { .. } => f.dfg().first_result(inst).expect("load result"),
+                InstView::Store { value, .. } => value,
                 _ => continue,
             };
-            let Some(location) = f.memory_location(inst, &layout) else {
+            let Some(access) = f
+                .access(inst, &layout)
+                .filter(|a| f.dfg().stack_slot_layout(a.base).is_some())
+            else {
                 continue;
             };
-            let Some((object, offset)) = f.stack_access(location, flags) else {
-                continue;
-            };
-            let bytes = location.bytes;
-            let cell = cells.entry((object, offset)).or_insert(Cell {
-                object,
-                offset,
-                bytes,
+            let ty = f.dfg().value_type(value);
+            let cell = cells.entry((access.base, access.offset)).or_insert(Cell {
+                access,
                 ty,
                 accesses: vec![],
             });
-            if cell.bytes != bytes || cell.ty != ty {
-                escaped.insert(object);
+            if cell.access.bytes != access.bytes || cell.ty != ty {
+                escaped.insert(access.base);
             }
             cell.accesses.push(inst);
         }
         let cells: Vec<_> = cells.into_values().collect();
         for pair in cells.windows(2) {
-            if pair[0].object == pair[1].object && pair[0].offset + pair[0].bytes > pair[1].offset {
-                escaped.insert(pair[0].object);
+            if pair[0].access.base == pair[1].access.base
+                && pair[0].access.end() > i128::from(pair[1].access.offset)
+            {
+                escaped.insert(pair[0].access.base);
             }
         }
         let mut changed = 0;
         for cell in cells {
-            if escaped.contains(&cell.object) {
+            if escaped.contains(&cell.access.base) {
                 continue;
             }
             let accesses: HashSet<_> = cell.accesses.iter().copied().collect();

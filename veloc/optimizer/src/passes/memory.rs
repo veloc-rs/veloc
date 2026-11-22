@@ -3,7 +3,7 @@
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use hashbrown::HashSet;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{FuncBody, Inst, InstView, Opcode, Type, Value};
+use veloc_mir::{FuncBody, Inst, InstView, Opcode, Type, Value, memory::Access};
 use veloc_types::DataLayout;
 
 const MAX_CELLS: usize = 64;
@@ -31,9 +31,7 @@ impl FunctionPass for MemoryPass {
 }
 
 struct Cell {
-    object: Value,
-    offset: u32,
-    bytes: u32,
+    access: Access,
     ty: Type,
     value: Value,
     // Deletable until a read observes it.
@@ -41,8 +39,10 @@ struct Cell {
 }
 
 impl Cell {
-    fn overlaps(&self, object: Value, offset: u32, bytes: u32) -> bool {
-        self.object == object && self.offset < offset + bytes && offset < self.offset + self.bytes
+    fn overlaps(&self, access: Access) -> bool {
+        self.access.base == access.base
+            && i128::from(self.access.offset) < access.end()
+            && i128::from(access.offset) < self.access.end()
     }
 }
 
@@ -82,17 +82,6 @@ fn escaped_slots(func: &FuncBody) -> HashSet<Value> {
     escaped
 }
 
-/// A nonvolatile load or store wholly inside a stack slot.
-fn stack_access(func: &FuncBody, inst: Inst, layout: &DataLayout) -> Option<(Value, u32, u32)> {
-    let flags = func.dfg().inst(inst).memory_flags()?;
-    if flags.is_volatile() {
-        return None;
-    }
-    let location = func.memory_location(inst, layout)?;
-    let (object, offset) = func.stack_access(location, flags)?;
-    Some((object, offset, location.bytes))
-}
-
 pub fn run_memory(func: &mut FuncBody, layout: &DataLayout, metrics: &Profile) -> bool {
     let escaped = escaped_slots(func);
     let mut dead = HashSet::new();
@@ -107,17 +96,21 @@ pub fn run_memory(func: &mut FuncBody, layout: &DataLayout, metrics: &Profile) -
                 dead.extend(
                     cells
                         .iter()
-                        .filter(|c| !escaped.contains(&c.object))
+                        .filter(|c| !escaped.contains(&c.access.base))
                         .filter_map(|c| c.pending_store),
                 );
                 break;
             }
 
-            let Some((object, offset, bytes)) = stack_access(func, inst, layout) else {
-                if !view.memory_effect().is_none()
-                    || view.has_volatile_access()
-                    || view.opcode().spec().may_trap()
-                {
+            if view.has_volatile_access() {
+                cells.clear();
+                continue;
+            }
+            let Some(access) = func
+                .access(inst, layout)
+                .filter(|a| func.dfg().stack_slot_layout(a.base).is_some())
+            else {
+                if !view.memory_effect().is_none() || view.opcode().spec().may_trap() {
                     cells.clear();
                 }
                 continue;
@@ -126,11 +119,11 @@ pub fn run_memory(func: &mut FuncBody, layout: &DataLayout, metrics: &Profile) -
             let (value, pending_store) = match view {
                 InstView::Store { value, .. } => {
                     cells.retain(|cell| {
-                        if !cell.overlaps(object, offset, bytes) {
+                        if !cell.overlaps(access) {
                             return true;
                         }
-                        if offset <= cell.offset
-                            && offset + bytes >= cell.offset + cell.bytes
+                        if access.offset <= cell.access.offset
+                            && access.end() >= cell.access.end()
                             && let Some(store) = cell.pending_store
                         {
                             dead.insert(store);
@@ -143,7 +136,9 @@ pub fn run_memory(func: &mut FuncBody, layout: &DataLayout, metrics: &Profile) -
                     let result = func.dfg().first_result(inst).expect("load result");
                     let ty = func.dfg().value_type(result);
                     if let Some(previous) = cells.iter().find(|cell| {
-                        cell.object == object && cell.offset == offset && cell.ty == ty
+                        cell.access.base == access.base
+                            && cell.access.offset == access.offset
+                            && cell.ty == ty
                     }) {
                         func.edit().replace_all_uses(result, previous.value);
                         dead.insert(inst);
@@ -151,18 +146,16 @@ pub fn run_memory(func: &mut FuncBody, layout: &DataLayout, metrics: &Profile) -
                     }
                     // A retained read observes any overlapping store.
                     for cell in &mut cells {
-                        if cell.overlaps(object, offset, bytes) {
+                        if cell.overlaps(access) {
                             cell.pending_store = None;
                         }
                     }
                     (result, None)
                 }
-                _ => unreachable!("memory_location requires a load or store"),
+                _ => unreachable!("access requires a load or store"),
             };
             cells.push(Cell {
-                object,
-                offset,
-                bytes,
+                access,
                 ty: func.dfg().value_type(value),
                 value,
                 pending_store,

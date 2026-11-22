@@ -136,7 +136,10 @@ block1(x: i32):
 A `stack-slot` declaration between the function header and its first block
 defines a function-wide pointer to an uninitialized local object. Each slot
 has a positive byte size and a power-of-two alignment. Each invocation gets
-its own object for each declaration. Use ordinary `Load` and `Store` to access it.
+its own object for each declaration. MIR producers must ensure every executed
+memory access through a slot pointer stays entirely within that slot. Computing
+a one-past-the-end pointer is permitted. A frontend whose language requires an
+out-of-bounds trap must implement that behavior for dynamic indices.
 
 ```text
 local function example() -> i32

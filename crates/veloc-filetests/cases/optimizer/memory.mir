@@ -47,17 +47,6 @@ block0():
   y: i32 = load p, offset=0
   return y
 
-// ----- out-of-bounds-is-not-eliminated
-// run: o1
-// check: store
-// check: load
-local function main() -> i32
-stack-slot p, size=4, align=4
-block0():
-  store i32(1), p, offset=4
-  y: i32 = load p, offset=4
-  return y
-
 // ----- unused-object-is-removable
 // run: o1
 // not: stack-slot
@@ -66,3 +55,16 @@ local function main() -> void
 stack-slot p, size=4096, align=64
 block0():
   return
+
+// ----- stack-access-at-slot-end
+// run: o1
+// not: stack-slot
+// check: return i32(42)
+local function main() -> i32
+stack-slot p, size=8, align=8
+block0():
+  store.align4 i32(42), p, offset=4
+  end: ptr = ptr-offset p, 8
+  last: ptr = ptr-offset end, -4
+  x: i32 = load.align4 last, offset=0
+  return x

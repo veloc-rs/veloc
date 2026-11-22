@@ -1,47 +1,67 @@
-//! Shared address normalization, access ranges and stack bounds proofs.
-//! Instruction operands and access properties remain in InstView and MemFlags.
+//! Address normalization and fixed-width memory accesses.
 use crate::{FuncBody, Inst, InstView, MemFlags, Type, Value};
-use veloc_types::DataLayout;
+use veloc_types::{DataLayout, ranges_may_overlap};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Address {
     pub base: Value,
     pub offset: i64,
 }
-pub type Location = veloc_types::MemoryLocation<Value>;
 
-struct StackRange {
-    object: Value,
-    offset: u32,
-    object_align: u32,
+/// A normalized, fixed-width load or store. Its base may be any pointer value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Access {
+    pub base: Value,
+    pub offset: i64,
+    pub bytes: u32,
+    pub flags: MemFlags,
+}
+
+impl Access {
+    /// Exclusive end relative to the base, including offsets near the i64 limit.
+    pub fn end(self) -> i128 {
+        i128::from(self.offset) + i128::from(self.bytes)
+    }
 }
 
 impl FuncBody {
-    /// Fixed byte range of an ordinary load or store in the target layout.
-    /// Unknown sizes or addresses return None, not a proof of no memory effect.
-    pub fn memory_location(&self, inst: Inst, layout: &DataLayout) -> Option<Location> {
+    /// Describe an ordinary load or store with a known fixed storage width.
+    pub fn access(&self, inst: Inst, layout: &DataLayout) -> Option<Access> {
         let dfg = self.dfg();
-        let (ptr, offset, value) = match dfg.inst(inst) {
-            InstView::Load { ptr, offset, .. } => (
+        let (ptr, offset, value, flags) = match dfg.inst(inst) {
+            InstView::Load { ptr, offset, flags } => (
                 ptr,
                 offset,
                 dfg.first_result(inst).expect("load has one result"),
+                flags,
             ),
             InstView::Store {
-                ptr, offset, value, ..
-            } => (ptr, offset, value),
+                ptr,
+                offset,
+                value,
+                flags,
+            } => (ptr, offset, value, flags),
             _ => return None,
         };
         let address = self.address(ptr, i64::from(offset))?;
-        Some(Location {
+        // Pointer offsets wrap to the target address width.
+        let bits = u32::from(layout.pointer_size) * 8;
+        let offset = match bits {
+            1..64 => address.offset & ((1u64 << bits) - 1) as i64,
+            64 => address.offset,
+            _ => return None,
+        };
+        Some(Access {
             base: address.base,
-            offset: address.offset,
+            offset,
+            flags,
             bytes: layout
                 .layout_of(dfg.value_type(value))?
                 .store_size
                 .fixed_bytes()?,
         })
     }
+
     /// Combine constant byte offsets from a pointer-typed value into a base and offset.
     /// Returns `None` if accumulating an offset overflows `i64`.
     pub fn address(&self, mut ptr: Value, mut offset: i64) -> Option<Address> {
@@ -58,35 +78,16 @@ impl FuncBody {
         Some(Address { base: ptr, offset })
     }
 
-    pub fn may_alias(&self, a: Location, b: Location, layout: &DataLayout) -> bool {
+    pub fn may_alias(&self, a: Access, b: Access, layout: &DataLayout) -> bool {
         if a.base == b.base {
-            return a.may_overlap(&b, u32::from(layout.pointer_size) * 8);
+            return ranges_may_overlap(
+                (a.offset, a.bytes),
+                (b.offset, b.bytes),
+                u32::from(layout.pointer_size) * 8,
+            );
         }
-        match (self.stack_range(a), self.stack_range(b)) {
-            (Some(a), Some(b)) => a.object == b.object,
-            _ => true,
-        }
-    }
-
-    /// A complete, aligned access inside a known stack slot.
-    /// This is a bounds proof, not a claim that the bytes are initialized.
-    pub fn stack_access(&self, location: Location, flags: MemFlags) -> Option<(Value, u32)> {
-        let range = self.stack_range(location)?;
-        let align = flags.alignment();
-        (range.object_align >= align && range.offset % align == 0)
-            .then_some((range.object, range.offset))
-    }
-
-    /// Resolve a nonempty byte range wholly inside a stack slot.
-    fn stack_range(&self, location: Location) -> Option<StackRange> {
-        let address = self.address(location.base, 0)?;
-        let object = address.base;
-        let (size, align) = self.dfg().stack_slot_layout(object)?;
-        let offset = u32::try_from(address.offset.checked_add(location.offset)?).ok()?;
-        (location.bytes != 0 && offset.checked_add(location.bytes)? <= size).then_some(StackRange {
-            object,
-            offset,
-            object_align: align,
-        })
+        // Valid accesses through distinct stack slots cannot overlap.
+        self.dfg().stack_slot_layout(a.base).is_none()
+            || self.dfg().stack_slot_layout(b.base).is_none()
     }
 }

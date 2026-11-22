@@ -3,7 +3,7 @@
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use hashbrown::{HashMap, HashSet};
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::memory::{Address, Location};
+use veloc_mir::memory::{Access, Address};
 use veloc_mir::{Block, FuncBody, Inst, InstView, Type};
 use veloc_types::DataLayout;
 
@@ -12,7 +12,7 @@ pub struct LoadCsePass;
 struct BlockWrites {
     // Prefix counts let us query either endpoint without scanning instructions.
     prefix: Vec<usize>,
-    stores: Vec<(usize, Location)>,
+    stores: Vec<(usize, Access)>,
 }
 
 impl BlockWrites {
@@ -21,13 +21,13 @@ impl BlockWrites {
         start: usize,
         end: usize,
         func: &FuncBody,
-        location: Option<Location>,
+        access: Option<Access>,
         layout: &DataLayout,
     ) -> bool {
         self.prefix[start] != self.prefix[end]
             || self.stores.iter().any(|&(at, store)| {
                 (start..end).contains(&at)
-                    && location.is_none_or(|load| func.may_alias(load, store, layout))
+                    && access.is_none_or(|load| func.may_alias(load, store, layout))
             })
     }
     fn end(&self) -> usize {
@@ -61,9 +61,9 @@ impl FunctionPass for LoadCsePass {
                 let effect = view.memory_effect();
                 let mut barrier = effect.may_free() || view.has_volatile_access();
                 if effect.may_write() {
-                    let location = func.memory_location(inst, layout);
-                    if !barrier && let Some(location) = location {
-                        stores.push((index, location));
+                    let access = func.access(inst, layout);
+                    if !barrier && let Some(access) = access {
+                        stores.push((index, access));
                     } else {
                         barrier = true;
                     }
@@ -83,10 +83,19 @@ impl FunctionPass for LoadCsePass {
                 if flags.is_volatile() {
                     continue;
                 }
-                let Some(address) = func.address(ptr, i64::from(offset)) else {
-                    continue;
+                let access = func.access(inst, layout);
+                let address = match access {
+                    Some(a) => Address {
+                        base: a.base,
+                        offset: a.offset,
+                    },
+                    None => {
+                        let Some(address) = func.address(ptr, i64::from(offset)) else {
+                            continue;
+                        };
+                        address
+                    }
                 };
-                let location = func.memory_location(inst, layout);
                 let result = func.dfg().first_result(inst).expect("load result");
                 let ty = func.dfg().value_type(result);
                 let candidates = available.entry((address, ty)).or_default();
@@ -98,7 +107,7 @@ impl FunctionPass for LoadCsePass {
                             &writes,
                             (definition, start + 1),
                             positions[&inst],
-                            location,
+                            access,
                             layout,
                         )
                 });
@@ -125,14 +134,14 @@ fn preserved(
     writes: &HashMap<Block, BlockWrites>,
     (definition, start): (Block, usize),
     (use_block, end): (Block, usize),
-    location: Option<Location>,
+    access: Option<Access>,
     layout: &DataLayout,
 ) -> bool {
     if definition == use_block {
-        return !writes[&definition].between(start, end, func, location, layout);
+        return !writes[&definition].between(start, end, func, access, layout);
     }
-    if writes[&use_block].between(0, end, func, location, layout)
-        || writes[&definition].between(start, writes[&definition].end(), func, location, layout)
+    if writes[&use_block].between(0, end, func, access, layout)
+        || writes[&definition].between(start, writes[&definition].end(), func, access, layout)
     {
         return false;
     }
@@ -142,7 +151,7 @@ fn preserved(
         if block == definition || !visited.insert(block) {
             continue;
         }
-        if writes[&block].between(0, writes[&block].end(), func, location, layout) {
+        if writes[&block].between(0, writes[&block].end(), func, access, layout) {
             return false;
         }
         work.extend(func.cfg().preds(block));

@@ -750,16 +750,11 @@ layout constraints remain local to that layout.
 
 ### Memory analysis
 
-MIR loads and stores expose their operands through `InstView` and access
-properties through `MemFlags`; they do not generate a memory-access descriptor.
-`FuncBody::memory_location(inst, layout)` computes a normalized byte range for
-shared memory analyses. `stack_access(location, flags)` checks entry-object
-bounds and alignment. These helpers do not establish initialization or remove
-volatile effects. Other instructions still report effects through
-`InstView::memory_effect()` even when no concrete byte range is available.
-
-Bounds and provenance analyses operate on instruction views and computed
-locations. Memory behavior remains a trusted metadata declaration.
+`FuncBody::access(inst, layout)` describes a fixed-width load or store with its
+normalized base, byte offset, width and memory flags. For a stack slot base,
+MIR producers guarantee that every executed access fits within the slot.
+The interpreter checks the byte range when selecting direct stack bytecode.
+Instructions with unknown ranges still report effects through `InstView::memory_effect()`.
 
 ### Ownership transfer
 
