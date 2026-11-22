@@ -359,7 +359,7 @@ impl Checker<'_> {
                 for (field, value) in &record.fields {
                     match (field.as_str(), &value.kind) {
                         ("memory", Kind::Name(name))
-                            if matches!(name.as_str(), "none" | "read" | "write" | "unknown") => {}
+                            if matches!(name.as_str(), "none" | "read" | "write" | "all") => {}
                         ("control", Kind::Name(name))
                             if matches!(name.as_str(), "terminator" | "abort") => {}
                         ("traps", Kind::Name(name))

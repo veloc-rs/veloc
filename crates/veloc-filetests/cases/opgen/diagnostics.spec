@@ -128,7 +128,7 @@ struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
-    memory = unknown;
+    memory = all;
     mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
      semantics = bv.add(lhs, rhs)
 ; }

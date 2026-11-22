@@ -16,7 +16,7 @@ bitflags::bitflags! {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[repr(transparent)]
-    pub struct MemoryEffects: u8 {
+    pub struct MemoryEffect: u8 {
         const READ = 1 << 0;
         const WRITE = 1 << 1;
         const ALLOCATE = 1 << 2;
@@ -30,67 +30,43 @@ impl fmt::Display for OpTraits {
     }
 }
 
-impl fmt::Display for MemoryEffects {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        bitflags::parser::to_writer(self, f)
+impl Default for MemoryEffect {
+    fn default() -> Self {
+        Self::all()
     }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MemoryEffect {
-    Known(MemoryEffects),
-    #[default]
-    Unknown,
 }
 
 impl MemoryEffect {
-    pub const NONE: Self = Self::Known(MemoryEffects::empty());
-    pub const UNKNOWN: Self = Self::Unknown;
-    pub const READ: Self = Self::Known(MemoryEffects::READ);
-    pub const WRITE: Self = Self::Known(MemoryEffects::WRITE);
-
-    pub const fn known(effects: MemoryEffects) -> Self {
-        Self::Known(effects)
-    }
-
-    pub const fn is_unknown(self) -> bool {
-        matches!(self, Self::Unknown)
-    }
+    pub const NONE: Self = Self::empty();
 
     pub const fn is_none(self) -> bool {
-        matches!(self, Self::Known(effects) if effects.is_empty())
+        self.is_empty()
     }
 
-    const fn may(self, effect: MemoryEffects) -> bool {
-        match self {
-            Self::Known(effects) => {
-                !MemoryEffects::all().contains(effects) || effects.intersects(effect)
-            }
-            Self::Unknown => true,
-        }
+    const fn may(self, effect: Self) -> bool {
+        !Self::all().contains(self) || self.intersects(effect)
     }
 
     pub const fn may_read(self) -> bool {
-        self.may(MemoryEffects::READ)
+        self.may(Self::READ)
     }
     pub const fn may_write(self) -> bool {
-        self.may(MemoryEffects::WRITE)
+        self.may(Self::WRITE)
     }
     pub const fn may_allocate(self) -> bool {
-        self.may(MemoryEffects::ALLOCATE)
+        self.may(Self::ALLOCATE)
     }
     pub const fn may_free(self) -> bool {
-        self.may(MemoryEffects::FREE)
+        self.may(Self::FREE)
     }
 
     /// Unused abstract objects can be removed; new or unmodeled effects cannot.
     pub const fn can_erase(self) -> bool {
-        matches!(self, Self::Known(effects)
-            if MemoryEffects::READ.union(MemoryEffects::ALLOCATE).contains(effects))
+        Self::READ.union(Self::ALLOCATE).contains(self)
     }
 
     pub const fn has_side_effects(self) -> bool {
-        !matches!(self, Self::Known(effects) if MemoryEffects::READ.contains(effects))
+        !Self::READ.contains(self)
     }
 
     /// Only memory interference; movement also requires control/trap/ordering checks.
@@ -98,31 +74,24 @@ impl MemoryEffect {
         if self.is_none() || other.is_none() {
             return false;
         }
-        let supported = MemoryEffects::READ
-            .union(MemoryEffects::WRITE)
-            .union(MemoryEffects::ALLOCATE)
-            .union(MemoryEffects::FREE);
-        match (self, other) {
-            (Self::Known(lhs), Self::Known(rhs))
-                if supported.contains(lhs) && supported.contains(rhs) =>
-            {
-                self.may_free()
-                    || other.may_free()
-                    || (self.may_allocate() && other.may_allocate())
-                    || (self.may_write() && (other.may_read() || other.may_write()))
-                    || (other.may_write() && self.may_read())
-            }
-            _ => true,
+        let supported = Self::READ
+            .union(Self::WRITE)
+            .union(Self::ALLOCATE)
+            .union(Self::FREE);
+        if !supported.contains(self) || !supported.contains(other) {
+            return true;
         }
+        self.intersects(Self::FREE)
+            || other.intersects(Self::FREE)
+            || (self.intersects(Self::ALLOCATE) && other.intersects(Self::ALLOCATE))
+            || (self.intersects(Self::WRITE) && other.intersects(Self::READ.union(Self::WRITE)))
+            || (other.intersects(Self::WRITE) && self.intersects(Self::READ))
     }
 }
 
-impl core::fmt::Display for MemoryEffect {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Known(effects) => effects.fmt(f),
-            Self::Unknown => f.write_str("unknown"),
-        }
+impl fmt::Display for MemoryEffect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        bitflags::parser::to_writer(self, f)
     }
 }
 

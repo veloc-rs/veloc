@@ -5,7 +5,7 @@ use crate::target::TargetSchedule;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 use veloc_lir::{InstRef, MachineOpcode, Reg};
-use veloc_types::{MemoryEffects, MemoryLocation};
+use veloc_types::{MemoryEffect, MemoryLocation};
 
 type Location = MemoryLocation<(Reg, Option<NodeId>)>;
 struct Access {
@@ -48,7 +48,7 @@ impl MemoryDependencies {
             self.barrier = Some(node);
             return edges;
         };
-        let read = metadata.effect == MemoryEffects::READ;
+        let read = metadata.effect == MemoryEffect::READ;
         let location = metadata.location(inst).map(|address| MemoryLocation {
             base: (address.base, self.versions.get(&address.base).copied()),
             offset: address.offset,

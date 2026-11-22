@@ -14,11 +14,11 @@ typeset Bits = ScalarInteger;
 fn effect_sets_use_the_declared_vocabulary() {
     assert!(compile(&ADD.replace("memory = none;", "")).is_ok());
     for value in [
-        "MemoryEffect::known(MemoryEffects::READ)",
-        "MemoryEffect::known(MemoryEffects::WRITE)",
-        "MemoryEffect::known(MemoryEffects::ALLOCATE)",
-        "MemoryEffect::known(MemoryEffects::FREE)",
-        "MemoryEffect::UNKNOWN",
+        "MemoryEffect::READ",
+        "MemoryEffect::WRITE",
+        "MemoryEffect::ALLOCATE",
+        "MemoryEffect::FREE",
+        "MemoryEffect::all()",
     ] {
         common::const_rejected(
             &ADD.replace("memory = none;", &format!("memory = {value};")),

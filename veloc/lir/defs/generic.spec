@@ -82,12 +82,12 @@ struct CallFrame {
 
 // Survive selection and allocation; frame lowering chooses their implementation.
 op CallFrameSetup(frame: CallFrameId) -> () {
-    memory = unknown;
+    memory = all;
     storage = CallFrame { frame };
 }
 
 op CallFrameDestroy(frame: CallFrameId) -> () {
-    memory = unknown;
+    memory = all;
     storage = CallFrame { frame };
 }
 
@@ -404,12 +404,12 @@ op SymbolAddr(target: SymbolId) -> (dst: Value<Type::PTR>) {
 }
 
 op Load<T: Any>(base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> (dst: Value<T>) {
-    memory = unknown;
+    memory = all;
     storage = Load { dst, base, offset, flags };
 }
 
 op Store<T: Any>(src: Value<T>, base: Value<Type::PTR>, offset: i64, flags: MemFlags) -> () {
-    memory = unknown;
+    memory = all;
     storage = Store { src, base, offset, flags };
 }
 
@@ -493,14 +493,14 @@ op Ret(values: sequence(Value)) -> () {
 
 op Call(callee: SymbolId, args: sequence(Value), info: CallInfo) -> signature {
     traps = possible;
-    memory = unknown;
+    memory = all;
     storage = Call { results: results(), callee, args, info };
     flow = Call;
 }
 
 op Callind(callee: Value<Type::PTR>, args: sequence(Value), info: CallInfo) -> signature {
     traps = possible;
-    memory = unknown;
+    memory = all;
     storage = CallIndirect { results: results(), callee, args, info };
     flow = Call;
 }

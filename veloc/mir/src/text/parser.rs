@@ -5,7 +5,7 @@
 
 use super::lexer::{Cursor, Kind, Location};
 use crate::{
-    Block, CallConv, FuncBody, FuncEffects, FuncId, Linkage, MemFlags, MemoryEffect, MemoryEffects,
+    Block, CallConv, FuncBody, FuncEffects, FuncId, Linkage, MemFlags, MemoryEffect,
     Module, Opcode, Region, Result, SigId, Signature, SuccessorData, Type, Value,
 };
 use alloc::boxed::Box;
@@ -927,24 +927,28 @@ fn parse_function_header(
         Vec::new()
     };
     let convention = parse_call_conv(input)?;
-    let mut effects = FuncEffects::default();
+    let mut notrap = false;
+    let mut memory = None;
     while input.is("notrap") || input.is("memory") {
         if input.is("notrap") {
-            if effects.notrap {
+            if notrap {
                 return Err(input.error("duplicate notrap"));
             }
             input.advance();
-            effects.notrap = true;
+            notrap = true;
         } else {
-            if !effects.memory.is_unknown() {
+            if memory.is_some() {
                 return Err(input.error("duplicate memory effect"));
             }
             input.advance();
-            effects.memory = parse_memory_effect(input)?;
+            memory = Some(parse_memory_effect(input)?);
         }
     }
     Ok(FunctionHeader {
-        effects,
+        effects: FuncEffects {
+            notrap,
+            memory: memory.unwrap_or_default(),
+        },
         name,
         linkage,
         signature: Signature::new(params, returns, convention).with_variadic(variadic),
@@ -954,7 +958,7 @@ fn parse_function_header(
 
 fn parse_memory_effect(input: &mut Cursor<'_>) -> ParseResult<MemoryEffect> {
     input.expect(Kind::LParen)?;
-    let mut effects = MemoryEffects::empty();
+    let mut effects = MemoryEffect::empty();
     if input.is("none") {
         input.advance();
     } else {
@@ -964,9 +968,9 @@ fn parse_memory_effect(input: &mut Cursor<'_>) -> ParseResult<MemoryEffect> {
             let flag = if let Some(bits) = name.strip_prefix("0x") {
                 u8::from_str_radix(bits, 16)
                     .ok()
-                    .map(MemoryEffects::from_bits_retain)
+                    .map(MemoryEffect::from_bits_retain)
             } else {
-                MemoryEffects::from_name(&name.to_ascii_uppercase())
+                MemoryEffect::from_name(&name.to_ascii_uppercase())
             }
             .ok_or_else(|| location.error(format!("unknown memory effect `{name}`")))?;
             effects.insert(flag);
@@ -976,7 +980,7 @@ fn parse_memory_effect(input: &mut Cursor<'_>) -> ParseResult<MemoryEffect> {
         }
     }
     input.expect(Kind::RParen)?;
-    Ok(MemoryEffect::known(effects))
+    Ok(effects)
 }
 
 fn parse_global(

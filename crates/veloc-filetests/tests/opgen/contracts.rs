@@ -55,7 +55,7 @@ const CALL_VALUE: &str = r#"
     }
     op Apply(move callee: Value<Callable>, move args: sequence(Value)) -> signature {
         traps = possible;
-        memory = unknown;
+        memory = all;
         mnemonic = "apply-value";
         storage = ApplyValue { callee: callee, args: args };
         signature = callable(callee);

@@ -3,7 +3,7 @@
 //! Layouts, type checks and operation tables are compiled from `defs/*.spec`.
 //! Their shared runtime support lives alongside the generated definitions.
 
-pub use veloc_types::{FloatCC, IntCC, MemFlags, MemoryEffect, MemoryEffects, OpTraits, Region};
+pub use veloc_types::{FloatCC, IntCC, MemFlags, MemoryEffect, OpTraits, Region};
 
 include!(concat!(env!("OUT_DIR"), "/opcodes.rs"));
 
@@ -61,7 +61,7 @@ impl OpSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryEffect, MemoryEffects};
+    use super::MemoryEffect;
     use crate::{FloatCC, IntCC, Opcode, Type};
 
     #[test]
@@ -120,30 +120,22 @@ mod tests {
     }
 
     #[test]
-    fn unknown_effects_remain_conservative() {
-        assert!(
-            MemoryEffect::Known(MemoryEffects::READ)
-                .conflicts_with(MemoryEffect::Known(MemoryEffects::WRITE))
-        );
-        assert!(MemoryEffect::Unknown.has_side_effects());
-        assert!(MemoryEffect::Unknown.conflicts_with(MemoryEffect::Known(MemoryEffects::READ)));
-        assert!(MemoryEffect::Unknown.is_unknown());
-        assert!(MemoryEffect::Unknown.may_allocate());
-        assert!(MemoryEffect::Unknown.may_free());
-        assert!(MemoryEffect::Unknown.may_read());
-        assert!(MemoryEffect::Unknown.may_write());
-        assert!(!MemoryEffect::Unknown.can_erase());
-        assert!(!MemoryEffect::Unknown.is_none());
-        assert!(
-            !MemoryEffect::Known(MemoryEffects::READ)
-                .conflicts_with(MemoryEffect::Known(MemoryEffects::READ))
-        );
-        assert_eq!(MemoryEffect::Unknown.to_string(), "unknown");
-        assert_eq!(MemoryEffect::Known(MemoryEffects::READ).to_string(), "READ");
-        assert_eq!(
-            MemoryEffect::Known(MemoryEffects::WRITE).to_string(),
-            "WRITE"
-        );
+    fn all_effects_are_conservative() {
+        let all = MemoryEffect::all();
+        assert!(MemoryEffect::READ.conflicts_with(MemoryEffect::WRITE));
+        assert!(all.has_side_effects());
+        assert!(all.conflicts_with(MemoryEffect::READ));
+        assert_eq!(MemoryEffect::default(), all);
+        assert!(all.may_allocate());
+        assert!(all.may_free());
+        assert!(all.may_read());
+        assert!(all.may_write());
+        assert!(!all.can_erase());
+        assert!(!all.is_none());
+        assert!(!MemoryEffect::READ.conflicts_with(MemoryEffect::READ));
+        assert_eq!(all.to_string(), "READ | WRITE | ALLOCATE | FREE");
+        assert_eq!(MemoryEffect::READ.to_string(), "READ");
+        assert_eq!(MemoryEffect::WRITE.to_string(), "WRITE");
     }
 
     #[test]

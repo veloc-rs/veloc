@@ -254,11 +254,12 @@ impl<'a> FuncPrinter<'a> {
         if self.func.decl.effects.notrap {
             f.write_str(" notrap")?;
         }
-        if let crate::MemoryEffect::Known(flags) = self.func.decl.effects.memory {
+        let flags = self.func.decl.effects.memory;
+        if flags != crate::MemoryEffect::all() {
             f.write_str(" memory(")?;
             if flags.is_empty() {
                 f.write_str("none")?;
-            } else if !crate::MemoryEffects::all().contains(flags) {
+            } else if !crate::MemoryEffect::all().contains(flags) {
                 write!(f, "{:#x}", flags.bits())?;
             } else {
                 for (index, (name, _)) in flags.iter_names().enumerate() {

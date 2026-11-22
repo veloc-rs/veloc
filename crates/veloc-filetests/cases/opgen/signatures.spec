@@ -8,7 +8,7 @@ struct CallIndirect {
 }
 op CallIndirect(sig_id: SigId, args: sequence(Value), ptr: Value<Type::PTR>) -> signature {
     traps = possible;
-    memory = unknown;
+    memory = all;
     mnemonic = "call-indirect";
     storage = CallIndirect { ptr: ptr, args: args, sig_id: sig_id };
     text = "{ptr}({args}) : {sig_id}";
@@ -330,7 +330,7 @@ struct CallIndirect {
 }
 op CallIndirect(sig_id: SigId, ptr: Value<Type::PTR>, args: successor) -> signature {
     traps = possible;
-    memory = unknown;
+    memory = all;
     mnemonic = "call-indirect";
     storage = CallIndirect { ptr: ptr, args: args, sig_id: sig_id };
     text = "{ptr}({args}) : {sig_id}";
@@ -414,7 +414,7 @@ op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<A
 struct Apply { cont: Value, args: ValueList, }
 op Apply(cont: Value<Callable>, args: sequence(Value)) -> () {
     traps = possible;
-    memory = unknown;
+    memory = all;
     mnemonic = "apply"; storage = Apply { cont, args };
     control = tail_call_value(cont, args);
 }
@@ -429,7 +429,7 @@ typeset Callable = Type::I32;
 // check: move requires a value operand
 struct Take { function: FuncId, }
 op Take(move function: FuncId) -> () {
-    memory = unknown;
+    memory = all;
     mnemonic = "take"; storage = Take { function: function };
 }
 

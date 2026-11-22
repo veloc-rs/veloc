@@ -14,7 +14,7 @@ pub use validation::{Result, TypeError, ValidationError};
 
 use crate::Reg;
 use cranelift_entity::entity_impl;
-pub use veloc_types::{MemFlags, MemoryEffect, MemoryEffects, OpTraits, Region};
+pub use veloc_types::{MemFlags, MemoryEffect, OpTraits, Region};
 
 /// 机器指令索引
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

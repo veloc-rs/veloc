@@ -395,7 +395,7 @@ struct Invoke {
     args: ValueList,
 }
 op Invoke(callee: FuncId, args: sequence(Value)) -> signature {
-    memory = unknown;
+    memory = all;
     mnemonic = "invoke"; storage = Invoke { callee: callee, args: args };
 }
 
@@ -407,7 +407,7 @@ struct Invoke {
     args: ValueList,
 }
 op Invoke(callee: FuncId, args: sequence(Value)) -> signature {
-    memory = unknown;
+    memory = all;
     mnemonic = "invoke"; storage = Invoke { callee: callee, args: args };
 signature = callee; }
 
@@ -419,7 +419,7 @@ struct Invoke {
     args: ValueList,
 }
 op Invoke(callee: FuncId, args: sequence(Value)) -> signature {
-    memory = unknown;
+    memory = all;
     mnemonic = "invoke"; storage = Invoke { callee: callee, args: args };
 signature = function(missing); }
 
@@ -431,7 +431,7 @@ struct Invoke {
     args: ValueList,
 }
 op Invoke(callee: FuncId, args: sequence(Value)) -> () {
-    memory = unknown;
+    memory = all;
     mnemonic = "invoke"; storage = Invoke { callee: callee, args: args };
 signature = function(callee); }
 

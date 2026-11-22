@@ -18,7 +18,7 @@ pub type FuncDecls = cranelift_entity::PrimaryMap<crate::FuncId, FuncDecl>;
 pub struct FuncEffects {
     /// Valid arguments guarantee the call cannot trigger a MIR trap.
     pub notrap: bool,
-    /// Upper bound on memory effects. An unspecified bound is unknown.
+    /// Upper bound on memory effects. An unspecified bound permits all effects.
     pub memory: veloc_types::MemoryEffect,
 }
 

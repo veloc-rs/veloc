@@ -56,8 +56,7 @@ op Example<T: Small>(arg: Value<T>) -> Value<T> {
     for declaration in [
         "pub struct MemFlags",
         "pub struct OpTraits",
-        "pub struct MemoryEffects",
-        "pub enum MemoryEffect",
+        "pub struct MemoryEffect",
     ] {
         assert!(!generated[veloc_spec::Emit::Opcodes].contains(declaration));
         assert!(!generated[veloc_spec::Emit::Instructions].contains(declaration));
@@ -317,7 +316,6 @@ fn imports_are_file_local_even_when_siblings_are_loaded_first() {
         ("struct Holder { value: Float }", "Float"),
         ("struct Holder { value: MemFlags }", "MemFlags"),
         ("struct Holder { value: OpTraits }", "OpTraits"),
-        ("struct Holder { value: MemoryEffects }", "MemoryEffects"),
         ("struct Holder { value: MemoryEffect }", "MemoryEffect"),
         (
             "fn use_float(Float: Float) -> Float { value = Float; }",

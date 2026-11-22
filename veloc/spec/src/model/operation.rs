@@ -162,7 +162,7 @@ pub(super) fn parse(
                     "executable semantics require no memory effects",
                 ));
             }
-            node.kind = Kind::Name("unknown".into());
+            node.kind = Kind::Name("all".into());
         }
         meta.set_memory(source, node, data)?;
     }

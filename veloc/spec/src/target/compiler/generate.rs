@@ -201,7 +201,7 @@ pub(super) fn generate_target_inst_metadata(
                 let address = memory.address.map_or("None".into(), |(base, offset)|
                     format!("Some(crate::target::TargetMemoryAddress {{ base: {base}, offset: {offset} }})"));
                 format!(
-                    "Some(crate::target::TargetMemoryAccess {{ effect: veloc_types::MemoryEffects::{}, bytes: {}, address: {address} }})",
+                    "Some(crate::target::TargetMemoryAccess {{ effect: veloc_types::MemoryEffect::{}, bytes: {}, address: {address} }})",
                     memory.kind.to_uppercase(),
                     memory.bytes
                 )

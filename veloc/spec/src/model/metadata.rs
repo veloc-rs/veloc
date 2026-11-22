@@ -149,7 +149,11 @@ impl<'a> Pending<'a> {
         let contract = types.rust.analysis.as_ref().expect("checked memory field");
         let value = match &node.kind {
             Kind::Name(name) if name == "none" => contract.pure.clone(),
-            Kind::Name(name) if matches!(name.as_str(), "read" | "write" | "unknown") => {
+            Kind::Name(name) if name == "all" => Node {
+                offset: node.offset,
+                kind: Kind::Call(format!("{}::all", contract.memory), vec![]),
+            },
+            Kind::Name(name) if matches!(name.as_str(), "read" | "write") => {
                 member(node.offset, &contract.memory, &name.to_ascii_uppercase())
             }
             _ => node,

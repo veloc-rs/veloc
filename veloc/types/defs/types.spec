@@ -60,21 +60,15 @@ type OpTraits = rust("veloc_types::OpTraits") {
     const fn union(self, other: Self) -> Self;
     const fn contains(&self, other: Self) -> bool;
 }
-type MemoryEffects = rust("veloc_types::MemoryEffects") {
+type MemoryEffect = rust("veloc_types::MemoryEffect") {
+    analysis = memory(MemoryEffect::NONE);
+    const NONE: Self;
+    const fn all() -> Self;
     const READ: Self;
     const WRITE: Self;
     const ALLOCATE: Self;
     const FREE: Self;
-    const fn empty() -> Self;
     const fn union(self, other: Self) -> Self;
-}
-type MemoryEffect = rust("veloc_types::MemoryEffect") {
-    analysis = memory(MemoryEffect::NONE);
-    const NONE: Self;
-    const UNKNOWN: Self;
-    const READ: Self;
-    const WRITE: Self;
-    const fn known(effects: MemoryEffects) -> Self;
     const fn is_none(self) -> bool;
 }
 type MemFlags = rust("veloc_types::MemFlags");

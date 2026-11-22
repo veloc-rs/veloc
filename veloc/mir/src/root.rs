@@ -24,7 +24,7 @@ pub use error::{Error, Result};
 pub use function::{EdgeRef, FuncBody, FuncDecl, FuncDecls, FuncEffects, FunctionRef, InstCursor};
 pub use inst::type_methods;
 pub use inst::{
-    Arguments, FloatCC, Inst, InstFields, InstView, InstWriter, IntCC, MemFlags, MemoryEffect, MemoryEffects, Opcode, Region,
+    Arguments, FloatCC, Inst, InstFields, InstView, InstWriter, IntCC, MemFlags, MemoryEffect, Opcode, Region,
     Successor, Successors, VectorMemOptions,
 };
 pub use intrinsic::{Intrinsic, ids as intrinsic_ids};

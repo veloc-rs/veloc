@@ -244,7 +244,7 @@ pub trait TargetEmitter: Send + Sync {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetMemoryAccess {
-    pub effect: veloc_types::MemoryEffects,
+    pub effect: veloc_types::MemoryEffect,
     pub bytes: u32,
     pub address: Option<TargetMemoryAddress>,
 }

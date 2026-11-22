@@ -25,7 +25,7 @@ op VectorLiteral(data: VectorConst) -> Value<type(data)> {
 }
 
 op Rebind(move value: Value<Callable>) -> (result: Value<Callable>) {
-    memory = unknown;
+    memory = all;
     mnemonic = "rebind"; storage = Unary { arg: value };
 
     verify {
@@ -38,11 +38,11 @@ struct MoveBranch {
 }
 op MoveBranch(move value: Value<Callable>, dest: successor) -> () {
     control = terminator;
-    memory = unknown;
+    memory = all;
     mnemonic = "move-branch"; storage = MoveBranch { value, dest };
 }
 op Observe(value: Value<Callable>) -> () {
-    memory = unknown;
+    memory = all;
 mnemonic = "observe"; storage = Unary { arg: value }; }
 
 struct FunctionOperand {
@@ -197,7 +197,7 @@ encoding PackedRecord {
 encoding WideRecord { storage = u128; fields = [value(128)]; }
 
 // Defs-owned records/enums can contain shared Rust flag sets.
-enum TestPolicy { variants = [Automatic, Prefer(MemoryEffects)]; }
+enum TestPolicy { variants = [Automatic, Prefer(MemoryEffect)]; }
 struct TestSettings {
     enabled: bool,
     policy: TestPolicy,
@@ -210,7 +210,7 @@ struct TestMetadata {
 // Deliberately reverse declaration order to exercise canonical set emission.
 struct EffectSet {  }
 op EffectSet() -> () {
-    memory = MemoryEffect::known(MemoryEffects::WRITE.union(MemoryEffects::READ));
+    memory = MemoryEffect::WRITE.union(MemoryEffect::READ);
 mnemonic = "effect-set"; storage = EffectSet {}; }
 
 // One field declaration can serve as both a primary layout and a nested property.

@@ -270,10 +270,10 @@ semantics = bv.xor(lhs, rhs); }
 
 // ----- effects/unknown-is-not-a-member
 // run: opgen-error
-// check: unknown projection function `MemoryEffects::unknown`
+// check: unknown projection function `MemoryEffect::unknown`
 struct Effectful {  }
 op Effectful() -> () {
-    memory = MemoryEffect::known(MemoryEffects::unknown);
+    memory = MemoryEffect::unknown;
 mnemonic = "effectful"; storage = Effectful {}; }
 
 // ----- effects/duplicate-behavior
@@ -281,7 +281,7 @@ mnemonic = "effectful"; storage = Effectful {}; }
 // check: constant contracts verified
 struct Effectful {  }
 op Effectful() -> () {
-    memory = MemoryEffect::known(MemoryEffects::READ.union(MemoryEffects::READ));
+    memory = MemoryEffect::READ.union(MemoryEffect::READ);
 mnemonic = "effectful"; storage = Effectful {}; }
 
 // ----- effects/duplicate-memory-declaration
@@ -289,7 +289,7 @@ mnemonic = "effectful"; storage = Effectful {}; }
 // check: duplicate field `memory`
 struct Effectful {  }
 op Effectful() -> () {
-    memory = unknown;
+    memory = all;
     memory = read;
     mnemonic = "effectful"; storage = Effectful {};
 }
@@ -305,24 +305,24 @@ effect CUSTOM { reads = true; }
 // check: pub enum Policy
 // check: pub meta: crate::inst::Tuning
 // check: const fn meta(self)
-// check: MemoryEffects::union
-enum Policy { variants = [Automatic, Prefer(MemoryEffects)]; }
+// check: MemoryEffect::union
+enum Policy { variants = [Automatic, Prefer(MemoryEffect)]; }
 struct Tuning { policy: Policy, budget: u32 }
 struct Work {  }
 op Work() -> () {
-    meta = Tuning { policy: Prefer(MemoryEffects::READ.union(MemoryEffects::WRITE)), budget: 8 };
+    meta = Tuning { policy: Prefer(MemoryEffect::READ.union(MemoryEffect::WRITE)), budget: 8 };
     mnemonic = "work"; storage = Work {}
 ; }
 
 // ----- metadata/nested-records-and-explicit-values
 // run: opgen
-// check: crate::inst::Settings { enabled: true, mask: veloc_types::MemoryEffects::READ }
-struct Settings { enabled: bool, mask: MemoryEffects }
+// check: crate::inst::Settings { enabled: true, mask: veloc_types::MemoryEffect::READ }
+struct Settings { enabled: bool, mask: MemoryEffect }
 enum Policy { variants = [Automatic, Configured(Settings)]; }
 struct Tuning { policy: Policy, fallback: optional(Policy) }
 struct Work {  }
 op Work() -> () {
-    meta = Tuning { policy: Configured(Settings { enabled: true, mask: MemoryEffects::READ }), fallback: none }; mnemonic = "work"; storage = Work {}
+    meta = Tuning { policy: Configured(Settings { enabled: true, mask: MemoryEffect::READ }), fallback: none }; mnemonic = "work"; storage = Work {}
 ; }
 
 // ----- metadata/unknown-metadata-field
@@ -364,17 +364,17 @@ op Work() -> () { meta = Tuning { input: 0 }; mnemonic = "work"; storage = Work 
 // run: opgen-error
 // check: unknown field `traits`
 struct Work {  }
-op Work() -> () { memory = unknown; traits = OpTraits::empty(); mnemonic = "work"; storage = Work {}; }
+op Work() -> () { memory = all; traits = OpTraits::empty(); mnemonic = "work"; storage = Work {}; }
 
 // ----- metadata/analysis-fields-can-have-different-names
 // run: opgen
 // check: pub const fn traits(&self) -> veloc_types::OpTraits
 // check: self.meta.attributes
 // check: self.meta.accesses
-struct Info { attributes: OpTraits, accesses: MemoryEffect, extra: MemoryEffects }
+struct Info { attributes: OpTraits, accesses: MemoryEffect, extra: u32 }
 struct Pair { args: values(2) }
 op Sum<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
-    meta = Info { extra: MemoryEffects::WRITE.union(MemoryEffects::READ) };
+    meta = Info { extra: 7 };
     mnemonic = "sum";
     storage = Pair { args: [lhs, rhs] };
     semantics = bv.add(lhs, rhs)

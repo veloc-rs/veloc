@@ -421,38 +421,22 @@ fn scalar_view_preserves_type_encoding() {
 
 #[test]
 fn rust_flag_sets_are_used_by_generated_metadata() {
-    use veloc_mir::inst::{MemoryEffect, MemoryEffects, OpTraits};
+    use veloc_mir::inst::{MemoryEffect, OpTraits};
     assert_eq!(size_of::<OpTraits>(), 2);
-    assert_eq!(size_of::<MemoryEffects>(), 1);
+    assert_eq!(size_of::<MemoryEffect>(), 1);
     const EFFECT: MemoryEffect = Opcode::EffectSet.spec().memory_effect();
-    assert_eq!(
-        EFFECT,
-        MemoryEffect::Known(MemoryEffects::READ.union(MemoryEffects::WRITE))
-    );
+    assert_eq!(EFFECT, MemoryEffect::READ.union(MemoryEffect::WRITE));
     assert_eq!(EFFECT.to_string(), "READ | WRITE");
     assert_eq!(OpTraits::MAY_TRAP.to_string(), "MAY_TRAP");
-    assert_eq!(MemoryEffects::empty().to_string(), "");
-    assert!(MemoryEffects::from_bits(0x80).is_none());
-    let unknown = MemoryEffects::from_bits_retain(0x80);
+    assert_eq!(MemoryEffect::empty().to_string(), "");
+    assert!(MemoryEffect::from_bits(0x80).is_none());
+    let unknown = MemoryEffect::from_bits_retain(0x80);
     assert_eq!(unknown.to_string(), "0x80");
-    assert_eq!(
-        unknown.union(MemoryEffects::READ).to_string(),
-        "READ | 0x80"
-    );
-    assert!(MemoryEffect::Known(unknown).conflicts_with(MemoryEffect::Known(MemoryEffects::READ)));
-    assert_eq!(
-        Opcode::Nop.spec().memory_effect(),
-        MemoryEffect::Known(MemoryEffects::empty())
-    );
-    assert_eq!(
-        Opcode::Load.spec().memory_effect(),
-        MemoryEffect::Known(MemoryEffects::READ)
-    );
-    assert_eq!(Opcode::Call.spec().memory_effect(), MemoryEffect::Unknown);
-    assert_ne!(
-        MemoryEffect::Known(MemoryEffects::all()),
-        MemoryEffect::Unknown
-    );
+    assert_eq!(unknown.union(MemoryEffect::READ).to_string(), "READ | 0x80");
+    assert!(unknown.conflicts_with(MemoryEffect::READ));
+    assert_eq!(Opcode::Nop.spec().memory_effect(), MemoryEffect::empty());
+    assert_eq!(Opcode::Load.spec().memory_effect(), MemoryEffect::READ);
+    assert_eq!(Opcode::Call.spec().memory_effect(), MemoryEffect::all());
     assert_eq!(
         OpTraits::TERMINATOR
             .union(OpTraits::COMMUTATIVE)
@@ -463,18 +447,18 @@ fn rust_flag_sets_are_used_by_generated_metadata() {
 
 #[test]
 fn declaration_records_enums_and_flags_construct_explicit_values() {
-    use veloc_mir::inst::{MemoryEffects, TestMetadata, TestPolicy, TestSettings};
+    use veloc_mir::inst::{MemoryEffect, TestMetadata, TestPolicy, TestSettings};
     let meta = TestMetadata {
         settings: TestSettings {
             enabled: true,
-            policy: TestPolicy::Prefer(MemoryEffects::READ.union(MemoryEffects::WRITE)),
+            policy: TestPolicy::Prefer(MemoryEffect::READ.union(MemoryEffect::WRITE)),
         },
         fallback: Some(TestPolicy::Automatic),
     };
     assert!(meta.settings.enabled);
     assert_eq!(
         meta.settings.policy,
-        TestPolicy::Prefer(MemoryEffects::READ.union(MemoryEffects::WRITE))
+        TestPolicy::Prefer(MemoryEffect::READ.union(MemoryEffect::WRITE))
     );
     assert_eq!(meta.fallback, Some(TestPolicy::Automatic));
     assert!(core::ptr::eq(
@@ -489,7 +473,7 @@ fn declaration_records_enums_and_flags_construct_explicit_values() {
     );
     assert_eq!(
         Opcode::IAdd.meta().memory,
-        veloc_mir::inst::MemoryEffect::Known(veloc_mir::inst::MemoryEffects::empty())
+        veloc_mir::inst::MemoryEffect::empty()
     );
 }
 

@@ -407,7 +407,7 @@ op Check() -> () {
 // check: :: requires a type or namespace path
 struct Empty {}
 op Check() -> () {
-    memory = MemoryEffect::known(MemoryEffects::empty())::NONE;
+    memory = MemoryEffect::READ.union(MemoryEffect::WRITE)::NONE;
     mnemonic = "check"; storage = Empty {};
 }
 

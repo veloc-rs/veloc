@@ -466,7 +466,7 @@ silently truncating them. Storage supports `u8` through `u128`. Widths, duplicat
 fields and generated method conflicts are checked before code generation.
 Unlike flag sets, packed structs do not expose `union` or `contains`.
 
-Shared contracts `MemFlags`, `OpTraits`, `MemoryEffects` and `MemoryEffect` are
+Shared contracts `MemFlags`, `OpTraits` and `MemoryEffect` are
 defined in `veloc-types` and explicitly bound in `types.spec`. Their representation,
 display and behavioral rules live together in Rust. Ops declare the constants and
 methods they use, and generated code accesses those members directly. Opgen never reads
@@ -613,23 +613,22 @@ inference, semantic checks and text codecs inspect resolved sets, not set names.
 Shared flags are Rust `bitflags` types. Their interfaces are ordinary declarations:
 
 ```text
-type MemoryEffects = rust("veloc_types::MemoryEffects") {
+type MemoryEffect = rust("veloc_types::MemoryEffect") {
     const READ: Self;
     const WRITE: Self;
-    const fn empty() -> Self;
+    const NONE: Self;
     const fn union(self, other: Self) -> Self;
 }
 ```
 
-Ops use `MemoryEffects::READ.union(MemoryEffects::WRITE)`. Rust evaluates the
+Ops use `MemoryEffect::READ.union(MemoryEffect::WRITE)`. Rust evaluates the
 shared type's constants and inherent methods in generated metadata. Repeating a
 flag in a union has the semantics of the Rust implementation.
 
-The explicit `analysis: traits` and `analysis: memory(MemoryEffect::NONE)`
-annotations select the operation-analysis interfaces. They are not value schemas:
-opgen neither knows the bit positions nor recognizes `Known` / `Unknown`
-constructors. Primitive algebra supplies derived logical facts; generated Rust
-checks that user-declared flags and memory behavior do not contradict them.
+The `analysis = traits;` and `analysis = memory(MemoryEffect::NONE);`
+declarations select the operation-analysis interfaces. Rust defines the bit
+positions of the individual effects. Primitive algebra supplies
+derived facts. Generated Rust checks user-declared flags against those facts.
 The generator does not guess an analysis role from a Rust path or type name.
 
 ### Typed operation metadata
@@ -643,7 +642,7 @@ struct Example {}
 
 op Example() -> () {
     traps = possible;
-    memory = MemoryEffect::known(MemoryEffects::READ.union(MemoryEffects::WRITE));
+    memory = MemoryEffect::READ.union(MemoryEffect::WRITE);
     mnemonic = "example";
     storage = Example {};
 }
@@ -682,13 +681,13 @@ and the flow enum's `may_continue()` query.
 A dialect can select its own metadata type with `meta = StructName { ... };`
 on each operation. Fields matching the bound analysis types receive the
 derived traits and memory effect. Other fields must be supplied explicitly.
-A metadata type without a memory field has an unknown memory bound.
+A metadata type without a memory field provides no bound on memory effects.
 
-Declare the memory bound with `memory = none;`, `read`, `write`, `unknown`,
+Declare the memory bound with `memory = none;`, `read`, `write`, `all`,
 or a typed constant expression. The field can also be supplied in an explicit
 metadata record. Spec rejects declaring both. For packed direct calls,
 `memory = callee(func_id);` selects a function declaration at the instruction
-site and emits an unknown bound in the static opcode table. The trap source is
+site and uses all effects in the static opcode table. The trap source is
 declared independently.
 Per-access volatility belongs to `MemFlags`; MIR atomic ordering is not
 currently modeled. Addresses and widths belong to access contracts and alias
@@ -763,7 +762,7 @@ Instructions with unknown ranges still report effects through `InstView::memory_
 Direct calls and tail calls use the callee's declared memory effects, including
 effects of nested calls. A function header can declare `memory(none)`,
 `memory(read)`, or a combination such as `memory(read, write)`. Other flags are
-`allocate` and `free`. Omitting the attribute leaves memory effects unknown.
+`allocate` and `free`. Omitting the attribute permits all effects, as does listing all four.
 The memory attribute is independent of `notrap` and does not guarantee return.
 
 ### Ownership transfer

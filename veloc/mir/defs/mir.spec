@@ -9,7 +9,7 @@ import "formats.spec";
 // Allocation/ownership are effects: these operations are not arithmetic CSE/DCE.
 op ClosureNew(func_id: FuncId, move captures: sequence(Value), cleanup: FuncId) -> (result: Value<Callable>) {
     traps = possible;
-    memory = unknown;
+    memory = all;
     mnemonic = "closure-new";
     storage = ClosureNew { func_id, captures, cleanup };
     text = "{func_id}({captures}) : {function(func_id)}, {cleanup}";
@@ -31,7 +31,7 @@ op ClosureNew(func_id: FuncId, move captures: sequence(Value), cleanup: FuncId) 
 
 op ClosureLocal(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Callable>) {
     traps = possible;
-    memory = unknown;
+    memory = all;
     mnemonic = "closure-local";
     storage = Closure { func_id, captures };
     text = "{func_id}({captures}) : {function(func_id)}";
@@ -50,7 +50,7 @@ op ClosureLocal(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Ca
 
 op ClosureShared(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Callable>) {
     traps = possible;
-    memory = unknown;
+    memory = all;
     mnemonic = "closure-shared";
     storage = Closure { func_id, captures };
     text = "{func_id}({captures}) : {function(func_id)}";
@@ -85,7 +85,7 @@ op TailCall(func_id: FuncId, move args: sequence(Value)) -> () {
 
 op TailCallValue(move callee: Value<Callable>, move args: sequence(Value)) -> () {
     traps = possible;
-    memory = unknown;
+    memory = all;
     control = terminator;
     mnemonic = "tail-call-value";
     storage = CallValue { callee, args };
@@ -101,7 +101,7 @@ op TailCallValue(move callee: Value<Callable>, move args: sequence(Value)) -> ()
 
 op CallValue(move callee: Value<Callable>, move args: sequence(Value)) -> signature {
     traps = possible;
-    memory = unknown;
+    memory = all;
     mnemonic = "call-value";
     storage = CallValue { callee, args };
     signature = callable(callee);
@@ -110,7 +110,7 @@ op CallValue(move callee: Value<Callable>, move args: sequence(Value)) -> signat
 
 op ClosureDrop(move callee: Value<Callable>) -> () {
     traps = possible;
-    memory = unknown;
+    memory = all;
     mnemonic = "closure-drop";
     storage = Unary { arg: callee };
 
@@ -557,7 +557,7 @@ op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
 
 op CallIndirect(sig_id: SigId, ptr: Value<Type::PTR>, move args: sequence(Value)) -> signature {
     traps = possible;
-    memory = unknown;
+    memory = all;
     mnemonic = "call-indirect";
     storage = CallIndirect { ptr, args, sig_id };
     signature = sig_id;
@@ -571,7 +571,7 @@ op CallIndirect(sig_id: SigId, ptr: Value<Type::PTR>, move args: sequence(Value)
 
 op CallIntrinsic(intrinsic: Intrinsic, sig_id: SigId, move args: sequence(Value)) -> signature {
     traps = possible;
-    memory = unknown;
+    memory = all;
     mnemonic = "call-intrinsic";
     storage = CallIntrinsic { intrinsic, args, sig_id };
     signature = sig_id;
