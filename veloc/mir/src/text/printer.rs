@@ -271,6 +271,9 @@ impl<'a> FuncPrinter<'a> {
             }
             f.write_char(')')?;
         }
+        if self.func.decl.effects.nofree {
+            f.write_str(" nofree")?;
+        }
         writeln!(f)?;
         let Some(body) = self.func.body else {
             return Ok(());

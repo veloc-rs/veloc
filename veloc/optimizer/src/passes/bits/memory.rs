@@ -107,7 +107,7 @@ pub(super) fn narrow_stores(f: &mut FuncBody, decls: &FuncDecls, insts: &[Inst])
                 }
                 let view = f.dfg().inst(inst);
                 let effect = view.memory_effect(decls);
-                if view.has_volatile_access() || effect.may_write() || effect.may_free() {
+                if view.has_volatile_access() || effect.may_write() || view.may_free(decls) {
                     break;
                 }
                 cursor = f.layout().next_inst(inst);

@@ -39,7 +39,7 @@ impl OpSpec {
     }
 
     pub const fn has_side_effects(&self) -> bool {
-        self.is_terminator() || self.may_trap() || self.memory_effect().has_side_effects()
+        self.is_terminator() || self.may_trap() || self.memory_effect().may_write()
     }
 
     pub const fn is_commutative(&self) -> bool {
@@ -123,17 +123,13 @@ mod tests {
     fn all_effects_are_conservative() {
         let all = MemoryEffect::all();
         assert!(MemoryEffect::READ.conflicts_with(MemoryEffect::WRITE));
-        assert!(all.has_side_effects());
         assert!(all.conflicts_with(MemoryEffect::READ));
         assert_eq!(MemoryEffect::default(), all);
-        assert!(all.may_allocate());
-        assert!(all.may_free());
         assert!(all.may_read());
         assert!(all.may_write());
-        assert!(!all.can_erase());
         assert!(!all.is_none());
         assert!(!MemoryEffect::READ.conflicts_with(MemoryEffect::READ));
-        assert_eq!(all.to_string(), "READ | WRITE | ALLOCATE | FREE");
+        assert_eq!(all.to_string(), "READ | WRITE");
         assert_eq!(MemoryEffect::READ.to_string(), "READ");
         assert_eq!(MemoryEffect::WRITE.to_string(), "WRITE");
     }

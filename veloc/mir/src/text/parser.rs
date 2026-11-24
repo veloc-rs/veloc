@@ -928,25 +928,32 @@ fn parse_function_header(
     };
     let convention = parse_call_conv(input)?;
     let mut notrap = false;
+    let mut nofree = false;
     let mut memory = None;
-    while input.is("notrap") || input.is("memory") {
-        if input.is("notrap") {
-            if notrap {
-                return Err(input.error("duplicate notrap"));
+    loop {
+        let flag = match input.text() {
+            "notrap" => &mut notrap,
+            "nofree" => &mut nofree,
+            "memory" => {
+                if memory.is_some() {
+                    return Err(input.error("duplicate memory effect"));
+                }
+                input.advance();
+                memory = Some(parse_memory_effect(input)?);
+                continue;
             }
-            input.advance();
-            notrap = true;
-        } else {
-            if memory.is_some() {
-                return Err(input.error("duplicate memory effect"));
-            }
-            input.advance();
-            memory = Some(parse_memory_effect(input)?);
+            _ => break,
+        };
+        if *flag {
+            return Err(input.error(format!("duplicate {}", input.text())));
         }
+        *flag = true;
+        input.advance();
     }
     Ok(FunctionHeader {
         effects: FuncEffects {
             notrap,
+            nofree,
             memory: memory.unwrap_or_default(),
         },
         name,

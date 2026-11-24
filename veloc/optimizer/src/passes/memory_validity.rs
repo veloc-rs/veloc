@@ -25,7 +25,7 @@ impl FunctionPass for MemoryValidityPass {
             let mut reads = Vec::<Access>::new();
             for inst in f.layout().block_insts(block) {
                 let view = f.dfg().inst(inst);
-                if view.memory_effect(decls).may_free() || view.has_volatile_access() {
+                if view.has_volatile_access() || view.may_free(decls) {
                     reads.clear();
                     continue;
                 }

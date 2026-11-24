@@ -72,6 +72,11 @@ run indefinitely. `view.may_trap(module.decls())` considers the opcode and
 the instruction's site guarantee. For `call` and `tail-call`, the callee's
 declaration can also supply the guarantee. Indirect calls require a site guarantee.
 
+The function attribute `nofree` guarantees that allocations live at entry stay
+live throughout the call, including nested calls. For example,
+`import function update(ptr) -> void memory(write) nofree` may change a
+buffer's contents while preserving its lifetime.
+
 ## Instruction List
 
 ### 1. Unary Operations
@@ -117,6 +122,10 @@ declaration can also supply the guarantee. Indirect calls require a site guarant
 
 ### 3. Memory Access Instructions
 
+For ordinary loads and stores, `.alignN` guarantees that the effective address
+is aligned to at least N bytes. The default is one byte, so an ordinary
+`i32` access can start at any byte address.
+
 The optional `.regionN` suffix tags the bytes touched by a memory access.
 IDs 0 through 255 are shared across a module. Omitting the suffix selects
 region 0. The producer must assign the same ID to accesses that may touch
@@ -132,7 +141,6 @@ the same byte. Within a region, disjoint address ranges can still rule out alias
 **Constraints:**
 - `ptr` must be of `Ptr` type
 - `ty` must be one of: `I8`, `I16`, `I32`, `I64`, `F32`, `F64`
-- `offset` must ensure the final address is aligned to `ty`'s natural alignment boundary (unless `flags` specify unaligned access)
 - Load address must be within valid memory range
 
 ---
@@ -147,7 +155,6 @@ the same byte. Within a region, disjoint address ranges can still rule out alias
 **Constraints:**
 - `ptr` must be of `Ptr` type
 - Type of `value` must be one of: `I8`, `I16`, `I32`, `I64`, `F32`, `F64`
-- `offset` must ensure the final address is aligned to `value` type's natural alignment boundary (unless `flags` specify unaligned access)
 - Store address must be within valid writable memory range
 
 ---

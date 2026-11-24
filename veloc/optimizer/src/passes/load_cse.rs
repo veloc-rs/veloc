@@ -60,7 +60,7 @@ impl FunctionPass for LoadCsePass {
                 positions.insert(inst, (block, index));
                 let view = func.dfg().inst(inst);
                 let effect = view.memory_effect(decls);
-                let mut barrier = effect.may_free() || view.has_volatile_access();
+                let mut barrier = view.has_volatile_access() || view.may_free(decls);
                 if effect.may_write() {
                     let access = func.access(inst, layout);
                     if !barrier && let Some(access) = access {

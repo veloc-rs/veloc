@@ -102,7 +102,7 @@ impl FunctionPass for LoopMemoryPass {
                     {
                         loads += 1
                     }
-                    _ if effect.may_write() || effect.may_free() => {
+                    _ if effect.may_write() || view.may_free(decls) => {
                         safe = false;
                         break;
                     }
@@ -130,7 +130,7 @@ impl FunctionPass for LoopMemoryPass {
                     break;
                 }
                 let effect = view.memory_effect(decls);
-                if view.has_volatile_access() || effect.may_write() || effect.may_free() {
+                if view.has_volatile_access() || effect.may_write() || view.may_free(decls) {
                     break;
                 }
             }

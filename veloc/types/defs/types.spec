@@ -66,8 +66,6 @@ type MemoryEffect = rust("veloc_types::MemoryEffect") {
     const fn all() -> Self;
     const READ: Self;
     const WRITE: Self;
-    const ALLOCATE: Self;
-    const FREE: Self;
     const fn union(self, other: Self) -> Self;
     const fn is_none(self) -> bool;
 }

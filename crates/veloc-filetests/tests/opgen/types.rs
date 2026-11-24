@@ -16,8 +16,6 @@ fn effect_sets_use_the_declared_vocabulary() {
     for value in [
         "MemoryEffect::READ",
         "MemoryEffect::WRITE",
-        "MemoryEffect::ALLOCATE",
-        "MemoryEffect::FREE",
         "MemoryEffect::all()",
     ] {
         common::const_rejected(

@@ -756,14 +756,23 @@ layout constraints remain local to that layout.
 
 `FuncBody::access(inst, layout)` describes a fixed-width load or store with its
 normalized base, byte offset, width and memory flags. For a stack slot base,
-MIR producers guarantee that every executed access fits within the slot.
+MIR producers guarantee that every executed access fits within the slot
+and satisfies its declared alignment. Block-local memory optimization and
+scalar promotion rely on these guarantees. Removing the last reference to a slot
+can reduce the stack space needed to allocate the frame.
 The interpreter checks the byte range when selecting direct stack bytecode.
 Instructions with unknown ranges still report effects through `InstView::memory_effect(decls)`.
 Direct calls and tail calls use the callee's declared memory effects, including
 effects of nested calls. A function header can declare `memory(none)`,
-`memory(read)`, or a combination such as `memory(read, write)`. Other flags are
-`allocate` and `free`. Omitting the attribute permits all effects, as does listing all four.
+`memory(read)`, `memory(write)`, or `memory(read, write)` to describe access
+to existing memory. Omitting the attribute permits both reads and writes.
 The memory attribute is independent of `notrap` and does not guarantee return.
+A function declaration may add `nofree` to guarantee that the call and its
+callees preserve the lifetime of allocations that existed at entry. For example,
+`memory(write) nofree` permits updating a buffer while keeping it allocated.
+Even `memory(none)` alone permits releasing an existing allocation. A `nofree`
+function may release its own temporary allocations. Direct calls use the callee's
+declaration.
 
 ### Ownership transfer
 

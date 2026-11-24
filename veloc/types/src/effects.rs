@@ -19,8 +19,6 @@ bitflags::bitflags! {
     pub struct MemoryEffect: u8 {
         const READ = 1 << 0;
         const WRITE = 1 << 1;
-        const ALLOCATE = 1 << 2;
-        const FREE = 1 << 3;
     }
 }
 
@@ -53,39 +51,10 @@ impl MemoryEffect {
     pub const fn may_write(self) -> bool {
         self.may(Self::WRITE)
     }
-    pub const fn may_allocate(self) -> bool {
-        self.may(Self::ALLOCATE)
-    }
-    pub const fn may_free(self) -> bool {
-        self.may(Self::FREE)
-    }
 
-    /// Unused abstract objects can be removed; new or unmodeled effects cannot.
-    pub const fn can_erase(self) -> bool {
-        Self::READ.union(Self::ALLOCATE).contains(self)
-    }
-
-    pub const fn has_side_effects(self) -> bool {
-        !Self::READ.contains(self)
-    }
-
-    /// Only memory interference; movement also requires control/trap/ordering checks.
+    /// Memory interference only. Movement also requires lifetime, control, trap and ordering checks.
     pub const fn conflicts_with(self, other: Self) -> bool {
-        if self.is_none() || other.is_none() {
-            return false;
-        }
-        let supported = Self::READ
-            .union(Self::WRITE)
-            .union(Self::ALLOCATE)
-            .union(Self::FREE);
-        if !supported.contains(self) || !supported.contains(other) {
-            return true;
-        }
-        self.intersects(Self::FREE)
-            || other.intersects(Self::FREE)
-            || (self.intersects(Self::ALLOCATE) && other.intersects(Self::ALLOCATE))
-            || (self.intersects(Self::WRITE) && other.intersects(Self::READ.union(Self::WRITE)))
-            || (other.intersects(Self::WRITE) && self.intersects(Self::READ))
+        !self.is_none() && !other.is_none() && (self.may_write() || other.may_write())
     }
 }
 

@@ -33,7 +33,7 @@ impl FunctionPass for PromotePass {
             .flat_map(|&b| f.layout().block_insts(b))
             .collect();
         // Follow derived pointers so every use of each slot is accounted for.
-        let mut escaped = HashSet::new();
+        let mut ineligible = HashSet::new();
         for &allocation in f.stack_slots() {
             let mut seen = HashSet::new();
             let mut pending = vec![allocation];
@@ -53,14 +53,14 @@ impl FunctionPass for PromotePass {
                             ptr, value, flags, ..
                         } if ptr == pointer && value != pointer => flags,
                         _ => {
-                            escaped.insert(allocation);
+                            ineligible.insert(allocation);
                             continue;
                         }
                     };
                     if flags.is_volatile()
                         || f.access(inst, &layout).is_none_or(|a| a.base != allocation)
                     {
-                        escaped.insert(allocation);
+                        ineligible.insert(allocation);
                     }
                 }
             }
@@ -85,19 +85,19 @@ impl FunctionPass for PromotePass {
                 accesses: vec![],
             });
             if cell.access.bytes != access.bytes || cell.ty != ty {
-                escaped.insert(access.base);
+                ineligible.insert(access.base);
             }
             cell.accesses.push(inst);
         }
         let cells: Vec<_> = cells.into_values().collect();
         for pair in cells.windows(2) {
             if pair[0].access.overlaps(pair[1].access) {
-                escaped.insert(pair[0].access.base);
+                ineligible.insert(pair[0].access.base);
             }
         }
         let mut changed = 0;
         for cell in cells {
-            if escaped.contains(&cell.access.base) {
+            if ineligible.contains(&cell.access.base) {
                 continue;
             }
             let accesses: HashSet<_> = cell.accesses.iter().copied().collect();

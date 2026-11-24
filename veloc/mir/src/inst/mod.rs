@@ -90,6 +90,24 @@ impl<'a> InstView<'a> {
         self.memory_flags().is_some_and(|flags| flags.is_volatile())
     }
 
+    /// Whether this instruction may release an allocation that already exists.
+    pub fn may_free(&self, decls: &crate::FuncDecls) -> bool {
+        if let Self::Call { func_id, .. } | Self::TailCall { func_id, .. } = self {
+            return decls.get(*func_id).is_none_or(|decl| !decl.effects.nofree);
+        }
+        matches!(
+            self.opcode(),
+            Opcode::CallIndirect
+                | Opcode::CallIntrinsic
+                | Opcode::CallValue
+                | Opcode::TailCallValue
+                | Opcode::ClosureNew
+                | Opcode::ClosureShared
+                | Opcode::ClosureLocal
+                | Opcode::ClosureDrop
+        )
+    }
+
     /// A direct call can rely on its callee's contract or its own site guarantee.
     pub fn may_trap(&self, decls: &crate::FuncDecls) -> bool {
         if !self.opcode().spec().may_trap() || self.is_notrap() {
@@ -108,7 +126,7 @@ impl<'a> InstView<'a> {
             && !self.may_trap(decls)
             && !self.opcode().transfers_ownership()
             && !self.has_volatile_access()
-            && spec.memory_effect().can_erase()
+            && !spec.memory_effect().may_write()
     }
 
     /// Conservative, context-free speculation. Analyses may prove more.
@@ -128,7 +146,7 @@ impl<'a> InstView<'a> {
         spec.is_terminator()
             || self.may_trap(decls)
             || self.has_volatile_access()
-            || spec.memory_effect().has_side_effects()
+            || spec.memory_effect().may_write()
     }
 }
 

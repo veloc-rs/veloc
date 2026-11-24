@@ -99,13 +99,9 @@ pub fn run_memory(
                 break;
             }
 
-            if view.has_volatile_access() {
-                cells.clear();
-                continue;
-            }
             let Some(access) = func.access(inst, layout) else {
                 let effect = view.memory_effect(decls);
-                if effect.may_write() || effect.may_free() {
+                if view.has_volatile_access() || effect.may_write() || view.may_free(decls) {
                     cells.clear();
                 } else if effect.may_read()
                     || view.may_trap(decls)
@@ -120,12 +116,17 @@ pub fn run_memory(
                 continue;
             };
 
-            let may_trap = view.may_trap(decls);
+            let may_trap = view.may_trap(decls) && !private.contains(&access.base);
             if may_trap {
                 // A trap can expose earlier writes before a later overwrite executes.
                 for cell in &mut cells {
                     cell.pending_store = None;
                 }
+            }
+            if access.flags.is_volatile() {
+                // Even a volatile read can change the addressed device register.
+                cells.retain(|cell| !func.may_alias(access, cell.access, layout));
+                continue;
             }
 
             let (value, pending_store) = match view {
