@@ -5,12 +5,12 @@
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use std::collections::{BTreeMap, HashSet};
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{Inst, InstView, Type, Value, function::EdgeRef, memory::Access};
+use veloc_mir::{Inst, InstView, Type, Value, function::EdgeRef, memory::ByteRange};
 
 pub struct PromotePass;
 #[derive(Clone)]
 struct Cell {
-    access: Access,
+    range: ByteRange,
     ty: Type,
     accesses: Vec<Inst>,
 }
@@ -58,7 +58,9 @@ impl FunctionPass for PromotePass {
                         }
                     };
                     if flags.is_volatile()
-                        || f.access(inst, &layout).is_none_or(|a| a.base != allocation)
+                        || f.access(inst)
+                            .and_then(|a| a.range(&layout))
+                            .is_none_or(|r| r.base != allocation)
                     {
                         ineligible.insert(allocation);
                     }
@@ -67,37 +69,35 @@ impl FunctionPass for PromotePass {
         }
         let mut cells = BTreeMap::<(Value, i64), Cell>::new();
         for &inst in &insts {
-            let value = match f.dfg().inst(inst) {
-                InstView::Load { .. } => f.dfg().first_result(inst).expect("load result"),
-                InstView::Store { value, .. } => value,
-                _ => continue,
-            };
-            let Some(access) = f
-                .access(inst, &layout)
-                .filter(|a| f.dfg().stack_slot_layout(a.base).is_some())
-            else {
+            let Some(access) = f.access(inst) else {
                 continue;
             };
-            let ty = f.dfg().value_type(value);
-            let cell = cells.entry((access.base, access.offset)).or_insert(Cell {
-                access,
+            let Some(range) = access.range(&layout) else {
+                continue;
+            };
+            if f.dfg().stack_slot_layout(range.base).is_none() {
+                continue;
+            }
+            let ty = access.ty;
+            let cell = cells.entry((range.base, range.offset)).or_insert(Cell {
+                range,
                 ty,
                 accesses: vec![],
             });
-            if cell.access.bytes != access.bytes || cell.ty != ty {
-                ineligible.insert(access.base);
+            if cell.range.bytes != range.bytes || cell.ty != ty {
+                ineligible.insert(range.base);
             }
             cell.accesses.push(inst);
         }
         let cells: Vec<_> = cells.into_values().collect();
         for pair in cells.windows(2) {
-            if pair[0].access.overlaps(pair[1].access) {
-                ineligible.insert(pair[0].access.base);
+            if pair[0].range.overlaps(&pair[1].range) {
+                ineligible.insert(pair[0].range.base);
             }
         }
         let mut changed = 0;
         for cell in cells {
-            if ineligible.contains(&cell.access.base) {
+            if ineligible.contains(&cell.range.base) {
                 continue;
             }
             let accesses: HashSet<_> = cell.accesses.iter().copied().collect();

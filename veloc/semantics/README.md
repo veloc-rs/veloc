@@ -12,8 +12,9 @@ nor calls this crate. MIR and the optimizer have no normal dependency on this
 crate. Offline recipes live in a separate generated `semantics.rs` artifact that
 tools/tests include directly. `SemanticSpec<O>` is owned by this crate and generic
 over the IR's operation identifier, without a dependency on MIR. Each entry
-contains an opcode and a program; shared type/effect information is accessed
-through `entry.opcode.spec()`.
+contains an opcode and a program. MIR consumers can query the opcode with
+methods such as `entry.opcode.validate_types(operands, results)` and
+`entry.opcode.memory_effect()`.
 
 - `BvOp` is the shared vocabulary for modular arithmetic and bitwise operations.
   `eval` normalizes inputs and results to the declared width.

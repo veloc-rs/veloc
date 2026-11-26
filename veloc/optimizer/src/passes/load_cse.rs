@@ -3,16 +3,16 @@
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use hashbrown::{HashMap, HashSet};
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::memory::{Access, Address};
-use veloc_mir::{Block, FuncBody, Inst, InstView, Type};
-use veloc_types::DataLayout;
+use veloc_mir::memory::{Address, Location};
+use veloc_mir::{Block, FuncBody, Inst, Opcode, Type};
+use veloc_types::{DataLayout, Region};
 
 pub struct LoadCsePass;
 
 struct BlockWrites {
     // Prefix counts let us query either endpoint without scanning instructions.
     prefix: Vec<usize>,
-    stores: Vec<(usize, Access)>,
+    stores: Vec<(usize, Location)>,
 }
 
 impl BlockWrites {
@@ -21,13 +21,12 @@ impl BlockWrites {
         start: usize,
         end: usize,
         func: &FuncBody,
-        access: Option<Access>,
+        load: Location,
         layout: &DataLayout,
     ) -> bool {
         self.prefix[start] != self.prefix[end]
-            || self.stores.iter().any(|&(at, store)| {
-                (start..end).contains(&at)
-                    && access.is_none_or(|load| func.may_alias(load, store, layout))
+            || self.stores.iter().any(|(at, store)| {
+                (start..end).contains(at) && func.may_alias(load, *store, layout)
             })
     }
     fn end(&self) -> usize {
@@ -60,11 +59,10 @@ impl FunctionPass for LoadCsePass {
                 positions.insert(inst, (block, index));
                 let view = func.dfg().inst(inst);
                 let effect = view.memory_effect(decls);
-                let mut barrier = view.has_volatile_access() || view.may_free(decls);
-                if effect.may_write() {
-                    let access = func.access(inst, layout);
-                    if !barrier && let Some(access) = access {
-                        stores.push((index, access));
+                let mut barrier = view.may_free(decls);
+                if view.has_volatile_access() || effect.may_write() {
+                    if let Some(access) = func.access(inst) {
+                        stores.push((index, access.location(layout)));
                     } else {
                         barrier = true;
                     }
@@ -73,33 +71,27 @@ impl FunctionPass for LoadCsePass {
             }
             writes.insert(block, BlockWrites { prefix, stores });
         }
-        let mut available: HashMap<(Address, Type), Vec<Inst>> = HashMap::new();
+        let mut available: HashMap<(Address, Type, Region), Vec<Inst>> = HashMap::new();
         let mut removed = Vec::new();
         for block in order.into_iter().rev() {
             let insts: Vec<_> = func.layout().block_insts(block).collect();
             for inst in insts {
-                let InstView::Load { ptr, offset, flags } = func.dfg().inst(inst) else {
-                    continue;
-                };
-                if flags.is_volatile() {
+                if func.dfg().opcode(inst) != Opcode::Load {
                     continue;
                 }
-                let access = func.access(inst, layout);
-                let address = match access {
-                    Some(a) => Address {
-                        base: a.base,
-                        offset: a.offset,
-                    },
-                    None => {
-                        let Some(address) = func.address(ptr, i64::from(offset)) else {
-                            continue;
-                        };
-                        address
-                    }
-                };
+                let access = func.access(inst).expect("load has an access");
+                if access.flags.is_volatile() {
+                    continue;
+                }
+                let location = access.location(layout);
+                let address = location.range.map_or(access.address, |r| Address {
+                    base: r.base,
+                    offset: r.offset,
+                });
                 let result = func.dfg().first_result(inst).expect("load result");
-                let ty = func.dfg().value_type(result);
-                let candidates = available.entry((address, ty)).or_default();
+                let candidates = available
+                    .entry((address, access.ty, location.region))
+                    .or_default();
                 let previous = candidates.iter().rev().copied().find(|old| {
                     let (definition, start) = positions[old];
                     dom.dominates(definition, block)
@@ -108,7 +100,7 @@ impl FunctionPass for LoadCsePass {
                             &writes,
                             (definition, start + 1),
                             positions[&inst],
-                            access,
+                            location,
                             layout,
                         )
                 });
@@ -135,14 +127,14 @@ fn preserved(
     writes: &HashMap<Block, BlockWrites>,
     (definition, start): (Block, usize),
     (use_block, end): (Block, usize),
-    access: Option<Access>,
+    load: Location,
     layout: &DataLayout,
 ) -> bool {
     if definition == use_block {
-        return !writes[&definition].between(start, end, func, access, layout);
+        return !writes[&definition].between(start, end, func, load, layout);
     }
-    if writes[&use_block].between(0, end, func, access, layout)
-        || writes[&definition].between(start, writes[&definition].end(), func, access, layout)
+    if writes[&use_block].between(0, end, func, load, layout)
+        || writes[&definition].between(start, writes[&definition].end(), func, load, layout)
     {
         return false;
     }
@@ -152,7 +144,7 @@ fn preserved(
         if block == definition || !visited.insert(block) {
             continue;
         }
-        if writes[&block].between(0, writes[&block].end(), func, access, layout) {
+        if writes[&block].between(0, writes[&block].end(), func, load, layout) {
             return false;
         }
         work.extend(func.cfg().preds(block));

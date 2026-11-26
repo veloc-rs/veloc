@@ -28,8 +28,8 @@ pub(super) fn stored_type(field: &Field, records: &[RecordDef]) -> Option<String
     match field.access() {
         Some(Access::Value | Access::Array) => None,
         Some(Access::Values) => Some("u32".into()),
-        Some(Access::Edge) => Some("storage::Edge".into()),
-        Some(Access::Edges) => Some("storage::Edges".into()),
+        Some(Access::Edge) => Some("InstEdge".into()),
+        Some(Access::Edges) => Some("InstEdges".into()),
         _ => Some(field.rust.clone()),
     }
 }
@@ -160,7 +160,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
             construct(&format!("{}Fields", record.name), fields)
         )
         .unwrap();
-        writeln!(out, "#[allow(unused_variables)] impl {}Fields {{ fn view(self, reader: &mut storage::OperandReader<'_>) -> {} {{", record.name, record.name).unwrap();
+        writeln!(out, "#[allow(unused_variables)] impl {}Fields {{ fn view(self, reader: &mut OperandReader<'_>) -> {} {{", record.name, record.name).unwrap();
         let fields = record.fields.iter().map(|f| {
             let expr = match &f.ty {
                 PropertyType::Named(_) if f.policy.references.is_operand() => {
@@ -221,8 +221,8 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
                         writeln!(out, "{values}.extend_from_slice({name});").unwrap();
                         format!("u32::try_from({name}.len()).expect(\"too many operands\")")
                     }
-                    Some(Access::Edge) => format!("storage::store_edge({name}, &mut {values})"),
-                    Some(Access::Edges) => format!("storage::Edges::store({name}, &mut {values})"),
+                    Some(Access::Edge) => format!("InstEdge::store({name}, &mut {values})"),
+                    Some(Access::Edges) => format!("InstEdges::store({name}, &mut {values})"),
                     _ => name.clone(),
                 }
             };
@@ -378,7 +378,7 @@ fn successors(layouts: &[Layout]) -> String {
 }
 
 fn from_values(out: &mut String, layouts: &[Layout]) {
-    out.push_str("pub fn from_values(self, opcode: Opcode, values: &[Value]) -> Option<Inst> { match opcode.spec().format {\n");
+    out.push_str("pub fn from_values(self, opcode: Opcode, values: &[Value]) -> Option<Inst> { match opcode.format() {\n");
     for layout in layouts
         .iter()
         .filter(|l| l.canonical && value_only(&l.fields))
@@ -417,7 +417,7 @@ fn from_values(out: &mut String, layouts: &[Layout]) {
 
 /// Clone across DFGs using the same schema as instruction construction.
 fn import_view(out: &mut String, layouts: &[Layout], records: &[RecordDef]) {
-    out.push_str("pub fn import(self, view: InstView<'_>, values: &[Value], mut block: impl FnMut(crate::Block) -> crate::Block) -> Inst { let mut reader = storage::OperandReader(values); match view {\n");
+    out.push_str("pub fn import(self, view: InstView<'_>, values: &[Value], mut block: impl FnMut(crate::Block) -> crate::Block) -> Inst { let mut reader = OperandReader(values); match view {\n");
     for layout in layouts {
         writeln!(
             out,

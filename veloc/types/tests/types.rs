@@ -152,8 +152,17 @@ fn comparison_semantics_and_transforms() {
         I::GeU,
     ];
     let floats = &[F::Eq, F::Ne, F::Lt, F::Gt, F::Le, F::Ge];
+    assert_eq!(I::from_mnemonic("unknown"), None);
+    assert_eq!(F::from_mnemonic("unknown"), None);
     for &cc in integers {
         assert_eq!(I::from_mnemonic(cc.mnemonic()), Some(cc));
+        assert_eq!(cc.to_string(), cc.mnemonic());
+        assert_eq!(
+            cc.is_unsigned(),
+            matches!(cc, I::LtU | I::LeU | I::GtU | I::GeU)
+        );
+        assert_eq!(cc.swap().is_unsigned(), cc.is_unsigned());
+        assert_eq!(cc.complement().is_unsigned(), cc.is_unsigned());
         assert_eq!(cc.swap().swap(), cc);
         assert_eq!(cc.complement().complement(), cc);
         for x in 0..=255u128 {
@@ -185,6 +194,8 @@ fn comparison_semantics_and_transforms() {
     }
     for &cc in floats {
         assert_eq!(F::from_mnemonic(cc.mnemonic()), Some(cc));
+        assert_eq!(cc.to_string(), cc.mnemonic());
+        assert_eq!(cc.complement_ordered().complement_ordered(), cc);
         assert_eq!(cc.swap().swap(), cc);
         if let Some(complement) = cc.complement() {
             assert_eq!(cc.outcomes() ^ complement.outcomes(), 15);
@@ -228,4 +239,36 @@ fn comparison_semantics_and_transforms() {
             }
         }
     }
+}
+
+#[test]
+fn all_effects_are_conservative() {
+    use veloc_types::MemoryEffect;
+
+    let all = MemoryEffect::all();
+    assert!(MemoryEffect::READ.conflicts_with(MemoryEffect::WRITE));
+    assert!(all.conflicts_with(MemoryEffect::READ));
+    assert_eq!(MemoryEffect::default(), all);
+    assert!(all.may_read());
+    assert!(all.may_write());
+    assert!(!all.is_none());
+    assert!(!MemoryEffect::READ.conflicts_with(MemoryEffect::READ));
+    assert_eq!(all.to_string(), "READ | WRITE");
+    assert_eq!(MemoryEffect::READ.to_string(), "READ");
+    assert_eq!(MemoryEffect::WRITE.to_string(), "WRITE");
+}
+
+#[test]
+fn flag_names_preserve_display_order() {
+    use veloc_types::OpTraits;
+
+    let traits = OpTraits::TERMINATOR
+        .union(OpTraits::COMMUTATIVE)
+        .union(OpTraits::ASSOCIATIVE)
+        .union(OpTraits::IDEMPOTENT);
+    assert_eq!(
+        traits.to_string(),
+        "TERMINATOR | COMMUTATIVE | ASSOCIATIVE | IDEMPOTENT"
+    );
+    assert_eq!(OpTraits::empty().to_string(), "");
 }

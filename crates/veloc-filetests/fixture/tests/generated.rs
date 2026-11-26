@@ -424,7 +424,7 @@ fn rust_flag_sets_are_used_by_generated_metadata() {
     use veloc_mir::inst::{MemoryEffect, OpTraits};
     assert_eq!(size_of::<OpTraits>(), 2);
     assert_eq!(size_of::<MemoryEffect>(), 1);
-    const EFFECT: MemoryEffect = Opcode::EffectSet.spec().memory_effect();
+    const EFFECT: MemoryEffect = Opcode::EffectSet.memory_effect();
     assert_eq!(EFFECT, MemoryEffect::READ.union(MemoryEffect::WRITE));
     assert_eq!(EFFECT.to_string(), "READ | WRITE");
     assert_eq!(MemoryEffect::empty().to_string(), "");
@@ -433,9 +433,9 @@ fn rust_flag_sets_are_used_by_generated_metadata() {
     assert_eq!(unknown.to_string(), "0x80");
     assert_eq!(unknown.union(MemoryEffect::READ).to_string(), "READ | 0x80");
     assert!(unknown.conflicts_with(MemoryEffect::READ));
-    assert_eq!(Opcode::Nop.spec().memory_effect(), MemoryEffect::empty());
-    assert_eq!(Opcode::Load.spec().memory_effect(), MemoryEffect::READ);
-    assert_eq!(Opcode::Call.spec().memory_effect(), MemoryEffect::all());
+    assert_eq!(Opcode::Nop.memory_effect(), MemoryEffect::empty());
+    assert_eq!(Opcode::Load.memory_effect(), MemoryEffect::READ);
+    assert_eq!(Opcode::Call.memory_effect(), MemoryEffect::all());
     assert_eq!(
         OpTraits::TERMINATOR
             .union(OpTraits::COMMUTATIVE)
@@ -460,20 +460,8 @@ fn declaration_records_enums_and_flags_construct_explicit_values() {
         TestPolicy::Prefer(MemoryEffect::READ.union(MemoryEffect::WRITE))
     );
     assert_eq!(meta.fallback, Some(TestPolicy::Automatic));
-    assert!(core::ptr::eq(
-        Opcode::IAdd.meta(),
-        &Opcode::IAdd.spec().meta
-    ));
-    assert!(
-        Opcode::IAdd
-            .meta()
-            .traits
-            .contains(veloc_mir::inst::OpTraits::COMMUTATIVE)
-    );
-    assert_eq!(
-        Opcode::IAdd.meta().memory,
-        veloc_mir::inst::MemoryEffect::empty()
-    );
+    assert!(Opcode::IAdd.is_commutative());
+    assert_eq!(Opcode::IAdd.memory_effect(), MemoryEffect::NONE);
 }
 
 #[test]
@@ -695,6 +683,8 @@ fn named_and_inline_sets_observe_actual_types() {
 
 #[test]
 fn generated_evaluators_execute_compositions_properties_and_traps() {
+    use veloc_mir::inst::OpTraits;
+
     for (opcode, args, results, fields, expected) in [
         (
             Opcode::Direct,
@@ -822,8 +812,11 @@ fn generated_evaluators_execute_compositions_properties_and_traps() {
                 .is_none()
         );
     }
-    assert!(!Opcode::Composed.spec().is_commutative());
-    assert!(!Opcode::Composed.spec().is_associative());
+    assert!(
+        !Opcode::Composed
+            .traits()
+            .intersects(OpTraits::COMMUTATIVE | OpTraits::ASSOCIATIVE)
+    );
     assert!(Opcode::Trapping.may_trap());
     let spec = offline::SPECS
         .iter()

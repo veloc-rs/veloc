@@ -463,17 +463,15 @@ impl<'a> FuncEditor<'a> {
                 "anchor in another block"
             );
             assert!(
-                !self.body.dfg.opcode(inst).spec().is_terminator(),
+                !self.body.dfg.opcode(inst).is_terminator(),
                 "cannot insert a terminator before another instruction"
             );
         } else {
             assert!(
-                self.body.layout.last_inst(block).is_none_or(|last| !self
-                    .body
-                    .dfg
-                    .opcode(last)
-                    .spec()
-                    .is_terminator()),
+                self.body
+                    .layout
+                    .last_inst(block)
+                    .is_none_or(|last| !self.body.dfg.opcode(last).is_terminator()),
                 "cannot append after a terminator"
             );
         }
@@ -539,9 +537,9 @@ impl<'a> FuncEditor<'a> {
             .layout()
             .inst_block(inst)
             .expect("instruction not in layout");
-        let control = self.body.dfg().opcode(inst).spec().is_terminator();
+        let control = self.body.dfg().opcode(inst).is_terminator();
         self.body.dfg.replace_inst(inst, data);
-        if control || self.body.dfg().opcode(inst).spec().is_terminator() {
+        if control || self.body.dfg().opcode(inst).is_terminator() {
             self.sync_edges(block);
         }
     }

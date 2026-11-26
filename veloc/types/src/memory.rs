@@ -8,6 +8,21 @@ pub struct MemoryLocation<B> {
 }
 
 impl<B: Eq> MemoryLocation<B> {
+    fn end(&self) -> i128 {
+        i128::from(self.offset) + i128::from(self.bytes)
+    }
+
+    /// Whether the linear ranges share a base and at least one byte.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.base == other.base
+            && i128::from(self.offset.max(other.offset)) < self.end().min(other.end())
+    }
+
+    /// Whether this linear range contains all bytes of the other range.
+    pub fn covers(&self, other: &Self) -> bool {
+        self.base == other.base && self.offset <= other.offset && other.end() <= self.end()
+    }
+
     pub fn may_overlap(&self, other: &Self, pointer_bits: u32) -> bool {
         self.base != other.base
             || ranges_may_overlap(

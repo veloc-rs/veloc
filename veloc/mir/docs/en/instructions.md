@@ -74,7 +74,9 @@ A declaration such as `import function f(i32) -> i32 notrap` guarantees that
 direct calls and direct tail calls to `f` with valid arguments cannot trap.
 The function may still write memory or run indefinitely.
 `view.may_trap(module.decls())` consults the callee declaration for direct calls.
-It treats indirect calls, `closure-drop` and volatile memory accesses as potentially trapping.
+It treats indirect calls and `closure-drop` as potentially trapping.
+The `volatile` flag makes a memory access observable and prevents its removal or
+speculative execution. It does not change the result of `may_trap`.
 
 The function attribute `nofree` guarantees that allocations live at entry stay
 live throughout the call, including nested calls. For example,

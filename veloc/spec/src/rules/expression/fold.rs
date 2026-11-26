@@ -17,7 +17,7 @@ pub(in crate::rules) fn emit_folds(
     for op in scalar_bodies.keys() {
         groups.entry(op).or_default();
     }
-    let effectful = "!opcode.spec().memory_effect().is_none() || opcode.spec().is_terminator() || opcode.transfers_ownership()";
+    let effectful = "!opcode.memory_effect().is_none() || opcode.is_terminator() || opcode.transfers_ownership()";
     writeln!(
         code,
         "/// Whether this opcode has a folding implementation. A particular expression may still fail to fold.\n\

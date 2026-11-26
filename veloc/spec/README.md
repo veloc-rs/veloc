@@ -193,16 +193,15 @@ template parser stays separate because quoted templates have a different grammar
 
 MIR groups related runtime code under one module boundary:
 
-- `inst/mod.rs` exports instruction handles, writers, views and opcode metadata.
-  `inst/opcode.rs` owns generated opcode/type contracts and their support;
-  `inst/storage.rs` owns physical instruction storage.
+- `inst.rs` defines instruction handles, storage, writers and successor views
+  alongside the generated opcode and type contracts.
 - `function/mod.rs` owns functions, with `edit.rs` for structural editing and
   `layout.rs` for block order, instruction placement and CFG edges.
 - `veloc-types` owns types, signatures and calling conventions. MIR\'s `types`\n  module re-exports them alongside MIR entity handles and generated constants.
 - `dfg` remains independent; `builder` and `validator` serve both functions and
   modules and remain top-level modules.
 
-Use `veloc_mir::inst::{OpSpec, OpFormat, TypeError, MemoryEffect}` for instruction
+Use `veloc_mir::inst::{OpFormat, TypeError, MemoryEffect}` for instruction
 metadata and `veloc_mir::function::{Layout, BlockData}` for layout types. Common
 types such as `Opcode`, `Function`, `Signature` and `CallConv` remain re-exported
 from the crate root.
@@ -657,9 +656,10 @@ and do not generate Rust `Default` implementations. Nested struct and enum
 values are checked recursively; inline recursive types are rejected.
 There is no separate metadata schema or runtime attribute dictionary.
 
-MIR and LIR generate an opcode metadata struct, `OpInfo`, from the bound
-traits and memory types. MIR stores it in each static `OpSpec`. LIR exposes
-its static table through `GenericOpcode::meta()`.
+MIR generates `Opcode::traits()` and `Opcode::memory_effect()` from the
+operation definitions. Each query groups opcodes with the same value.
+`Opcode::mnemonic()` returns the textual name and `Opcode::format()` the storage format. LIR exposes
+traits and memory together through `GenericOpcode::meta()`.
 
 A packed operation that ends its block declares `control = terminator;`.
 An aborting exit declares `control = abort;`, which makes it a terminator that
@@ -680,12 +680,12 @@ on each operation. Fields matching the bound analysis types receive the
 derived traits and memory effect. Other fields must be supplied explicitly.
 A metadata type without a memory field provides no bound on memory effects.
 
-Declare the memory bound with `memory = none;`, `read`, `write`, `all`,
-or a typed constant expression. The field can also be supplied in an explicit
-metadata record. Spec rejects declaring both. For packed direct calls,
-`memory = callee(func_id);` selects a function declaration at the instruction
-site and uses all effects in the static opcode table. The trap source is
-declared independently.
+MIR operations default to `memory = none;`. An operation can declare `read`,
+`write`, `all`, or a typed constant expression. The field can also be supplied
+in an explicit metadata record. Spec rejects declaring both. For packed direct calls,
+`memory = callee(func_id);` uses the callee's declared bound at the instruction
+site. The opcode alone conservatively allows both reads and writes. The trap
+source is declared independently.
 Per-access volatility belongs to `MemFlags`; MIR atomic ordering is not
 currently modeled. Addresses and widths belong to access contracts and alias
 analysis.
@@ -1417,8 +1417,7 @@ SSA value IDs and use-def information.
 
 MIR owns representation and validation, not evaluation or rewrite rules. Neither
 MIR nor the optimizer has a normal dependency on `veloc-semantics`; generators and
-offline tools depend on it at build/test time. `OpSpec` contains no primitive
-identifier, identity/absorbing constants, or semantic recipe.
+offline tools depend on it at build/test time.
 
 `veloc_optimizer::rewrite::evaluate` executes specialized Rust arithmetic, with
 no runtime primitive dispatch. `SimplifyPass` applies constant evaluation and
@@ -1511,7 +1510,7 @@ semantics in `lir/defs/generic.spec` at build time. Both definition modules use
 the shared `Source` API and checked operation model; operand-array storage
 emission is separate from MIR's packed SSA projection. The same definitions supply opcode/schema mappings,
 builders, decoders, control behavior and build-only primitive bindings. The result is a direct
-`Opcode -> Option<GenericOpcode>` match, not an `OpSpec` semantic lookup. Composed,
+`Opcode -> Option<GenericOpcode>` match. Composed,
 reordered, property-dependent, trapping and multi-result recipes do not qualify;
 contextual lowering remains explicit. The bindings are contracts, not proofs of
 target legalization or code generation.
@@ -1519,7 +1518,7 @@ target legalization or code generation.
 A separate `semantics.rs` artifact contains `SPECS`, a static slice of
 `veloc_semantics::SemanticSpec<veloc_mir::Opcode>`, and the offline `IntCC` predicate
 conversion. Only offline examples/tests include it; MIR exports neither a table
-nor a macro. Tools reuse each opcode's `OpSpec` for type/effect information,
+nor a macro. Tools query `Opcode` for type and effect information,
 without duplicating those contracts or requiring a feature switch. Offline checks
 do not imply an automatic rule-proof pipeline or runtime solver calls.
 
@@ -1529,7 +1528,7 @@ mod offline {
     include!(concat!(env!("OUT_DIR"), "/semantics.rs"));
 }
 let add = offline::SPECS.iter().find(|s| s.opcode == veloc_mir::Opcode::IAdd).unwrap();
-let contract = add.opcode.spec();
+assert_eq!(add.opcode.mnemonic(), "iadd");
 let recipe = add.program;
 ```
 

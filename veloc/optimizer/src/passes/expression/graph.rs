@@ -278,7 +278,7 @@ impl Graph {
 
     /// The caller has resolved every root against this immutable graph.
     fn order_args(opcode: Op, args: &mut [Root]) {
-        if opcode.spec().is_commutative() && args.len() == 2 && args[0] > args[1] {
+        if opcode.is_commutative() && args.len() == 2 && args[0] > args[1] {
             args.swap(0, 1);
         }
     }

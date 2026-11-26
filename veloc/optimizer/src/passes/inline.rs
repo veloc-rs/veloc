@@ -245,9 +245,9 @@ fn callee_features(callee: &FuncBody, size: usize) -> InlineFeatures {
             let opcode = callee.dfg().opcode(inst);
             features.callee_calls +=
                 f32::from(matches!(opcode, Opcode::Call | Opcode::CallIndirect));
-            features.callee_loads += f32::from(opcode.spec().memory_effect().may_read());
-            features.callee_stores += f32::from(opcode.spec().memory_effect().may_write());
-            features.callee_branches += f32::from(opcode.spec().is_terminator());
+            features.callee_loads += f32::from(opcode.memory_effect().may_read());
+            features.callee_stores += f32::from(opcode.memory_effect().may_write());
+            features.callee_branches += f32::from(opcode.is_terminator());
             features.callee_multiplies += f32::from(matches!(opcode, Opcode::IMul | Opcode::FMul));
         }
     }

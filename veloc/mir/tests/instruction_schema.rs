@@ -106,7 +106,7 @@ fn values_construction_handles_inline_fixed_opcode_and_nullary_layouts() {
         Opcode::Nop,
         Opcode::Unreachable,
     ] {
-        let format = opcode.spec().format;
+        let format = opcode.format();
         let arity = format.fixed_value_arity().unwrap();
         let inst = dfg.writer().from_values(opcode, &values[..arity]).unwrap();
         let instruction = dfg.inst(inst);
@@ -167,7 +167,7 @@ fn generated_memory_builders_preserve_field_order() {
         InstView::Store { ptr: actual_ptr, value: actual_value, offset: 16, flags: actual_flags }
             if (actual_ptr, actual_value, actual_flags) == (ptr, value, flags)
     ));
-    assert!(instructions[0].may_trap(module.decls()));
+    assert!(!instructions[0].may_trap(module.decls()));
     assert!(matches!(
         dfg.inst(dfg.value_inst(loaded).unwrap()),
         InstView::Load { ptr: actual_ptr, offset: 16, flags: actual_flags }
@@ -176,7 +176,8 @@ fn generated_memory_builders_preserve_field_order() {
     for value in [loaded, lanes] {
         let view = dfg.inst(dfg.value_inst(value).unwrap());
         assert!(view.has_volatile_access());
-        assert!(view.may_trap(module.decls()));
+        assert!(!view.may_trap(module.decls()));
+        assert!(!view.can_erase(module.decls()));
         assert_eq!(view.memory_flags(), Some(flags));
     }
     assert_eq!(dfg.value_type(loaded), Type::PTR);
@@ -366,5 +367,12 @@ fn direct_calls_inherit_notrap_after_roundtrip() {
     }
     for inst in [plain, indirect] {
         assert!(dfg.inst(inst).may_trap(decls));
+    }
+}
+
+#[test]
+fn opcode_mnemonics_are_unique_and_round_trip() {
+    for &opcode in Opcode::ALL {
+        assert_eq!(Opcode::from_mnemonic(opcode.mnemonic()), Some(opcode));
     }
 }

@@ -62,9 +62,9 @@ pub(super) fn validate(func: &FunctionRef) -> Result<()> {
             }
             // Traps abort the invocation; only normal exits must transfer every
             // remaining owned value. No implicit guest cleanup runs on abort.
-            let spec = view.opcode().spec();
-            if spec.is_terminator()
-                && !spec.traits().contains(crate::inst::OpTraits::ABORT)
+            let opcode = view.opcode();
+            if opcode.is_terminator()
+                && !opcode.traits().contains(crate::inst::OpTraits::ABORT)
                 && !available.is_empty()
             {
                 return Err(func.constraint_error(

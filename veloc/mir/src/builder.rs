@@ -178,7 +178,7 @@ impl<'a> SsaBuilder<'a> {
     pub fn is_current_block_terminated(&self) -> bool {
         let block = self.current_block;
         if let Some(last_inst) = self.func().layout().last_inst(block) {
-            self.func().dfg().opcode(last_inst).spec().is_terminator()
+            self.func().dfg().opcode(last_inst).is_terminator()
         } else {
             false
         }

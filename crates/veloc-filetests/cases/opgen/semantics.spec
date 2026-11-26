@@ -303,8 +303,7 @@ effect CUSTOM { reads = true; }
 // run: opgen
 // check: pub struct Tuning
 // check: pub enum Policy
-// check: pub meta: crate::inst::Tuning
-// check: const fn meta(self)
+// check: const fn meta(self) -> &'static crate::inst::Tuning
 // check: MemoryEffect::union
 enum Policy { variants = [Automatic, Prefer(MemoryEffect)]; }
 struct Tuning { policy: Policy, budget: u32 }
@@ -368,9 +367,9 @@ op Work() -> () { memory = all; traits = OpTraits::empty(); mnemonic = "work"; s
 
 // ----- metadata/analysis-fields-can-have-different-names
 // run: opgen
-// check: pub const fn traits(&self) -> veloc_types::OpTraits
-// check: self.meta.attributes
-// check: self.meta.accesses
+// check: pub const fn traits(self) -> veloc_types::OpTraits
+// check: self.meta().attributes
+// check: self.meta().accesses
 struct Info { attributes: OpTraits, accesses: MemoryEffect, extra: u32 }
 struct Pair { args: values(2) }
 op Sum<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {

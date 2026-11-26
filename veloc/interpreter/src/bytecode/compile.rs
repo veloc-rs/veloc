@@ -1316,13 +1316,17 @@ impl<'a> Compiler<'a> {
 
     /// Direct stack bytecode bypasses the generic memory handler.
     fn stack_offset(&self, inst: Inst) -> Option<u32> {
-        let access = self.func.access(inst, &crate::DATA_LAYOUT)?;
-        let (size, _) = self.func.dfg().stack_slot_layout(access.base)?;
-        let offset = u32::try_from(access.offset).ok()?;
-        if access.flags.is_volatile() || offset.checked_add(access.bytes)? > size {
+        let access = self.func.access(inst)?;
+        if access.flags.is_volatile() {
             return None;
         }
-        self.stack.offsets[access.base].checked_add(offset)
+        let range = access.range(&crate::DATA_LAYOUT)?;
+        let (size, _) = self.func.dfg().stack_slot_layout(range.base)?;
+        let offset = u32::try_from(range.offset).ok()?;
+        if offset.checked_add(range.bytes)? > size {
+            return None;
+        }
+        self.stack.offsets[range.base].checked_add(offset)
     }
 
     fn compile_inst(&mut self, inst: Inst) -> Option<()> {

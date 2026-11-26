@@ -3,8 +3,11 @@ use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use hashbrown::HashSet;
 use std::collections::VecDeque;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{FuncBody, FuncDecls, Inst, InstView, Opcode, Type, Value, memory::Access};
-use veloc_types::DataLayout;
+use veloc_mir::{
+    FuncBody, FuncDecls, Inst, InstView, Opcode, Type, Value,
+    memory::{Access, ByteRange, Location},
+};
+use veloc_types::{DataLayout, Region};
 
 const MAX_ACCESSES: usize = 64;
 
@@ -36,46 +39,49 @@ impl FunctionPass for MemoryPass {
 }
 
 struct Cell {
-    access: Access,
+    range: ByteRange,
+    region: Region,
     ty: Type,
     value: Value,
     // A nontrapping store that no intervening read or trap can observe.
     pending_store: Option<Inst>,
 }
 
+impl Cell {
+    fn location(&self) -> Location {
+        Location {
+            region: self.region,
+            range: Some(self.range),
+        }
+    }
+}
+
 fn private_slots(func: &FuncBody) -> HashSet<Value> {
-    let mut slots: HashSet<_> = func.stack_slots().iter().copied().collect();
-    if slots.is_empty() {
-        return slots;
-    }
-    let mut visited = HashSet::new();
-    let mut mark_escape = |mut value| {
-        // Follow derived pointers to their allocation regardless of chain length.
-        while visited.insert(value) {
-            match func.dfg().value_inst_view(value) {
-                Some(InstView::PtrOffset { ptr, .. }) => value = ptr,
-                _ => {
-                    slots.remove(&value);
-                    break;
+    let dfg = func.dfg();
+    let mut private = HashSet::new();
+    let mut pointers = Vec::new();
+    'slot: for &slot in func.stack_slots() {
+        pointers.clear();
+        pointers.push(slot);
+        while let Some(ptr) = pointers.pop() {
+            for site in dfg.uses(ptr) {
+                let inst = site.inst();
+                if func.layout().inst_block(inst).is_none() {
+                    continue;
                 }
-            }
-        }
-    };
-    for block in func.layout().block_order() {
-        for inst in func.layout().block_insts(block) {
-            match func.dfg().inst(inst) {
-                InstView::PtrOffset { .. } | InstView::Load { .. } => {}
-                // The stored value may escape, even if it is also the address.
-                InstView::Store { value, .. } => mark_escape(value),
-                _ => {
-                    for &value in func.dfg().operands(inst) {
-                        mark_escape(value);
+                match dfg.inst(inst) {
+                    InstView::PtrOffset { .. } => {
+                        pointers.extend_from_slice(dfg.inst_results(inst))
                     }
+                    InstView::Load { .. } => {}
+                    InstView::Store { value, .. } if value != ptr => {}
+                    _ => continue 'slot,
                 }
             }
         }
+        private.insert(slot);
     }
-    slots
+    private
 }
 
 pub fn run_memory(
@@ -85,100 +91,41 @@ pub fn run_memory(
     metrics: &Profile,
 ) -> bool {
     let private = private_slots(func);
-    let mut dead = HashSet::new();
+    let mut dead = Vec::new();
+    let mut cells = VecDeque::new();
     let mut next = func.layout().block_order().next();
     while let Some(block) = next {
-        let mut cells: VecDeque<Cell> = VecDeque::new();
+        cells.clear();
         let mut cursor = func.layout().first_inst(block);
         while let Some(inst) = cursor {
             cursor = func.layout().next_inst(inst);
+            if let Some(access) = func.access(inst) {
+                visit_access(func, inst, access, layout, &mut cells, &mut dead);
+                continue;
+            }
             let view = func.dfg().inst(inst);
             if view.opcode() == Opcode::Return {
                 dead.extend(
                     cells
                         .iter()
-                        .filter(|c| private.contains(&c.access.base))
+                        .filter(|c| private.contains(&c.range.base))
                         .filter_map(|c| c.pending_store),
                 );
                 break;
             }
 
-            let Some(access) = func.access(inst, layout) else {
-                let effect = view.memory_effect(decls);
-                if view.has_volatile_access() || view.may_free(decls) || effect.may_write() {
-                    cells.clear();
-                } else if effect.may_read()
-                    || view.may_trap(decls)
-                    || matches!(view, InstView::Call { .. })
-                {
-                    // A read, trap, or call that never returns can expose the prior store.
-                    // On normal continuation the recorded bytes still have their old value.
-                    for cell in &mut cells {
-                        cell.pending_store = None;
-                    }
-                }
-                continue;
-            };
-
-            if access.flags.is_volatile() {
-                // A fault can expose pending writes even to disjoint locations.
+            let effect = view.memory_effect(decls);
+            if view.may_free(decls) || effect.may_write() {
+                cells.clear();
+            } else if effect.may_read()
+                || view.may_trap(decls)
+                || matches!(view, InstView::Call { .. })
+            {
+                // Reads and exits can expose a store even if its bytes stay unchanged.
                 for cell in &mut cells {
                     cell.pending_store = None;
                 }
-                // Even a volatile read can change the addressed device register.
-                cells.retain(|cell| !func.may_alias(access, cell.access, layout));
-                continue;
             }
-
-            let (value, pending_store) = match view {
-                InstView::Store { value, .. } => {
-                    cells.retain(|cell| {
-                        if !func.may_alias(access, cell.access, layout) {
-                            return true;
-                        }
-                        if access.covers(cell.access)
-                            && let Some(store) = cell.pending_store
-                        {
-                            dead.insert(store);
-                        }
-                        false
-                    });
-                    (value, Some(inst))
-                }
-                InstView::Load { .. } => {
-                    let result = func.dfg().first_result(inst).expect("load result");
-                    let ty = func.dfg().value_type(result);
-                    let previous = cells.iter().find(|cell| {
-                        cell.access.base == access.base
-                            && cell.access.offset == access.offset
-                            && cell.ty == ty
-                    });
-                    if let Some(previous) = previous {
-                        func.edit().replace_all_uses(result, previous.value);
-                    }
-                    if func.dfg().uses(result).next().is_none() {
-                        dead.insert(inst);
-                        continue;
-                    }
-                    // A retained read observes any overlapping store.
-                    for cell in &mut cells {
-                        if func.may_alias(access, cell.access, layout) {
-                            cell.pending_store = None;
-                        }
-                    }
-                    (result, None)
-                }
-                _ => unreachable!("access requires a load or store"),
-            };
-            if cells.len() == MAX_ACCESSES {
-                cells.pop_front();
-            }
-            cells.push_back(Cell {
-                access,
-                ty: func.dfg().value_type(value),
-                value,
-                pending_store,
-            });
         }
         next = func.layout().next_block(block);
     }
@@ -188,4 +135,73 @@ pub fn run_memory(
     metrics.count("memory.removed_insts", dead.len() as u64);
     func.edit().erase_insts(&dead);
     true
+}
+
+fn visit_access(
+    func: &mut FuncBody,
+    inst: Inst,
+    access: Access,
+    layout: &DataLayout,
+    cells: &mut VecDeque<Cell>,
+    dead: &mut Vec<Inst>,
+) {
+    let location = access.location(layout);
+    let aliases = |cell: &Cell| func.may_alias(location, cell.location(), layout);
+    if access.flags.is_volatile() {
+        // A fault can expose any prior store. A device read can change the addressed bytes.
+        cells.retain_mut(|cell| {
+            cell.pending_store = None;
+            !aliases(cell)
+        });
+        return;
+    }
+
+    let view = func.dfg().inst(inst);
+    let (range, value, pending_store) = if view.opcode().memory_effect().may_write() {
+        cells.retain(|cell| {
+            if !aliases(cell) {
+                return true;
+            }
+            if let (Some(range), Some(store)) = (location.range, cell.pending_store)
+                && range.covers(&cell.range)
+            {
+                dead.push(store);
+            }
+            false
+        });
+        let (Some(range), InstView::Store { value, .. }) = (location.range, view) else {
+            return;
+        };
+        (range, value, Some(inst))
+    } else {
+        let result = func.dfg().first_result(inst).expect("load result");
+        if let Some(range) = location.range {
+            if let Some(cell) = cells.iter().find(|cell| {
+                cell.region == location.region && cell.range == range && cell.ty == access.ty
+            }) {
+                func.edit().replace_all_uses(result, cell.value);
+                dead.push(inst);
+                return;
+            }
+            if func.dfg().use_empty(result) {
+                dead.push(inst);
+                return;
+            }
+        }
+        for cell in cells.iter_mut().filter(|cell| aliases(cell)) {
+            cell.pending_store = None;
+        }
+        let Some(range) = location.range else { return };
+        (range, result, None)
+    };
+    if cells.len() == MAX_ACCESSES {
+        cells.pop_front();
+    }
+    cells.push_back(Cell {
+        range,
+        region: location.region,
+        ty: access.ty,
+        value,
+        pending_store,
+    });
 }

@@ -18,7 +18,7 @@ pub(crate) fn compile(records: &[Decl], source: &str) -> Result<Encodings, Error
         let mut fields = Fields::new(source, record.clone());
         if matches!(
             record.name.as_str(),
-            "Opcode" | "OpFormat" | "TypeClass" | "OpSpec" | "TypeError" | "type_rules"
+            "Opcode" | "OpFormat" | "TypeClass" | "TypeError" | "type_rules"
         ) || records
             .iter()
             .any(|other| super::records::rust_binding(other).is_some() && other.name == record.name)

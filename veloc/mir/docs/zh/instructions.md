@@ -63,7 +63,8 @@ block1(x: i32):
 需要保留 trap 的前端应生成显式检查。
 
 函数声明末尾的 `notrap` 保证使用合法实参直接调用该函数时不会触发 trap，直接尾调用也适用，例如 `import function f(i32) -> i32 notrap`。
-被调函数仍可能写内存或一直运行。`view.may_trap(module.decls())` 对直接调用查询被调函数的声明，对间接调用、`closure-drop` 和 volatile 访存均返回 `true`。
+被调函数仍可能写内存或一直运行。`view.may_trap(module.decls())` 对直接调用查询被调函数的声明，对间接调用和 `closure-drop` 返回 `true`。
+`volatile` 标记使访存本身可观察，优化器必须保留这次访问，也不能推测执行。`may_trap` 的结果与该标记无关。
 
 函数属性 `nofree` 保证调用开始时存活的分配在整个调用期间都存活，包括嵌套调用。
 例如，`import function update(ptr) -> void memory(write) nofree` 可以改写缓冲区内容，

@@ -80,12 +80,11 @@ impl FunctionRef<'_> {
         let body = self.body.expect("defined function");
         let data = &body.dfg().inst(inst);
         let opcode = data.opcode();
-        let spec = opcode.spec();
 
-        if !data.matches_format(spec.format) {
+        if !data.matches_format(opcode.format()) {
             return self.fail(alloc::format!(
                 "{} at {:?} is stored in an incompatible instruction format",
-                spec.mnemonic,
+                opcode.mnemonic(),
                 inst
             ));
         }
@@ -105,7 +104,7 @@ impl FunctionRef<'_> {
             .map_err(|error| {
                 crate::Error::from(ValidationError::Other(alloc::format!(
                     "{} type scheme violation at {:?}: {:?}",
-                    spec.mnemonic,
+                    opcode.mnemonic(),
                     inst,
                     error
                 )))
@@ -121,7 +120,7 @@ impl FunctionRef<'_> {
             context,
         )?;
 
-        data.try_visit_successors(|call| self.validate_successor(call, spec.mnemonic))
+        data.try_visit_successors(|call| self.validate_successor(call, opcode.mnemonic()))
     }
 
     #[cold]
@@ -129,7 +128,7 @@ impl FunctionRef<'_> {
         let body = self.body.expect("defined function");
         ValidationError::Other(alloc::format!(
             "{} constraint at {:?}: {}",
-            body.dfg().opcode(inst).spec().mnemonic,
+            body.dfg().opcode(inst).mnemonic(),
             inst,
             message
         ))

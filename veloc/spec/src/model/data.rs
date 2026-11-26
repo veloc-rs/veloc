@@ -337,14 +337,6 @@ impl Types {
         }
     }
 
-    pub fn metadata_record(&self, name: &str) -> Option<&RecordDef> {
-        if name == self.op_info.name && !self.names.contains(name) {
-            Some(&self.op_info)
-        } else {
-            self.records.iter().find(|r| r.name == name)
-        }
-    }
-
     fn emitted_records(&self, layouts: &[String], metadata: Option<&str>) -> Vec<RecordDef> {
         // Storage is a use of a record, not its Rust data representation. A record
         // also referenced as a field, enum payload or metadata still needs a struct.

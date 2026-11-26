@@ -265,7 +265,7 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
         )
         .unwrap();
     }
-    out.push_str("/// Construct a fixed-arity head with no extra attributes.\npub fn from_opcode(opcode: Opcode) -> Option<Self> { match opcode.spec().format {\n");
+    out.push_str("/// Construct a fixed-arity head with no extra attributes.\npub fn from_opcode(opcode: Opcode) -> Option<Self> { match opcode.format() {\n");
     for layout in layouts
         .iter()
         .filter(|l| l.canonical && super::value_only(&l.fields))
@@ -332,7 +332,7 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
         }
         out.push_str("},\n");
     }
-    out.push_str("_ => {},\n} }\npub fn view<'a>(&'a self, values: &'a [Value]) -> InstView<'a> {\nlet mut reader = storage::OperandReader(values);\nlet view = match self {\n");
+    out.push_str("_ => {},\n} }\npub fn view<'a>(&'a self, values: &'a [Value]) -> InstView<'a> {\nlet mut reader = OperandReader(values);\nlet view = match self {\n");
     for layout in &cold {
         writeln!(out, "Self::{}(fields) => {{", layout.name).unwrap();
         let fields = layout
@@ -410,7 +410,7 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
 
 /// Locate successor arguments without mutating the layout being traversed.
 fn edge_access(out: &mut String, layouts: &[Layout], records: &[RecordDef]) {
-    out.push_str("pub(crate) fn visit_edges(&self, operand_len: u32, mut visit: impl FnMut(storage::Edge, core::ops::Range<u32>)) { match self {\n");
+    out.push_str("pub(crate) fn visit_edges(&self, operand_len: u32, mut visit: impl FnMut(InstEdge, core::ops::Range<u32>)) { match self {\n");
     for layout in layouts.iter().filter(|layout| {
         layout
             .fields
@@ -455,7 +455,7 @@ fn edge_access(out: &mut String, layouts: &[Layout], records: &[RecordDef]) {
                 Some(Access::Edge) => {
                     out.push_str("let start = offset;\n");
                     if hot && omitted(layout, records, i) {
-                        writeln!(out, "let edge = storage::Edge {{ block: *_f{i}, len: operand_len - offset }}; offset = operand_len;").unwrap();
+                        writeln!(out, "let edge = InstEdge {{ block: *_f{i}, len: operand_len - offset }}; offset = operand_len;").unwrap();
                         out.push_str("visit(edge, start..offset);\n");
                     } else {
                         writeln!(out, "offset += _f{i}.len;").unwrap();
