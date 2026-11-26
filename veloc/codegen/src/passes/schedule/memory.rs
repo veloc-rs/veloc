@@ -1,5 +1,5 @@
-//! Alias proofs relax only ordinary nontrapping accesses. Unknown addresses,
-//! traps and volatile accesses retain their observable order.
+//! Alias proofs allow independent ordinary accesses to reorder. Volatile
+//! accesses and instructions without memory metadata order all pending accesses.
 use super::NodeId;
 use crate::target::TargetSchedule;
 use hashbrown::HashMap;
@@ -43,7 +43,7 @@ impl MemoryDependencies {
             MachineOpcode::Target(op) => target.instruction_metadata(op).memory,
             _ => None,
         };
-        let Some(metadata) = metadata.filter(|_| flags.is_notrap() && !flags.is_volatile()) else {
+        let Some(metadata) = metadata.filter(|_| !flags.is_volatile()) else {
             edges.extend(self.pending.drain(..).map(|access| access.node));
             self.barrier = Some(node);
             return edges;

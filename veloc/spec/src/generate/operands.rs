@@ -122,7 +122,8 @@ impl Operands {
             )
             .unwrap();
             for (variant, effect) in &flow.variants {
-                writeln!(out, "Self::{variant} => {},", effect.is_none()).unwrap();
+                let continues = !effect.is_some_and(crate::model::Control::is_terminator);
+                writeln!(out, "Self::{variant} => {continues},").unwrap();
             }
             out.push_str("} } }\n");
             writeln!(

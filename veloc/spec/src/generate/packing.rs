@@ -2,7 +2,7 @@
 
 use crate::Error;
 use crate::model::{Binding, Definitions, Op, Param, ParamKind, TypeDef, TypeList};
-use crate::storage::{Alternative as LayoutAlternative, FieldType, Format, NotrapStorage};
+use crate::storage::{Alternative as LayoutAlternative, FieldType, Format};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -12,27 +12,8 @@ pub(crate) fn constructor(
     format: &Format,
     opcode: &str,
     local: impl Fn(&str) -> String,
-    notrap: Option<&str>,
 ) -> String {
-    let mut write = crate::storage::compact::construction(op, format, opcode, local);
-    if let Some(flag) = notrap {
-        match &format.notrap {
-            NotrapStorage::Field => {
-                write.callee.push_str("_with_notrap");
-                write.args.push(flag.into());
-            }
-            NotrapStorage::MemFlags { index, member } => {
-                let arg = &mut write.args[*index];
-                *arg = match member {
-                    Some(member) => format!(
-                        "{{ let mut options = {arg}; options.{member} = options.{member}.with_notrap({flag}); options }}"
-                    ),
-                    None => format!("({arg}).with_notrap({flag})"),
-                };
-            }
-            NotrapStorage::None => unreachable!("checked modifier requires storage"),
-        }
-    }
+    let write = crate::storage::compact::construction(op, format, opcode, local);
     format!("move |writer: crate::InstWriter<'_>| {}", write.emit())
 }
 
@@ -137,8 +118,7 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<Op, Error
         packing.insert(field.name.clone(), binding);
     }
     Ok(Op {
-        allows_notrap: false,
-        trap_callee: None,
+        traps: crate::model::Traps::Never,
         memory_callee: None,
         declaration: op.declaration.clone(),
         offset: alt.text.offset,
@@ -228,25 +208,7 @@ pub(crate) fn builder(
     builder: &Builder,
     rust: &crate::model::records::RustTypes,
 ) -> String {
-    let mut methods = builder_method(op, format, builder, rust, false);
-    if op.allows_notrap {
-        methods.push_str("    /// The caller guarantees that this instruction cannot trap at its current site.\n");
-        methods.push_str(&builder_method(op, format, builder, rust, true));
-    }
-    methods
-}
-
-fn builder_method(
-    op: &Op,
-    format: &Format,
-    builder: &Builder,
-    rust: &crate::model::records::RustTypes,
-    notrap: bool,
-) -> String {
-    let mut name = op.method_name();
-    if notrap {
-        name.push_str("_notrap");
-    }
+    let name = op.method_name();
     let inferred = &builder.inferred;
     let typed = inferred.is_none() && op.signature_source.is_none();
     let mut params = String::from("&mut self");
@@ -265,13 +227,7 @@ fn builder_method(
     if typed {
         params.push_str(", ty: crate::Type");
     }
-    let constructor = crate::generate::packing::constructor(
-        op,
-        format,
-        &op.name,
-        str::to_owned,
-        notrap.then_some("true"),
-    );
+    let constructor = constructor(op, format, &op.name, str::to_owned);
     if let Some(source) = &op.signature_source {
         use crate::model::SignatureSource;
         let signature = match source {

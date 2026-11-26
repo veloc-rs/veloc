@@ -108,9 +108,12 @@ impl<'a> InstView<'a> {
         )
     }
 
-    /// A direct call can rely on its callee's contract or its own site guarantee.
+    /// Account for volatile accesses and direct callee contracts.
     pub fn may_trap(&self, decls: &crate::FuncDecls) -> bool {
-        if !self.opcode().spec().may_trap() || self.is_notrap() {
+        if self.has_volatile_access() {
+            return true;
+        }
+        if !self.opcode().may_trap() {
             return false;
         }
         !self
@@ -131,7 +134,7 @@ impl<'a> InstView<'a> {
 
     /// Conservative, context-free speculation. Analyses may prove more.
     pub fn can_speculate(&self) -> bool {
-        self.opcode().spec().is_pure()
+        self.opcode().can_speculate()
             && !self.opcode().transfers_ownership()
             && !self.has_volatile_access()
     }

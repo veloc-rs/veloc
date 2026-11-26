@@ -225,14 +225,8 @@ impl<'a> Pending<'a> {
             ));
             if semantic {
                 // Derived facts are trusted primitive facts. Opaque user expressions
-                // must not add unproved algebraic/control/trap promises.
-                for flag in [
-                    "COMMUTATIVE",
-                    "ASSOCIATIVE",
-                    "IDEMPOTENT",
-                    "TERMINATOR",
-                    "MAY_TRAP",
-                ] {
+                // must not add unproved algebraic or control promises.
+                for flag in ["COMMUTATIVE", "ASSOCIATIVE", "IDEMPOTENT", "TERMINATOR"] {
                     if !traits.contains(flag) {
                         checks.push((
                             not(contains(flag)),

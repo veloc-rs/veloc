@@ -213,7 +213,7 @@ impl Source {
                     if optimizations.is_none() {
                         optimizations = Some(crate::rules::optimizer::generate(
                             self,
-                            &mut config.definitions.parse()?,
+                            &config.definitions.parse()?,
                             config.dialect,
                             config.rust,
                             selected.contains(&Emit::Semantics),

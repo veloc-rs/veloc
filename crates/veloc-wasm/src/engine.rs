@@ -21,7 +21,9 @@ pub enum MemoryChecks {
     /// Use guard pages for supported native execution, software checks otherwise.
     #[default]
     Auto,
+    /// Explicit bounds checks preserve out-of-bounds traps even for unused loads.
     Software,
+    /// Fault on accesses that reach a guard page. Optimization can eliminate or narrow an access.
     Guarded,
 }
 

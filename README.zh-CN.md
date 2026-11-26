@@ -53,6 +53,10 @@ cargo run --release -p veloc-wasm --bin veloc-wasm -- run \
   path/to/module.wasm --strategy interpreter --memory-checks guarded
 ```
 
+软件检查会保留越界 trap，即使读取结果无人使用。保护页模式依靠实际访存触发异常。
+优化器可以删除或缩窄访问，因此原本越界的 Wasm 访存可能正常完成。需要严格保留越界
+trap 时，使用 `--memory-checks software`。
+
 保护页模式会安装进程级 SIGSEGV/SIGBUS 处理器。原生代码通过 C 陷阱边界返回，
 解释器保护页要求 Rust 构建支持 unwind。RV64 在写入前探测最后一个字节，
 避免非对齐越界写入先修改部分内存。交叉编译对象时也可显式选择 guarded，

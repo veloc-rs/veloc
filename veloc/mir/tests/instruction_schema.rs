@@ -141,9 +141,9 @@ fn generated_memory_builders_preserve_field_order() {
 
     // Both operands are pointers: reversing them would still pass type validation.
     builder.ins().store(ptr, value, 16, flags);
-    let loaded = builder.ins().load_notrap(ptr, 16, flags, Type::PTR);
+    let loaded = builder.ins().load(ptr, 16, flags, Type::PTR);
     let stride = builder.ins().i32const(4);
-    let lanes = builder.ins().load_stride_notrap(
+    let lanes = builder.ins().load_stride(
         ptr,
         stride,
         VectorMemOptions {
@@ -171,13 +171,13 @@ fn generated_memory_builders_preserve_field_order() {
     assert!(matches!(
         dfg.inst(dfg.value_inst(loaded).unwrap()),
         InstView::Load { ptr: actual_ptr, offset: 16, flags: actual_flags }
-            if (actual_ptr, actual_flags) == (ptr, flags.with_notrap(true))
+            if (actual_ptr, actual_flags) == (ptr, flags)
     ));
     for value in [loaded, lanes] {
         let view = dfg.inst(dfg.value_inst(value).unwrap());
-        assert!(view.is_notrap());
-        assert!(!view.may_trap(module.decls()));
-        assert_eq!(view.memory_flags(), Some(flags.with_notrap(true)));
+        assert!(view.has_volatile_access());
+        assert!(view.may_trap(module.decls()));
+        assert_eq!(view.memory_flags(), Some(flags));
     }
     assert_eq!(dfg.value_type(loaded), Type::PTR);
 }
@@ -327,7 +327,7 @@ fn vector_constant_construction_defers_data_checks_to_validation() {
 }
 
 #[test]
-fn roundtrip_preserves_notrap_on_declarations_and_calls() {
+fn direct_calls_inherit_notrap_after_roundtrip() {
     let mut builder = ModuleBuilder::new();
     let sig = builder.make_signature(vec![], vec![], CallConv::Platform);
     let caller = builder.declare_function("caller".into(), sig, Linkage::Local, Default::default());
@@ -344,11 +344,9 @@ fn roundtrip_preserves_notrap_on_declarations_and_calls() {
         builder.declare_function("unknown".into(), sig, Linkage::Import, Default::default());
     let mut body = builder.define(caller);
     let inherited = body.ins().call(trusted, &[]);
-    let explicit = body.ins().call_notrap(unknown, &[]);
     let plain = body.ins().call(unknown, &[]);
     let ptr = body.ins().func_addr(trusted);
     let indirect = body.ins().call_indirect(sig, ptr, &[]);
-    let safe_indirect = body.ins().call_indirect_notrap(sig, ptr, &[]);
     body.ins().tail_call(trusted, &[]);
     let module = builder.build();
     module.validate().unwrap();
@@ -359,9 +357,7 @@ fn roundtrip_preserves_notrap_on_declarations_and_calls() {
     let dfg = body.dfg();
     let decls = module.decls();
     let tail = body.layout().last_inst(body.entry_block()).unwrap();
-    assert!(!dfg.inst(inherited).is_notrap());
-    assert!(!dfg.inst(tail).is_notrap());
-    for inst in [inherited, tail, explicit, safe_indirect] {
+    for inst in [inherited, tail] {
         let view = dfg.inst(inst);
         assert!(!view.may_trap(decls));
         assert!(!view.can_erase(decls));

@@ -37,7 +37,7 @@ pub(super) fn narrow_stores(f: &mut FuncBody, decls: &FuncDecls, insts: &[Inst])
         else {
             continue;
         };
-        if flags.is_volatile() || store_view.may_trap(decls) {
+        if flags.is_volatile() {
             continue;
         }
         let width = width_mask(f, value);
@@ -92,7 +92,7 @@ pub(super) fn narrow_stores(f: &mut FuncBody, decls: &FuncDecls, insts: &[Inst])
             else {
                 continue;
             };
-            if p != ptr || o != offset || read_flags.is_volatile() || load_view.may_trap(decls) {
+            if p != ptr || o != offset || read_flags.is_volatile() {
                 continue;
             }
             // An intervening write could have changed an omitted byte. The
@@ -121,7 +121,7 @@ pub(super) fn narrow_stores(f: &mut FuncBody, decls: &FuncDecls, insts: &[Inst])
                 low < width && mask & width == high && fact(f, &facts, updated).zero & high == high
             });
             let Some(ty) = narrow else { continue };
-            let replacement = extract_load(f, decls, updated, ty).unwrap_or_else(|| {
+            let replacement = extract_load(f, updated, ty).unwrap_or_else(|| {
                 if f.dfg().value_type(updated) == ty {
                     return updated;
                 }
@@ -141,7 +141,7 @@ pub(super) fn narrow_stores(f: &mut FuncBody, decls: &FuncDecls, insts: &[Inst])
 
 /// Reading an aligned byte slice at the original load's position avoids a
 /// wider read followed by shifts. Other users retain the original read.
-fn extract_load(f: &mut FuncBody, decls: &FuncDecls, value: Value, ty: Type) -> Option<Value> {
+fn extract_load(f: &mut FuncBody, value: Value, ty: Type) -> Option<Value> {
     let bits = ty.element_bits()?;
     let mask = u64::MAX >> (64 - bits);
     let mut value = low_bits(f, value, bits);
@@ -181,7 +181,7 @@ fn extract_load(f: &mut FuncBody, decls: &FuncDecls, value: Value, ty: Type) -> 
     let InstView::Load { ptr, offset, flags } = view else {
         return None;
     };
-    if flags.is_volatile() || view.may_trap(decls) {
+    if flags.is_volatile() {
         return None;
     }
     let offset = offset.checked_add(amount / 8)?;

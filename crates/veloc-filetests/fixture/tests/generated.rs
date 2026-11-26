@@ -427,7 +427,6 @@ fn rust_flag_sets_are_used_by_generated_metadata() {
     const EFFECT: MemoryEffect = Opcode::EffectSet.spec().memory_effect();
     assert_eq!(EFFECT, MemoryEffect::READ.union(MemoryEffect::WRITE));
     assert_eq!(EFFECT.to_string(), "READ | WRITE");
-    assert_eq!(OpTraits::MAY_TRAP.to_string(), "MAY_TRAP");
     assert_eq!(MemoryEffect::empty().to_string(), "");
     assert!(MemoryEffect::from_bits(0x80).is_none());
     let unknown = MemoryEffect::from_bits_retain(0x80);
@@ -825,7 +824,7 @@ fn generated_evaluators_execute_compositions_properties_and_traps() {
     }
     assert!(!Opcode::Composed.spec().is_commutative());
     assert!(!Opcode::Composed.spec().is_associative());
-    assert!(Opcode::Trapping.spec().may_trap());
+    assert!(Opcode::Trapping.may_trap());
     let spec = offline::SPECS
         .iter()
         .find(|spec| spec.opcode == Opcode::Trapping)

@@ -4,7 +4,7 @@ mod offline {
 }
 use veloc_mir::constant::ScalarConst;
 use veloc_mir::{IntCC, Opcode, Type};
-use veloc_semantics::{Outcome, Sort, Trap, Value};
+use veloc_semantics::{Outcome, Sort, Value};
 
 // Exercise the generated folder through real MIR, while keeping the offline
 // interpreter's data-oriented samples convenient to construct.
@@ -71,7 +71,7 @@ fn offline_table_matches_runtime_metadata_without_duplicate_opcodes() {
 }
 
 #[test]
-fn division_guards_and_remainder_cover_all_integer_widths() {
+fn defined_division_and_remainder_cover_all_integer_widths() {
     for bits in [8, 16, 32, 64] {
         let sort = Sort::bv(bits).unwrap();
         let min = -(1i128 << (bits - 1));
@@ -79,24 +79,22 @@ fn division_guards_and_remainder_cover_all_integer_widths() {
         let mask = (1u128 << bits) - 1;
         for op in [Opcode::IDivS, Opcode::IDivU, Opcode::IRemS, Opcode::IRemU] {
             let program = program(op);
-            assert_eq!(program.primitive(), None);
             let function = program.instantiate(&[sort, sort], &[sort], &[]).unwrap();
             for x in [min, -7, -1, 0, 1, 7, max] {
                 for y in [min, -3, -1, 0, 1, 3, max] {
-                    let expected = if y == 0 {
-                        Outcome::Trap(Trap::DivisionByZero)
-                    } else if op == Opcode::IDivS && x == min && y == -1 {
-                        Outcome::Trap(Trap::IntegerOverflow)
-                    } else {
-                        let value = match op {
-                            Opcode::IDivS => (x / y) as u128,
-                            Opcode::IRemS => (x % y) as u128,
-                            Opcode::IDivU => (x as u128 & mask) / (y as u128 & mask),
-                            Opcode::IRemU => (x as u128 & mask) % (y as u128 & mask),
-                            _ => unreachable!(),
-                        };
-                        Outcome::Values(vec![Value::Bv(value & mask)])
+                    if y == 0
+                        || (matches!(op, Opcode::IDivS | Opcode::IRemS) && x == min && y == -1)
+                    {
+                        continue;
+                    }
+                    let value = match op {
+                        Opcode::IDivS => (x / y) as u128,
+                        Opcode::IRemS => (x % y) as u128,
+                        Opcode::IDivU => (x as u128 & mask) / (y as u128 & mask),
+                        Opcode::IRemU => (x as u128 & mask) % (y as u128 & mask),
+                        _ => unreachable!(),
                     };
+                    let expected = Outcome::Values(vec![Value::Bv(value & mask)]);
                     assert_eq!(
                         function
                             .execute(&[Value::Bv(x as u128), Value::Bv(y as u128)])
@@ -153,12 +151,6 @@ fn shifts_rotations_counts_and_eqz_fold_from_definitions() {
                 Some(ScalarConst::from(x == 0))
             );
         }
-        assert_eq!(constant(min).binary_op(constant(-1), Opcode::IDivS), None);
-        assert_eq!(
-            constant(min).binary_op(constant(-1), Opcode::IRemS),
-            Some(constant(0))
-        );
-        assert_eq!(constant(1).binary_op(constant(0), Opcode::IDivU), None);
     }
 }
 

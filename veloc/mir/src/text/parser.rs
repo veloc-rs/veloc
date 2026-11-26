@@ -690,29 +690,18 @@ fn parse_typed_name<'a>(input: &mut Cursor<'a>, module: &mut Module) -> ParseRes
     Ok(TypedName { name, ty, location })
 }
 
-fn parse_instruction_header(input: &mut Cursor<'_>) -> ParseResult<(Opcode, MemFlags)> {
+fn parse_instruction_header(input: &mut Cursor<'_>) -> ParseResult<(Opcode, Option<MemFlags>)> {
     let location = input.location();
     let (opcode, suffix) = input.atom(parse_opcode)?;
-    if opcode.allows_notrap_modifier() && !accepts_memory_flags(opcode) {
-        return match suffix {
-            "" => Ok((opcode, MemFlags::empty())),
-            ".notrap" => Ok((opcode, MemFlags::empty().with_notrap(true))),
-            _ => Err(location.error("only .notrap is supported by this operation")),
-        };
-    }
+    let Some(suffix) = suffix.strip_prefix('.') else {
+        return Ok((opcode, None));
+    };
     let mut flags = MemFlags::new();
-    for part in suffix.strip_prefix('.').unwrap_or(suffix).split('.') {
+    for part in suffix.split('.') {
         if part.is_empty() {
-            if !suffix.is_empty() {
-                return Err(location.error("empty opcode suffix"));
-            }
+            return Err(location.error("empty opcode suffix"));
         } else if part == "volatile" {
             flags = flags.with_volatile(true);
-        } else if part == "notrap" {
-            if !opcode.allows_notrap_modifier() {
-                return Err(location.error("flags are not supported by this operation"));
-            }
-            flags = flags.with_notrap(true);
         } else if let Some(value) = part.strip_prefix("align") {
             flags = flags.with_alignment(parse_alignment(value, part, location)?);
         } else if let Some(value) = part.strip_prefix("region") {
@@ -724,7 +713,7 @@ fn parse_instruction_header(input: &mut Cursor<'_>) -> ParseResult<(Opcode, MemF
             return Err(location.error(format!("unknown opcode suffix `{part}`")));
         }
     }
-    Ok((opcode, flags))
+    Ok((opcode, Some(flags)))
 }
 
 fn parse_alignment(value: &str, suffix: &str, location: Location) -> ParseResult<u32> {
@@ -1246,14 +1235,14 @@ block0():
             for text in ["later()", "later() : () ->"] {
                 let mut input = Cursor::new(text);
                 assert!(
-                    cx.parse(Opcode::Call, MemFlags::empty(), &mut input, None)
+                    cx.parse(Opcode::Call, MemFlags::empty(), false, &mut input, None)
                         .is_err()
                 );
                 assert!(cx.module.decls.is_empty());
                 assert!(cx.functions.entries.is_empty());
             }
             let mut input = Cursor::new("later() : () -> i32");
-            cx.parse(Opcode::Call, MemFlags::empty(), &mut input, None)
+            cx.parse(Opcode::Call, MemFlags::empty(), false, &mut input, None)
                 .unwrap();
             assert!(cx.module.decls.is_empty());
             let function = &cx.functions.entries[FuncId(0)];

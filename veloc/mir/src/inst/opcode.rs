@@ -29,17 +29,36 @@ mod type_rules {
     include!(concat!(env!("OUT_DIR"), "/type_rules.rs"));
 }
 
-impl OpSpec {
-    pub const fn is_pure(&self) -> bool {
-        self.memory_effect().is_none() && !self.is_terminator() && !self.may_trap()
+impl Opcode {
+    /// Moving an operation with input preconditions onto a new path requires a proof.
+    pub const fn can_speculate(self) -> bool {
+        self.is_pure()
+            && !matches!(
+                self,
+                Self::IDivS
+                    | Self::IDivU
+                    | Self::IRemS
+                    | Self::IRemU
+                    | Self::FloatToIntS
+                    | Self::FloatToIntU
+                    | Self::InsertElement
+                    | Self::ExtractElement
+            )
+    }
+    pub const fn is_pure(self) -> bool {
+        let spec = self.spec();
+        spec.memory_effect().is_none() && !spec.is_terminator() && !self.may_trap()
     }
 
+    pub const fn has_side_effects(self) -> bool {
+        let spec = self.spec();
+        spec.is_terminator() || self.may_trap() || spec.memory_effect().may_write()
+    }
+}
+
+impl OpSpec {
     pub const fn is_terminator(&self) -> bool {
         self.traits().contains(OpTraits::TERMINATOR)
-    }
-
-    pub const fn has_side_effects(&self) -> bool {
-        self.is_terminator() || self.may_trap() || self.memory_effect().may_write()
     }
 
     pub const fn is_commutative(&self) -> bool {
@@ -54,9 +73,6 @@ impl OpSpec {
         self.traits().contains(OpTraits::IDEMPOTENT)
     }
 
-    pub const fn may_trap(&self) -> bool {
-        self.traits().contains(OpTraits::MAY_TRAP)
-    }
 }
 
 #[cfg(test)]
@@ -82,12 +98,11 @@ mod tests {
 
     #[test]
     fn control_and_arithmetic_traits_are_declarative() {
-        const ADD: &super::OpSpec = Opcode::IAdd.spec();
-        const _: () = assert!(ADD.is_pure() && ADD.is_commutative());
+        const _: () = assert!(Opcode::IAdd.is_pure() && Opcode::IAdd.spec().is_commutative());
         assert!(Opcode::Return.spec().is_terminator());
-        assert!(Opcode::Store.spec().has_side_effects());
+        assert!(Opcode::Store.has_side_effects());
         assert!(Opcode::IAdd.spec().is_commutative());
-        assert!(Opcode::IAdd.spec().is_pure());
+        assert!(Opcode::IAdd.is_pure());
     }
 
     #[test]
@@ -222,12 +237,11 @@ mod tests {
 
         let traits = OpTraits::TERMINATOR
             .union(OpTraits::COMMUTATIVE)
-            .union(OpTraits::MAY_TRAP)
             .union(OpTraits::ASSOCIATIVE)
             .union(OpTraits::IDEMPOTENT);
         assert_eq!(
             traits.to_string(),
-            "TERMINATOR | COMMUTATIVE | ASSOCIATIVE | IDEMPOTENT | MAY_TRAP"
+            "TERMINATOR | COMMUTATIVE | ASSOCIATIVE | IDEMPOTENT"
         );
         assert_eq!(OpTraits::empty().to_string(), "");
     }

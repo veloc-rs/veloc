@@ -14,7 +14,7 @@ fn operations(defs: &Definitions) -> Vec<&crate::model::Op> {
                     .expression
                     .as_ref()
                     .is_some_and(|sig| sig.results.len() == 1)
-                    && !op.traits.contains("MAY_TRAP")
+                    && !op.may_trap()
                     && op
                         .constraints
                         .iter()
@@ -29,7 +29,7 @@ fn operations(defs: &Definitions) -> Vec<&crate::model::Op> {
 
 pub(in crate::rules) fn emit_attributes(defs: &Definitions) -> String {
     let mut code = String::from(
-        "#[allow(unused_variables)]\npub(crate) fn validate_fields(fields: &veloc_mir::InstFields, args: &[Type], results: &[Type]) -> Option<()> {\nlet opcode = fields.opcode();\nopcode.validate_types(args, results).ok()?;\nif !opcode.spec().is_pure() || opcode.transfers_ownership() { return None; }\nmatch opcode {\n",
+        "#[allow(unused_variables)]\npub(crate) fn validate_fields(fields: &veloc_mir::InstFields, args: &[Type], results: &[Type]) -> Option<()> {\nlet opcode = fields.opcode();\nopcode.validate_types(args, results).ok()?;\nif !opcode.can_speculate() || opcode.transfers_ownership() { return None; }\nmatch opcode {\n",
     );
     for op in operations(defs) {
         let props: BTreeMap<_, _> = op

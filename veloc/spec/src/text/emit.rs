@@ -35,10 +35,14 @@ pub(super) fn parse(
     rust: &RustTypes,
 ) -> String {
     let mut out = String::new();
+    let (flags, has_flags) = match host {
+        Host::Packed(_) => ("flags.unwrap_or_default()", "flags.is_some()"),
+        Host::Operands(_) => ("flags", "flags != crate::MemFlags::empty()"),
+    };
     if let Some(path) = &schema.flags {
-        writeln!(out, "let {} = flags;", leaf(op, path)).unwrap();
-    } else if !canonical.allows_notrap {
-        out.push_str("if flags != crate::MemFlags::empty() { return Err(input.error(\"memory flags are not supported by this operation\")); }\n");
+        writeln!(out, "let {} = {flags};", leaf(op, path)).unwrap();
+    } else {
+        writeln!(out, "if {has_flags} {{ return Err(input.error(\"memory flags are not supported by this operation\")); }}").unwrap();
     }
     let variadic = match schema.args.as_slice() {
         [Item::Atom(atom)] if matches!(atom.kind, AtomKind::Values) => Some(atom),
@@ -156,13 +160,7 @@ pub(super) fn parse(
     let construction = match host {
         Host::Packed(format) => format!(
             "self.func.edit().create_inst({})",
-            crate::generate::packing::constructor(
-                op,
-                format,
-                &canonical.name,
-                parameter,
-                (canonical.allows_notrap && schema.flags.is_none()).then_some("flags.is_notrap()")
-            )
+            crate::generate::packing::constructor(op, format, &canonical.name, parameter)
         ),
         Host::Operands(storage) => storage
             .construction(op, "self", |name| {
@@ -371,13 +369,7 @@ pub(super) fn print(
         .flags
         .as_ref()
         .map(|p| local(op, p))
-        .unwrap_or_else(|| {
-            if canonical.allows_notrap {
-                "crate::MemFlags::empty().with_notrap(data.is_notrap())".into()
-            } else {
-                "crate::MemFlags::empty()".into()
-            }
-        });
+        .unwrap_or_else(|| "crate::MemFlags::empty()".into());
     writeln!(out, "self.fmt_head(f, {:?}, {flags})?;", canonical.mnemonic).unwrap();
     if !schema.args.is_empty() || !schema.named.is_empty() {
         out.push_str("let mut _separator = \" \";\n");

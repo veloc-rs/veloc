@@ -1368,7 +1368,6 @@ impl<'a> Compiler<'a> {
         let site = self.lower_callable(inst, idata);
 
         // Callable runtime operations and ordinary calls keep the same live roots.
-        // This is an execution requirement, independent of MAY_TRAP metadata.
         if !self.callable_values.is_empty() && (site.is_some() || idata.opcode().has_signature()) {
             let pc = self.liveness.inst_pcs[inst];
             let roots = self

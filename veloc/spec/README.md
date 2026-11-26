@@ -495,8 +495,7 @@ Callable operations use ordinary signatures, `move` parameters, `verify`
 predicates and explicit effects. Direct calls declare `traps = callee(func_id);`
 and indirect calls declare `traps = possible;`. Tail calls also declare `control = terminator;`. Backends lower instruction views directly.
 The interpreter's callable lowering returns executable `ControlSite` data and
-records live roots at those operations and ordinary calls. Root recording is
-a runtime requirement, not a consequence of `MAY_TRAP`. Native lowering retains
+records live roots at those operations and ordinary calls. Native lowering retains
 callable type guards and explicitly rejects unsupported tail-call instructions.
 Global signature/ownership dataflow remains a shared validator algorithm. The
 `Callable` type pattern and `apply(callee, args)` text projection require no
@@ -663,20 +662,18 @@ traits and memory types. MIR stores it in each static `OpSpec`. LIR exposes
 its static table through `GenericOpcode::meta()`.
 
 A packed operation that ends its block declares `control = terminator;`.
-An aborting exit declares `control = abort;`, which also makes it a terminator.
-Only these two declarations mark a packed opcode as a terminator. The
-`traps` declaration describes trap behavior independently.
-Operand-storage dialects declare the effect of each terminating flow variant
-once in the storage definition:
+An aborting exit declares `control = abort;`, which makes it a terminator that
+always traps. A call can return to the next instruction and may trap.
+Operand-storage dialects describe these behaviors once in the storage definition.
 
 ```text
 control = ControlFlow::Next;
-control_effects = { Jump: terminator, Return: terminator, Trap: abort };
+control_effects = { Jump: terminator, Return: terminator, Call: call, Trap: abort };
 ```
 
 Each operation selects a variant with `flow`. Omitted variants in the map
-allow execution to continue. The generator uses this map for opcode traits
-and the flow enum's `may_continue()` query.
+allow execution to continue. The generator uses this map for opcode traits,
+the opcode's `may_trap()` query and the flow enum's `may_continue()` query.
 
 A dialect can select its own metadata type with `meta = StructName { ... };`
 on each operation. Fields matching the bound analysis types receive the
@@ -723,7 +720,6 @@ op ExtendU<T: Integer | Type::BOOL | vectors(Type::BOOL), U: Integer>(arg: Value
 }
 
 op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
-    traps = possible;
     memory = read;
     mnemonic = "load";
     storage = Load { ptr, offset, flags };
@@ -1226,7 +1222,6 @@ storage layout:
 
 ```text
 op Store(ptr: Value<Type::PTR>, value: Value<Any>, offset: u32, flags: MemFlags) -> () {
-    traps = possible;
     memory = write;
     mnemonic = "store";
     storage = Store { ptr, value, offset, flags };
@@ -1389,28 +1384,17 @@ Zero extension explicitly converts Bool to a zero-or-one bitvector.
 
 An operation declares `traps = possible;` when it may trap. Direct calls use
 `traps = callee(func_id);` so the instruction query can consult the function
-declaration. An opcode with neither declaration nor a trap trait is trap-free.
-Packed instructions with possible, callee-dependent, or explicitly guarded traps
-accept a site-specific guarantee via the `.notrap` suffix or their typed builder.
-An instruction that traps whenever executed declares `traps = always;` and
-rejects `.notrap`.
+declaration. The generator derives `Opcode::may_trap()` from these declarations
+and the control effect. Ordinary operations default to trap-free.
+An instruction that traps whenever executed declares `traps = always;`.
+A function declaration can guarantee `notrap` for all direct calls to that function.
+Indirect calls are treated as potentially trapping.
 
-Scalar constant folding is enabled explicitly in the optimizer rules. A fold
-uses the operation's normal-result semantics and supplies any required trap
-guards, for example:
-
-```text
-fold IAdd;
-fold IRemS {
-    traps = [DivisionByZero(bv.eq(rhs, bv.zero()))];
-}
-```
-
-A trapping fold requires precise guards. The first true guard identifies the
-trap and folding leaves the instruction in place. The same guards appear in the
-optimizer's offline semantic table. Definition modules can also supply precise
-guards directly. A standalone evaluator or offline table omits operations whose
-trap conditions are unspecified.
+The optimizer derives scalar constant folds from each operation's `semantics`.
+For a potentially trapping operation, the definition must also supply precise
+trap guards to enable constant evaluation. When a guard holds for the given
+operands, folding leaves the instruction in place. The standalone evaluator and
+offline semantic table use the same trap guards.
 
 Raw `bv.sdiv/udiv/srem/urem` use total SMT-LIB semantics. Signed remainder of
 MIN and -1 is zero, not an overflow trap. Raw `bv.shl/lshr/ashr` do not mask
@@ -1425,8 +1409,8 @@ The same signature enumeration drives `evaluation.rs`: only legal scalar types
 representable by MIR `Constant` are emitted, including legal conversion pairs.
 Widths, step references, masks and output layouts become Rust literals and local
 variables. Comparison properties remain parameters, avoiding a predicate/width
-Cartesian expansion. Selected optimizer folds use the same generator to emit specialized Rust
-code directly into the local folder. Exact
+Cartesian expansion. The same generator emits specialized Rust code directly
+into the local folder. Exact
 signature dispatch also rejects unsupported calls without a second full type
 contract check. Multiple results become constant definitions while preserving
 SSA value IDs and use-def information.

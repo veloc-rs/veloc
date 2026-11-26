@@ -58,19 +58,23 @@ block1(x: i32):
 
 ## Trap guarantees
 
-The `.notrap` suffix guarantees that executing the instruction at its current
-location with its current operands cannot trigger a MIR trap. A frontend that
-emits the suffix must establish this for every execution that reaches the site.
-For example, a dominating nonzero check suffices for `idiv-u.notrap`.
-Signed division also needs to exclude the signed minimum divided by −1.
-Speculation above the check requires a proof at the new location.
+Integer division and remainder require a nonzero divisor. Signed division and
+remainder additionally require operands other than the signed minimum and −1
+as a pair. For `float-to-int-s` and `float-to-int-u`, every input lane must be
+finite and its value after truncation toward zero must fit in the destination
+integer range. For `extractelement` and `insertelement`, the unsigned index
+must be less than the vector's runtime lane count. Ordinary loads and stores
+require valid memory for the full width of each active access. Violating these
+preconditions is undefined behavior. The optimizer may erase unused divisions,
+remainders, conversions, vector insertions and extractions, and ordinary loads.
+Moving them onto a new path requires proving their preconditions there.
+Frontends that require observable traps must emit explicit checks.
 
-Integer division, remainder, calls and memory accesses accept this suffix.
-A declaration such as `import function f(i32) -> i32 notrap` guarantees this
-for every direct call with valid arguments. A call can still write memory or
-run indefinitely. `view.may_trap(module.decls())` considers the opcode and
-the instruction's site guarantee. For `call` and `tail-call`, the callee's
-declaration can also supply the guarantee. Indirect calls require a site guarantee.
+A declaration such as `import function f(i32) -> i32 notrap` guarantees that
+direct calls and direct tail calls to `f` with valid arguments cannot trap.
+The function may still write memory or run indefinitely.
+`view.may_trap(module.decls())` consults the callee declaration for direct calls.
+It treats indirect calls, `closure-drop` and volatile memory accesses as potentially trapping.
 
 The function attribute `nofree` guarantees that allocations live at entry stay
 live throughout the call, including nested calls. For example,

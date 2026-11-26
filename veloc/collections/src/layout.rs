@@ -5,6 +5,7 @@
 //! queryable. Iteration borrows the layout, so mutating passes use stable anchors
 //! or explicitly collect a snapshot when they need one.
 use alloc::sync::Arc;
+use core::borrow::Borrow;
 use cranelift_entity::{
     EntityRef, SecondaryMap,
     packed_option::{PackedOption, ReservedValue},
@@ -111,9 +112,9 @@ impl<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValue> EntityLa
             stamp: 0,
         }
     }
-    pub fn remove_insts(&mut self, insts: &[Inst]) {
-        for &inst in insts {
-            self.detach_inst(inst);
+    pub fn remove_insts(&mut self, insts: impl IntoIterator<Item = impl Borrow<Inst>>) {
+        for inst in insts {
+            self.detach_inst(*inst.borrow());
         }
     }
 

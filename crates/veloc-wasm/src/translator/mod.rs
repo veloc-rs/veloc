@@ -195,7 +195,7 @@ impl<'a> WasmTranslator<'a> {
                 let ptr = self.builder.ins().load(
                     vmctx,
                     offset,
-                    MemFlags::new().with_notrap(true).with_alignment(alignment),
+                    MemFlags::new().with_alignment(alignment),
                     VelocType::PTR,
                 );
                 if self.use_names {

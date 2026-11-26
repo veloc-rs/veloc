@@ -11,7 +11,6 @@ pub mod licm;
 pub mod load_cse;
 pub mod loop_memory;
 pub mod memory;
-pub mod memory_validity;
 pub mod params;
 pub mod partial_inline;
 pub mod predicates;

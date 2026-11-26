@@ -24,19 +24,6 @@ pub(crate) fn mnemonic(name: &str) -> String {
     text
 }
 
-/// A site guarantee is meaningful only when the instruction can avoid trapping.
-pub(crate) fn allows_notrap(record: &Decl) -> bool {
-    record
-        .fields
-        .get("traps")
-        .is_some_and(|node| match &node.kind {
-            Kind::Name(name) => name == "possible",
-            Kind::Call(name, _) => name == "callee",
-            Kind::List(guards) => !guards.is_empty(),
-            _ => false,
-        })
-}
-
 pub(super) fn parse(
     source: &str,
     record: Decl,
@@ -55,8 +42,6 @@ pub(super) fn parse(
         type_bindings,
     } = signature(source, record.offset, sig.clone(), vocabulary)?;
     let declaration = sig.clone();
-    let allows_notrap =
-        matches!(storage_defs.strategy, storage::Strategy::Packed) && allows_notrap(&record);
     let mut fields = Fields::new(source, record);
     let mnemonic = match fields.optional("mnemonic") {
         Some(Node {
@@ -132,9 +117,9 @@ pub(super) fn parse(
     }
     let mut meta = crate::model::metadata::Pending::new(source, fields.offset, meta_node, data)?;
     let mut traits = BTreeSet::new();
-    if let Some(control) = control {
+    if control.is_some_and(Control::is_terminator) {
         traits.insert("TERMINATOR".into());
-        if control == Control::Abort {
+        if control == Some(Control::Abort) {
             traits.insert("ABORT".into());
         }
     }
@@ -166,30 +151,23 @@ pub(super) fn parse(
         }
         meta.set_memory(source, node, data)?;
     }
-    let mut trap_callee = None;
-    if let Some(node) = fields.optional("traps") {
-        let may_trap = match &node.kind {
-            Kind::Name(name) if name == "possible" => true,
-            Kind::Name(name) if name == "always" => {
-                if semantics.is_some() {
-                    return Err(Error::at(
-                        source,
-                        node.offset,
-                        "an always-trapping operation cannot declare normal-result semantics",
-                    ));
-                }
-                true
-            }
+    let traps = if let Some(node) = fields.optional("traps") {
+        match &node.kind {
+            Kind::Name(name) if name == "possible" => Traps::Possible,
+            Kind::Name(name) if name == "always" => Traps::Always,
             Kind::Call(kind, _) if kind == "callee" => {
-                trap_callee = Some(callee(source, &node, &params, &projection)?);
-                true
+                Traps::Callee(callee(source, &node, &params, &projection)?)
             }
             Kind::List(_) => {
                 let sem = semantics
                     .as_mut()
                     .ok_or_else(|| fields.error("trap guards require executable semantics"))?;
                 crate::semantic::traps(source, node, &params, sem)?;
-                !sem.traps.is_empty()
+                if sem.traps.is_empty() {
+                    Traps::Never
+                } else {
+                    Traps::Possible
+                }
             }
             _ => {
                 return Err(Error::at(
@@ -198,13 +176,24 @@ pub(super) fn parse(
                     "expected possible, always, callee(parameter) or trap guards",
                 ));
             }
-        };
-        if may_trap {
-            traits.insert("MAY_TRAP".into());
         }
+    } else {
+        match control {
+            Some(Control::Call) => Traps::Possible,
+            Some(Control::Abort) => Traps::Always,
+            _ => Traps::Never,
+        }
+    };
+    if control == Some(Control::Abort) && !matches!(traps, Traps::Always) {
+        return Err(fields.error("abort control always traps"));
+    }
+    if matches!(traps, Traps::Always) && semantics.is_some() {
+        return Err(
+            fields.error("an always-trapping operation cannot declare normal-result semantics")
+        );
     }
     if let Some(semantics) = &semantics
-        && (!traits.contains("MAY_TRAP") || !semantics.traps.is_empty())
+        && (matches!(traps, Traps::Never) || !semantics.traps.is_empty())
     {
         crate::semantic::derive(
             source,
@@ -225,8 +214,7 @@ pub(super) fn parse(
         semantics.is_some(),
     )?;
     let mut op = Op {
-        allows_notrap,
-        trap_callee,
+        traps,
         memory_callee,
         declaration,
         offset: fields.offset,

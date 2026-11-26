@@ -42,7 +42,7 @@ storage Operands {
         { fields: [StackSlot, MemFlags], value: payload::StackMemory { slot: field0, flags: field1 } },
     ];
     control = ControlFlow::Next;
-    control_effects = { Jump: terminator, Return: terminator, Trap: abort };
+    control_effects = { Jump: terminator, Return: terminator, Call: call, Trap: abort };
 }
 
 struct UnaryReg {
@@ -183,22 +183,18 @@ op Mul<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
 }
 
 op Sdiv<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
-    traps = possible;
     storage = BinaryReg { dst, lhs, rhs };
 }
 
 op Udiv<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
-    traps = possible;
     storage = BinaryReg { dst, lhs, rhs };
 }
 
 op Srem<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
-    traps = possible;
     storage = BinaryReg { dst, lhs, rhs };
 }
 
 op Urem<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
-    traps = possible;
     storage = BinaryReg { dst, lhs, rhs };
 }
 
@@ -434,12 +430,10 @@ op Sext<T: Integer, U: Integer>(src: Value<U>) -> (dst: Value<T>) {
 }
 
 op Fptosi<T: Integer, U: Float>(src: Value<U>) -> (dst: Value<T>) {
-    traps = possible;
     storage = UnaryReg { dst, src };
 }
 
 op Fptoui<T: Integer, U: Float>(src: Value<U>) -> (dst: Value<T>) {
-    traps = possible;
     storage = UnaryReg { dst, src };
 }
 
@@ -492,14 +486,12 @@ op Ret(values: sequence(Value)) -> () {
 }
 
 op Call(callee: SymbolId, args: sequence(Value), info: CallInfo) -> signature {
-    traps = possible;
     memory = all;
     storage = Call { results: results(), callee, args, info };
     flow = Call;
 }
 
 op Callind(callee: Value<Type::PTR>, args: sequence(Value), info: CallInfo) -> signature {
-    traps = possible;
     memory = all;
     storage = CallIndirect { results: results(), callee, args, info };
     flow = Call;
@@ -514,7 +506,6 @@ op Copy<T: Any>(src: Value<T>) -> (dst: Value<T>) {
 }
 
 op Trap() -> () {
-    traps = always;
     storage = Trap {};
     flow = Trap;
 }

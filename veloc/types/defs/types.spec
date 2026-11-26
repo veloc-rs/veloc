@@ -54,7 +54,6 @@ type OpTraits = rust("veloc_types::OpTraits") {
     const COMMUTATIVE: Self;
     const ASSOCIATIVE: Self;
     const IDEMPOTENT: Self;
-    const MAY_TRAP: Self;
     const ABORT: Self;
     const fn empty() -> Self;
     const fn union(self, other: Self) -> Self;

@@ -107,9 +107,10 @@ impl<'a> InstRef<'a> {
         let meta = opcode.meta();
         opcode.control() == crate::ControlFlow::Next
             && meta.memory.is_none()
+            && !opcode.may_trap()
             && !meta
                 .traits
-                .intersects(OpTraits::MAY_TRAP | OpTraits::ABORT | OpTraits::TERMINATOR)
+                .intersects(OpTraits::ABORT | OpTraits::TERMINATOR)
             && self.mem_flags().is_none()
             && self.clobbers().next().is_none()
             && !self.results().is_empty()

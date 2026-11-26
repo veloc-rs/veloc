@@ -323,7 +323,7 @@ impl<'a> Checker<'a> {
             .as_ref()
             .is_some_and(|sig| sig.results.len() == 1)
             || !model.meta.memory_free
-            || model.traits.contains("MAY_TRAP")
+            || model.may_trap()
             || model.declaration.params.iter().any(|param| param.moves)
             || model
                 .constraints

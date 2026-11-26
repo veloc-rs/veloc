@@ -1,17 +1,22 @@
-//! Block-local forwarding and dead-store elimination for fixed-width memory accesses.
+//! Block-local forwarding and elimination of redundant loads and stores.
 use crate::{FunctionPass, OptConfig, PassOutcome, Profile};
 use hashbrown::HashSet;
+use std::collections::VecDeque;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{FuncBody, FuncDecls, Inst, InstView, Opcode, Type, Value, memory::Access};
 use veloc_types::DataLayout;
 
-const MAX_CELLS: usize = 64;
+const MAX_ACCESSES: usize = 64;
 
 pub struct MemoryPass;
 
 impl FunctionPass for MemoryPass {
     fn name(&self) -> &'static str {
         "MemoryPass"
+    }
+
+    fn reuse_key(&self) -> Option<core::any::TypeId> {
+        Some(core::any::TypeId::of::<Self>())
     }
 
     fn run(
@@ -80,11 +85,10 @@ pub fn run_memory(
     metrics: &Profile,
 ) -> bool {
     let private = private_slots(func);
-    let mut forwarded = false;
     let mut dead = HashSet::new();
     let mut next = func.layout().block_order().next();
     while let Some(block) = next {
-        let mut cells: Vec<Cell> = Vec::new();
+        let mut cells: VecDeque<Cell> = VecDeque::new();
         let mut cursor = func.layout().first_inst(block);
         while let Some(inst) = cursor {
             cursor = func.layout().next_inst(inst);
@@ -101,7 +105,7 @@ pub fn run_memory(
 
             let Some(access) = func.access(inst, layout) else {
                 let effect = view.memory_effect(decls);
-                if view.has_volatile_access() || effect.may_write() || view.may_free(decls) {
+                if view.has_volatile_access() || view.may_free(decls) || effect.may_write() {
                     cells.clear();
                 } else if effect.may_read()
                     || view.may_trap(decls)
@@ -116,14 +120,11 @@ pub fn run_memory(
                 continue;
             };
 
-            let may_trap = view.may_trap(decls) && !private.contains(&access.base);
-            if may_trap {
-                // A trap can expose earlier writes before a later overwrite executes.
+            if access.flags.is_volatile() {
+                // A fault can expose pending writes even to disjoint locations.
                 for cell in &mut cells {
                     cell.pending_store = None;
                 }
-            }
-            if access.flags.is_volatile() {
                 // Even a volatile read can change the addressed device register.
                 cells.retain(|cell| !func.may_alias(access, cell.access, layout));
                 continue;
@@ -142,23 +143,21 @@ pub fn run_memory(
                         }
                         false
                     });
-                    (value, (!may_trap).then_some(inst))
+                    (value, Some(inst))
                 }
                 InstView::Load { .. } => {
                     let result = func.dfg().first_result(inst).expect("load result");
                     let ty = func.dfg().value_type(result);
-                    if let Some(previous) = cells.iter().find(|cell| {
+                    let previous = cells.iter().find(|cell| {
                         cell.access.base == access.base
                             && cell.access.offset == access.offset
                             && cell.ty == ty
-                    }) {
-                        if func.dfg().uses(result).next().is_some() {
-                            func.edit().replace_all_uses(result, previous.value);
-                            forwarded = true;
-                        }
-                        if !may_trap {
-                            dead.insert(inst);
-                        }
+                    });
+                    if let Some(previous) = previous {
+                        func.edit().replace_all_uses(result, previous.value);
+                    }
+                    if func.dfg().uses(result).next().is_none() {
+                        dead.insert(inst);
                         continue;
                     }
                     // A retained read observes any overlapping store.
@@ -171,23 +170,22 @@ pub fn run_memory(
                 }
                 _ => unreachable!("access requires a load or store"),
             };
-            cells.push(Cell {
+            if cells.len() == MAX_ACCESSES {
+                cells.pop_front();
+            }
+            cells.push_back(Cell {
                 access,
                 ty: func.dfg().value_type(value),
                 value,
                 pending_store,
             });
-            if cells.len() > MAX_CELLS {
-                cells.clear();
-            }
         }
         next = func.layout().next_block(block);
     }
     if dead.is_empty() {
-        return forwarded;
+        return false;
     }
     metrics.count("memory.removed_insts", dead.len() as u64);
-    func.edit()
-        .erase_insts(&dead.into_iter().collect::<Vec<_>>());
+    func.edit().erase_insts(&dead);
     true
 }

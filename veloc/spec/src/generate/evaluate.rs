@@ -31,12 +31,10 @@ impl Plan {
     pub(crate) fn folding_bodies(
         &self,
         defs: &Definitions,
-        selected: &std::collections::BTreeSet<String>,
         types: &str,
     ) -> BTreeMap<String, String> {
         self.operations
             .iter()
-            .filter(|op| !op.cases.is_empty() && selected.contains(&defs.ops[op.opcode].name))
             .map(|op| {
                 (
                     defs.ops[op.opcode].name.clone(),
@@ -81,7 +79,9 @@ impl Plan {
                     variants,
                 });
             }
-            operations.push(Operation { opcode, cases });
+            if !cases.is_empty() {
+                operations.push(Operation { opcode, cases });
+            }
         }
         Self { operations }
     }
@@ -94,7 +94,7 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
          pub(crate) fn evaluate(fields: &veloc_mir::InstFields, args: &[ScalarConst], results: &[Type]) -> Option<smallvec::SmallVec<[ScalarConst; 2]>> {\n\
          match fields.opcode() {\n",
     );
-    for prepared in plan.operations.iter().filter(|op| !op.cases.is_empty()) {
+    for prepared in &plan.operations {
         writeln!(
             code,
             "Opcode::{} => {{\n{}\n}},",

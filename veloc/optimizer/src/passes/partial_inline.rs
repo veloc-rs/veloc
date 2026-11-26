@@ -5,8 +5,7 @@
 use crate::{ModulePass, OptConfig, PassOutcome, Profile};
 use std::collections::{HashMap, HashSet};
 use veloc_mir::{
-    Block, FuncBody, FuncDecls, FuncId, Inst, InstView, Linkage, Module, Signature, SuccessorData,
-    Value,
+    Block, FuncBody, FuncId, Inst, InstView, Linkage, Module, Signature, SuccessorData, Value,
 };
 
 pub struct PartialInlinePass;
@@ -71,17 +70,22 @@ impl ModulePass for PartialInlinePass {
     }
 }
 
-fn shape(f: &FuncBody, decls: &FuncDecls) -> Option<Shape> {
+fn shape(f: &FuncBody) -> Option<Shape> {
     let entry = f.entry_block();
     if !f.cfg().preds(entry).is_empty() {
         return None;
     }
     let insts: Vec<_> = f.layout().block_insts(entry).collect();
     let (&branch, entry_insts) = insts.split_last()?;
-    if entry_insts.len() > 8 || !entry_insts.iter().all(|&i| {
-        let view = f.dfg().inst(i);
-        view.can_speculate() || matches!(view, InstView::Load { flags, .. } if !flags.is_volatile() && !view.may_trap(decls))
-    }) { return None }
+    if entry_insts.len() > 8
+        || !entry_insts.iter().all(|&i| {
+            let view = f.dfg().inst(i);
+            view.can_speculate()
+                || matches!(view, InstView::Load { flags, .. } if !flags.is_volatile())
+        })
+    {
+        return None;
+    }
     let InstView::Br {
         then_dest,
         else_dest,
@@ -164,7 +168,7 @@ fn make_wrapper(module: &mut Module, callee: FuncId) -> Option<FuncBody> {
         return None;
     }
     let source = module.function(callee).body?;
-    let shape = shape(source, module.decls())?;
+    let shape = shape(source)?;
     let mut wrapper = source.clone();
     let mut outlined = source.clone();
     let signature = &module.signatures()[module.decls()[callee].signature];

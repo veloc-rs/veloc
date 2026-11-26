@@ -71,7 +71,7 @@ impl FunctionPass for BitsPass {
             let veloc_mir::InstView::Load { ptr, offset, flags } = view else {
                 continue;
             };
-            if flags.is_volatile() || view.may_trap(decls) {
+            if flags.is_volatile() {
                 continue;
             }
             let result = f.dfg().first_result(inst).unwrap();

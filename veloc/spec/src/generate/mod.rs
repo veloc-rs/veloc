@@ -38,6 +38,7 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
                         crate::model::metadata::record_type(&defs.ops),
                     )
                     + &storage.generate(defs)
+                    + &classification(defs, &storage.opcode, "may_trap", Op::may_trap)
                     + &crate::model::metadata::generate(&defs.ops, &storage.opcode, "")
                     + &crate::model::metadata::value_contract(&defs.ops, &storage.opcode, "")
             }
@@ -86,7 +87,10 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
                 crate::model::metadata::record_type(&defs.ops),
             ) + &defs.storage.instructions();
             instructions.push_str(&callee_projection(defs, "trap_callee", |op| {
-                op.trap_callee.as_deref()
+                match &op.traps {
+                    crate::model::Traps::Callee(name) => Some(name),
+                    _ => None,
+                }
             }));
             instructions.push_str(&callee_projection(defs, "memory_callee", |op| {
                 op.memory_callee.as_deref()
@@ -169,10 +173,8 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
                 .unwrap();
             }
             ops.push_str("            _ => None,\n        }\n    }\n}\n");
-            ops.push_str(&classification(defs, "allows_notrap_modifier", |op| {
-                op.allows_notrap
-            }));
-            ops.push_str(&classification(defs, "has_signature", |op| {
+            ops.push_str(&classification(defs, "Opcode", "may_trap", Op::may_trap));
+            ops.push_str(&classification(defs, "Opcode", "has_signature", |op| {
                 op.signature_source.is_some()
             }));
 
@@ -249,7 +251,12 @@ fn callee_projection(
 }
 
 /// Classifications depend only on declarations, never on runtime operand data.
-fn classification(defs: &Definitions, name: &str, accepts: impl Fn(&Op) -> bool) -> String {
+fn classification(
+    defs: &Definitions,
+    opcode: &str,
+    name: &str,
+    accepts: impl Fn(&Op) -> bool,
+) -> String {
     let ops = defs
         .ops
         .iter()
@@ -264,7 +271,7 @@ fn classification(defs: &Definitions, name: &str, accepts: impl Fn(&Op) -> bool)
         format!("matches!(self, {})", ops.join(" | "))
     };
     format!(
-        "impl Opcode {{\n/// Definition-derived classification; does not inspect operands.\npub const fn {name}(self) -> bool {{ {test} }}\n}}\n"
+        "impl {opcode} {{\n/// Definition-derived classification; does not inspect operands.\npub const fn {name}(self) -> bool {{ {test} }}\n}}\n"
     )
 }
 

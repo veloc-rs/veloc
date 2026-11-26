@@ -595,7 +595,7 @@ fn synthesize(module: &mut Module, t: Transform, little_endian: bool) {
                 scale: (width(ty).unwrap() / 8) as u32,
             },
         );
-        let part = cursor.load(address, 0, MemFlags::new().with_notrap(true), ty);
+        let part = cursor.load(address, 0, MemFlags::new(), ty);
         let part = if ty == Type::I64 {
             part
         } else {

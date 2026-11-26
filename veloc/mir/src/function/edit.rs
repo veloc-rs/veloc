@@ -2,6 +2,7 @@
 use super::FuncBody;
 use crate::{Block, Inst, InstWriter, SuccessorData, Type, Value};
 use alloc::vec::Vec;
+use core::borrow::Borrow;
 use smallvec::SmallVec;
 
 /// One successor occurrence, not a pair of adjacent blocks. This location is
@@ -141,7 +142,7 @@ impl<'a> FuncEditor<'a> {
             self.replace_all_uses(param, arg);
         }
         // Rebuild the CFG once both layout edits are complete.
-        self.body.dfg.remove_insts(&[last]);
+        self.body.dfg.remove_insts([last]);
         self.body.layout.detach_inst(last);
         while let Some(inst) = self.body.layout.first_inst(next) {
             self.body.layout.detach_inst(inst);
@@ -546,12 +547,15 @@ impl<'a> FuncEditor<'a> {
     }
 
     pub fn erase_inst(&mut self, inst: Inst) {
-        self.erase_insts(&[inst]);
+        self.erase_insts([inst]);
     }
 
-    pub fn erase_insts(&mut self, insts: &[Inst]) {
+    /// Erase a closed batch in any order. Each traversal must yield the same IDs.
+    /// Borrow the collection so cloning its iterator does not copy the elements.
+    pub fn erase_insts(&mut self, insts: impl IntoIterator<Item: Borrow<Inst>, IntoIter: Clone>) {
+        let insts = insts.into_iter().map(|inst| *inst.borrow());
         let mut blocks = Vec::new();
-        for &inst in insts {
+        for inst in insts.clone() {
             let block = self.body.layout.inst_block(inst).expect("instruction not placed");
             if self.body.layout.last_inst(block) == Some(inst) {
                 blocks.push(block);
@@ -559,7 +563,7 @@ impl<'a> FuncEditor<'a> {
         }
         blocks.sort_unstable();
         blocks.dedup();
-        self.body.dfg.remove_insts(insts);
+        self.body.dfg.remove_insts(insts.clone());
         self.body.layout.remove_insts(insts);
         for block in blocks {
             self.sync_edges(block);

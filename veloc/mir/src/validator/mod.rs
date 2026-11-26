@@ -90,9 +90,6 @@ impl FunctionRef<'_> {
             ));
         }
 
-        if data.is_notrap() && !opcode.allows_notrap_modifier() {
-            return self.fail(alloc::format!("{} does not support .notrap", spec.mnemonic));
-        }
         let mut operands = SmallVec::<[Type; 4]>::new();
         data.visit_type_operands(|value| {
             operands.push(body.dfg().value_type(value));

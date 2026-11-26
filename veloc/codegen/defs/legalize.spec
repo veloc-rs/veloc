@@ -177,13 +177,11 @@ fn float_to_unsigned32<T: ScalarFloat>(x: T) -> Type::I32 {
 }
 
 fn float_to_unsigned64<T: ScalarFloat>(x: T, threshold: T) -> Type::I64 {
-    // For the upper half, subtract 2^63 and restore its bit after conversion.
-    // These fallbacks retain the existing non-trapping conversion contract;
-    // strict floating-point exception behavior needs a separate legalization.
+    // Keep the signed conversion in range. Restore bit 63 for the upper half.
     let high = lir::Fcmp<Type::BOOL>(x, threshold, FloatCC::Ge);
     let reduced = lir::Fsub<T>(x, threshold);
-    let converted = lir::Fptosi<Type::I64>(reduced);
+    let adjusted = lir::Select<T>(high, reduced, x);
+    let converted = lir::Fptosi<Type::I64>(adjusted);
     let restored = lir::Xor<Type::I64>(converted, lir::Constant<Type::I64>(-9223372036854775808));
-    let direct = lir::Fptosi<Type::I64>(x);
-    lir::Select<Type::I64>(high, restored, direct)
+    lir::Select<Type::I64>(high, restored, converted)
 }

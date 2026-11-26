@@ -106,9 +106,9 @@ are not implemented by these operations.
 ## Definitions and validation
 
 `mir.spec` specifies callable operations, signatures, capture constraints, ownership
-transfers, effects and text syntax. Ordinary signatures and `verify` predicates
-describe validity; `MAY_TRAP` and `TERMINATOR` are explicit metadata rather than
-facts inferred from a separate control declaration.
+transfers, effects and text syntax. Signatures and `verify` predicates describe
+valid inputs. The `traps` and `control` declarations determine the opcode's
+trap behavior and whether it ends the block.
 The interpreter lowers instruction views directly into compiled control sites.
 It records live callable roots at those sites and ordinary calls; this execution
 requirement is independent of trap metadata. Native lowering rejects callable
@@ -157,10 +157,9 @@ grow the call stack.
 
 The interpreter's environment table is an implementation choice. Allocation
 elimination, known-target specialization, contification and native placement are
-future optimization work. Creation and ownership changes currently carry
-conservative effects and are not ordinary arithmetic CSE/DCE candidates. Removing
-an allocation requires deciding its failure and ownership semantics, as well as
-proving that captures and observable cleanup behavior are preserved.
+future optimization work. Closure creation has memory effects and produces a fresh
+identity. Allocation failure is a host resource failure. Dropping an owned closure
+executes guest cleanup, which can trap.
 
 Native code generation explicitly rejects typed callables and tail calls until
 closure/environment and calling-convention lowering exists. This work introduces

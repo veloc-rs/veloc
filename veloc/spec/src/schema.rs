@@ -345,10 +345,7 @@ impl Definitions {
             .flatten();
             // A primitive describes only the value computation. Never infer a
             // rewrite that drops a memory effect or observable control behavior.
-            let primitive = if !["MAY_TRAP", "ABORT", "TERMINATOR"]
-                .iter()
-                .any(|name| op.traits.contains(*name))
-            {
+            let primitive = if !op.may_trap() && !op.traits.contains("TERMINATOR") {
                 op.semantics.as_ref().and_then(|s| s.primitive())
             } else {
                 None

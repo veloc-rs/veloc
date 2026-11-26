@@ -1,7 +1,5 @@
 //! Generate construction data, zero-allocation views and SSA-free storage.
-use super::{
-    Access, Field, FieldType, FormatSource, Layout, NotrapStorage, OpcodeSource, value_only,
-};
+use super::{Access, Field, FieldType, FormatSource, Layout, OpcodeSource, value_only};
 use crate::model::records::{PropertyType, RecordDef};
 use std::fmt::Write;
 
@@ -203,22 +201,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         } else {
             ""
         };
-        let mut method = super::constructor_name(&layout.name);
-        if layout.notrap == NotrapStorage::Field {
-            let plain = layout
-                .logical_fields()
-                .map(parameter)
-                .collect::<Vec<_>>()
-                .join(", ");
-            let args = layout
-                .logical_fields()
-                .map(|f| f.name.as_str())
-                .chain(["false"])
-                .collect::<Vec<_>>()
-                .join(", ");
-            writeln!(out, "pub fn {method}{lifetime}(self, {plain}) -> Inst {{ self.{method}_with_notrap({args}) }}").unwrap();
-            method.push_str("_with_notrap");
-        }
+        let method = super::constructor_name(&layout.name);
         writeln!(out, "/// Construct this layout without validating its type contract.\npub fn {method}{lifetime}(self, {params}) -> Inst {{\nlet mut {values} = Arguments::new();").unwrap();
         for (i, f) in layout.fields.iter().enumerate() {
             let name = &f.name;
@@ -333,26 +316,11 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         }
         out.push_str(if fallible { "} Ok(()) }\n" } else { "} }\n" });
     }
-    let flags_expr = |layout: &Layout| match &layout.notrap {
-        NotrapStorage::MemFlags {
-            index,
-            member: Some(member),
-        } => Some(format!("_field{index}.{member}")),
-        NotrapStorage::MemFlags {
-            index,
-            member: None,
-        } => Some(format!("*_field{index}")),
-        _ => None,
+    let flags_expr = |layout: &Layout| match &layout.memory_flags {
+        Some((index, Some(member))) => Some(format!("_field{index}.{member}")),
+        Some((index, None)) => Some(format!("*_field{index}")),
+        None => None,
     };
-    out.push_str("/// The producer guarantees this instruction cannot trap at its current site.\npub fn is_notrap(&self) -> bool { match self {\n");
-    for layout in layouts {
-        if let Some(flags) = flags_expr(layout) {
-            writeln!(out, "{} => ({flags}).is_notrap(),", layout.pattern()).unwrap();
-        } else if layout.notrap == NotrapStorage::Field {
-            writeln!(out, "Self::{} {{ notrap, .. }} => *notrap,", layout.name).unwrap();
-        }
-    }
-    out.push_str("_ => false, } }\n");
     out.push_str("pub fn memory_flags(&self) -> Option<MemFlags> { match self {\n");
     for layout in layouts {
         if let Some(flags) = flags_expr(layout) {
@@ -417,21 +385,18 @@ fn from_values(out: &mut String, layouts: &[Layout]) {
     {
         let arity = layout.arity().unwrap();
         let mut index = 0;
-        let fields = layout.logical_fields().map(|f| {
-            let expr = match &f.ty {
-                FieldType::Values(n) => {
-                    let i = index;
-                    index += n;
-                    format!("values[{i}..{index}].try_into().unwrap()")
-                }
-                FieldType::Named(_) if f.policy.references.is_operand() => {
-                    let i = index;
-                    index += 1;
-                    format!("values[{i}]")
-                }
-                _ => "opcode".into(),
-            };
-            (f.name.clone(), expr)
+        let fields = layout.fields.iter().map(|f| match &f.ty {
+            FieldType::Values(n) => {
+                let i = index;
+                index += n;
+                format!("values[{i}..{index}].try_into().unwrap()")
+            }
+            FieldType::Named(_) if f.policy.references.is_operand() => {
+                let i = index;
+                index += 1;
+                format!("values[{i}]")
+            }
+            _ => "opcode".into(),
         });
         let check = if arity == 0 {
             "values.is_empty()".to_owned()
@@ -443,10 +408,7 @@ fn from_values(out: &mut String, layouts: &[Layout]) {
             "OpFormat::{} if {check} => Some(self.{}({})),",
             layout.name,
             super::constructor_name(&layout.name),
-            fields
-                .map(|(_, value)| value)
-                .collect::<Vec<_>>()
-                .join(", ")
+            fields.collect::<Vec<_>>().join(", ")
         )
         .unwrap();
     }
@@ -504,11 +466,7 @@ fn import_view(out: &mut String, layouts: &[Layout], records: &[RecordDef]) {
         writeln!(
             out,
             "assert!(reader.0.is_empty(), \"operand count mismatch\"); self.{}({args}) }},",
-            if layout.notrap == NotrapStorage::Field {
-                format!("{}_with_notrap", super::constructor_name(&layout.name))
-            } else {
-                super::constructor_name(&layout.name)
-            }
+            super::constructor_name(&layout.name)
         )
         .unwrap();
     }

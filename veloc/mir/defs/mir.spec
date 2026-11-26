@@ -8,7 +8,6 @@ import "formats.spec";
 // the resulting callable signature describes the remaining inputs and answer.
 // Allocation/ownership are effects: these operations are not arithmetic CSE/DCE.
 op ClosureNew(func_id: FuncId, move captures: sequence(Value), cleanup: FuncId) -> (result: Value<Callable>) {
-    traps = possible;
     memory = all;
     mnemonic = "closure-new";
     storage = ClosureNew { func_id, captures, cleanup };
@@ -30,7 +29,6 @@ op ClosureNew(func_id: FuncId, move captures: sequence(Value), cleanup: FuncId) 
 }
 
 op ClosureLocal(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Callable>) {
-    traps = possible;
     memory = all;
     mnemonic = "closure-local";
     storage = Closure { func_id, captures };
@@ -49,7 +47,6 @@ op ClosureLocal(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Ca
 }
 
 op ClosureShared(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Callable>) {
-    traps = possible;
     memory = all;
     mnemonic = "closure-shared";
     storage = Closure { func_id, captures };
@@ -195,33 +192,30 @@ op IMulWithOverflow<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>
     ]
 ; }
 
+// Division and remainder require a nonzero divisor. The signed forms also
+// exclude signed MIN and -1 as an operand pair. Invalid inputs are UB.
 op IDivS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
     mnemonic = "idiv-s";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.sdiv(lhs, rhs);
-    traps = possible;
 }
 
 op IDivU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
     mnemonic = "idiv-u";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.udiv(lhs, rhs);
-    traps = possible;
 }
 
 op IRemS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
     mnemonic = "irem-s";
     storage = Binary { args: [lhs, rhs] };
-    // Signed MIN % -1 returns zero; unlike signed division it does not trap.
     semantics = bv.srem(lhs, rhs);
-    traps = possible;
 }
 
 op IRemU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
     mnemonic = "irem-u";
     storage = Binary { args: [lhs, rhs] };
     semantics = bv.urem(lhs, rhs);
-    traps = possible;
 }
 
 op FAdd<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
@@ -435,7 +429,6 @@ op FloatToIntSatU<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
 }
 
 op FloatToIntS<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
-    traps = possible;
     mnemonic = "float-to-int-s";
     storage = Unary { arg };
     verify {
@@ -444,7 +437,6 @@ op FloatToIntS<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
 }
 
 op FloatToIntU<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
-    traps = possible;
     mnemonic = "float-to-int-u";
     storage = Unary { arg };
     verify {
@@ -496,8 +488,8 @@ op PtrToInt(arg: Value<Type::PTR>) -> Value<ScalarInteger> {
     storage = PtrToInt { arg };
 }
 
+// Ordinary memory accesses require a valid address for each accessed byte.
 op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
-    traps = possible;
     memory = read;
     mnemonic = "load";
     storage = Load { ptr, offset, flags };
@@ -505,7 +497,6 @@ op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<A
 }
 
 op Store(ptr: Value<Type::PTR>, value: Value<Any>, offset: u32, flags: MemFlags) -> () {
-    traps = possible;
     memory = write;
     mnemonic = "store";
     storage = Store { ptr, value, offset, flags };
@@ -618,7 +609,6 @@ op Select<T: Any>(condition: Value<Type::BOOL>, if_true: Value<T>, if_false: Val
 }
 
 op Unreachable() -> () {
-    traps = always;
     control = abort;
     mnemonic = "unreachable";
     storage = Unreachable {};
@@ -648,17 +638,15 @@ op Shuffle<T: Vector, M: Integer & Vector, R: Vector>(lhs: Value<T>, rhs: Value<
 }
 
 op InsertElement<T: Vector>(vector: Value<T>, scalar: Value<element(T)>, index: Value<ScalarInteger>) -> Value<T> {
-    traps = possible;
     mnemonic = "insertelement";
     storage = Ternary { args: [vector, scalar, index] };
-    // Unsigned index; an index >= the runtime lane count traps.
+    // The unsigned index must be less than the runtime lane count.
 }
 
 op ExtractElement<T: Vector>(vector: Value<T>, index: Value<ScalarInteger>) -> Value<element(T)> {
-    traps = possible;
     mnemonic = "extractelement";
     storage = Binary { args: [vector, index] };
-    // Unsigned index; an index >= the runtime lane count traps.
+    // The unsigned index must be less than the runtime lane count.
 }
 
 // Add in increasing lane order, starting at lane 0 (no extra zero).
@@ -696,7 +684,6 @@ op ReduceXor<T: Integer & Vector | vectors(Type::BOOL)>(arg: Value<T>) -> Value<
 }
 
 op LoadStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, mem: VectorMemOptions) -> (result: Value<Vector>) {
-    traps = possible;
     memory = read;
     mnemonic = "load-stride";
     storage = VectorLoadStrided { ptr, stride, ext: mem };
@@ -709,7 +696,6 @@ op LoadStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, mem: VectorMe
 }
 
 op StoreStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, value: Value<Vector>, mem: VectorMemOptions) -> () {
-    traps = possible;
     memory = write;
     mnemonic = "store-stride";
     storage = VectorStoreStrided { args: [ptr, stride, value], ext: mem };
@@ -722,7 +708,6 @@ op StoreStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, value: Value
 }
 
 op Gather<T: Integer & Vector, U: Vector>(ptr: Value<Type::PTR>, index: Value<T>, mem: VectorMemOptions) -> Value<U> {
-    traps = possible;
     memory = read;
     mnemonic = "gather";
     storage = VectorGather { ptr, index, ext: mem };
@@ -736,7 +721,6 @@ op Gather<T: Integer & Vector, U: Vector>(ptr: Value<Type::PTR>, index: Value<T>
 }
 
 op Scatter<T: Integer & Vector, U: Vector>(ptr: Value<Type::PTR>, index: Value<T>, value: Value<U>, mem: VectorMemOptions) -> () {
-    traps = possible;
     memory = write;
     mnemonic = "scatter";
     storage = VectorScatter { args: [ptr, index, value], ext: mem };

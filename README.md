@@ -54,6 +54,11 @@ cargo run --release -p veloc-wasm --bin veloc-wasm -- run \
   path/to/module.wasm --strategy interpreter --memory-checks guarded
 ```
 
+Software checks preserve out-of-bounds traps even when the loaded value is unused.
+Guarded mode relies on the machine access to fault. Optimization may remove or
+narrow the access, so a Wasm access that would be out of bounds can complete
+without a trap. Use software checks when these traps must be observable.
+
 Guarded execution installs process-wide SIGSEGV/SIGBUS handlers. Native faults
 return through a C trap boundary; interpreter guards require Rust unwinding.
 RV64 guarded stores probe their last byte before writing, preserving memory

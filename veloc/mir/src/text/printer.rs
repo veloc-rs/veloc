@@ -84,9 +84,6 @@ impl<'a> InstPrinter<'a> {
         if flags.is_volatile() {
             f.write_str(".volatile")?;
         }
-        if flags.is_notrap() {
-            f.write_str(".notrap")?;
-        }
         if flags.alignment() != 1 {
             write!(f, ".align{}", flags.alignment())?;
         }

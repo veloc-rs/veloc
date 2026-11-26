@@ -145,9 +145,7 @@ impl<'a, 'b> Function<'a, 'b> {
         self.scopes.iter().rev().find_map(|s| s.get(name)).cloned()
     }
     fn flags(ty: &CType) -> MemFlags {
-        MemFlags::new()
-            .with_notrap(true)
-            .with_volatile(matches!(ty, CType::Volatile(_)))
+        MemFlags::new().with_volatile(matches!(ty, CType::Volatile(_)))
     }
     fn read(&mut self, place: Place) -> Result<TypedValue> {
         if matches!(place.ty.plain(), CType::Array(..)) {

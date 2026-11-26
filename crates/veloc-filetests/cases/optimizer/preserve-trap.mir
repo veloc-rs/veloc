@@ -1,5 +1,5 @@
 // run: o1
-// check: : i32 = idiv-s v0, i32(0)
+// not: idiv-s
 // not: imul
 // check: return i32(0)
 local function trap(v0: i32) -> i32
@@ -8,64 +8,47 @@ block0():
   v3: i32 = imul v2, i32(0)
   return v3
 
-// ----- erase-only-the-proven-division
+// ----- unused-divisions
 // run: o1
 // check: block0():
-// not: idiv-u.notrap
-// check: = idiv-u
-// not: idiv-u.notrap
+// not: idiv-u
 // check: return
-export function main(x: i32, d: i32, safe: i32) -> void
+export function main(x: i32, d: i32) -> void
 block0():
-  checked: i32 = idiv-u.notrap x, safe
-  unknown: i32 = idiv-u x, d
+  unused: i32 = idiv-u x, d
   return
-
-// ----- notrap-call-may-write
-// run: o1
-// check: store.notrap
-// check: call.notrap mutate
-// check: = load.notrap
-// check: return
-import function mutate(ptr) -> void
-export function main(p: ptr) -> i32
-block0():
-  store.notrap i32(1), p, offset=0
-  call.notrap mutate(p) : (ptr) -> void
-  val: i32 = load.notrap p, offset=0
-  return val
 
 // ----- declaration-notrap-call-may-write
 // run: o1
-// check: store.notrap
+// check: store
 // check: call mutate
-// check: = load.notrap
+// check: = load
 // check: return
 import function mutate(ptr) -> void notrap
 export function main(p: ptr) -> i32
 block0():
-  store.notrap i32(1), p, offset=0
+  store i32(1), p, offset=0
   call mutate(p) : (ptr) -> void
-  val: i32 = load.notrap p, offset=0
+  val: i32 = load p, offset=0
   return val
 
-// ----- forward-across-live-notrap-division
+// ----- forward-across-live-division
 // run: o1
-// check: store.notrap i32(9)
-// check: = idiv-u.notrap
+// check: store i32(9)
+// check: = idiv-u
 // not: load
 // check: return
 export function main(p: ptr, x: i32, nonzero: i32) -> (i32, i32)
 block0():
-  store.notrap i32(9), p, offset=0
-  q: i32 = idiv-u.notrap x, nonzero
-  val: i32 = load.notrap p, offset=0
+  store i32(9), p, offset=0
+  q: i32 = idiv-u x, nonzero
+  val: i32 = load p, offset=0
   return q, val
 
 // ----- keep-division-under-its-guard
 // run: o1
 // check: br
-// check: = idiv-u.notrap
+// check: = idiv-u
 export function main(n: i32, d: i32) -> i32
 block0():
   zero: bool = icmp eq d, i32(0)
@@ -73,5 +56,5 @@ block0():
 block1():
   return i32(0)
 block2():
-  q: i32 = idiv-u.notrap n, d
+  q: i32 = idiv-u n, d
   return q

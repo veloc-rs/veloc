@@ -10,7 +10,6 @@ bitflags::bitflags! {
         const COMMUTATIVE = 1 << 1;
         const ASSOCIATIVE = 1 << 3;
         const IDEMPOTENT = 1 << 4;
-        const MAY_TRAP = 1 << 2;
         const ABORT = 1 << 5;
     }
 
@@ -76,7 +75,7 @@ impl Region {
     }
 }
 
-/// Per-access alignment, volatility, validity and alias region. Alignment is a conservative power-of-two
+/// Per-access alignment, volatility and alias region. Alignment is a conservative power-of-two
 /// guarantee, saturated at the largest value supported by the compact encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
@@ -85,7 +84,6 @@ pub struct MemFlags(u16);
 impl MemFlags {
     pub const ALIGNMENT_LOG2_MAX: u16 = 15;
     const VOLATILE: u16 = 1 << 4;
-    const NOTRAP: u16 = 1 << 5;
 
     pub const fn empty() -> Self {
         Self(0)
@@ -121,15 +119,6 @@ impl MemFlags {
     pub const fn with_volatile(self, value: bool) -> Self {
         Self((self.0 & !Self::VOLATILE) | ((value as u16) << 4))
     }
-    /// The complete access is valid whenever execution reaches it. This does
-    /// not imply immutable memory or permit moving it across writes or frees.
-    pub const fn is_notrap(self) -> bool {
-        self.0 & Self::NOTRAP != 0
-    }
-    pub const fn with_notrap(self, value: bool) -> Self {
-        Self((self.0 & !Self::NOTRAP) | ((value as u16) << 5))
-    }
-
     pub const fn region(self) -> Region {
         Region((self.0 >> 8) as u8)
     }

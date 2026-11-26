@@ -62,14 +62,16 @@ fn operand_folds_support_results_outside_scalar_constants() {
 }
 
 #[test]
-fn scalar_only_folding_preserves_traps_and_multiple_results() {
+fn scalar_folding_handles_division_and_multiple_results() {
     let fields = InstFields::from_opcode(Opcode::IDivS).unwrap();
     assert!(can_fold(Opcode::IDivS));
-    assert!(
-        fold(&fields, &[0usize, 1], &[Type::I32], |i| {
-            Some(ScalarConst::from([1i32, 0][i]))
-        })
-        .is_none()
+    assert_eq!(
+        fold(&fields, &[0usize, 1], &[Type::I32], |i| Some(
+            ScalarConst::from([8i32, 2][i])
+        ))
+        .unwrap()
+        .as_slice(),
+        &[Fold::Constant(ScalarConst::from(4i32))]
     );
     let fields = InstFields::from_opcode(Opcode::IAddWithOverflow).unwrap();
     let results = [Type::I32, Type::BOOL];

@@ -5,7 +5,7 @@ use wasmparser::{BinaryReaderError, MemArg, Operator};
 
 // Descriptors and other runtime storage use the default region. All linear
 // accesses share one separate region because imports can name the same memory.
-const DESCRIPTOR_FLAGS: MemFlags = MemFlags::new().with_notrap(true);
+const DESCRIPTOR_FLAGS: MemFlags = MemFlags::new();
 const LINEAR_FLAGS: MemFlags = MemFlags::new().with_region(Region(2));
 
 // Wasm scalar linear-memory representation, not the native pointer/ABI layout.
@@ -130,7 +130,7 @@ impl<'a> WasmTranslator<'a> {
                 let (_, len_var) = self.memory_vars[mem as usize];
                 let size_bytes = self.builder.use_var(len_var);
                 let page_size = self.builder.ins().i64const((65536) as i64);
-                let size_pages = self.builder.ins().idiv_u_notrap(size_bytes, page_size);
+                let size_pages = self.builder.ins().idiv_u(size_bytes, page_size);
                 let size_i32 = self.builder.ins().wrap(size_pages, VelocType::I32);
                 self.stack.push(size_i32);
             }
@@ -304,8 +304,7 @@ impl<'a> WasmTranslator<'a> {
         );
         // A RISC-V unaligned store may write the accessible prefix before a
         // guard-page fault. Probe its last byte first so a trapping Wasm store
-        // cannot modify memory. A possibly trapping read survives DCE and keeps
-        // memory order; a dominating successful read may prove it redundant.
+        // cannot modify memory. Keep the probe observable even when its value is unused.
         // Linear memory is readable whenever it is writable.
         if self.probe_guarded_stores && ty != VelocType::I8 {
             let size = LINEAR_MEMORY_LAYOUT
@@ -329,9 +328,12 @@ impl<'a> WasmTranslator<'a> {
                 );
                 (base, 0)
             };
-            self.builder
-                .ins()
-                .load(base, offset, LINEAR_FLAGS, VelocType::I8);
+            self.builder.ins().load(
+                base,
+                offset,
+                LINEAR_FLAGS.with_volatile(true),
+                VelocType::I8,
+            );
         }
         self.builder
             .ins()

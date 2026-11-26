@@ -6,7 +6,7 @@ mod offline {
 // cargo run -q -p veloc-optimizer --example semantic_check -- overflow | z3 -in
 // cargo run -q -p veloc-optimizer --example semantic_check -- overflow --broken | z3 -in
 use veloc_mir::{IntCC, Opcode};
-use veloc_semantics::{BvOp, Error, Expr, Function, IntPredicate, Sort, Trap, equivalence_query};
+use veloc_semantics::{BvOp, Error, Expr, Function, IntPredicate, Sort, equivalence_query};
 
 fn main() -> Result<(), Error> {
     let specs = offline::SPECS;
@@ -27,25 +27,16 @@ fn main() -> Result<(), Error> {
     let (source, target) = match mode {
         "division" => {
             let source = program(Opcode::IDivS).instantiate(&[sort, sort], &[sort], &[])?;
-            // Widen before division: overflow is exactly a quotient that cannot
-            // be reconstructed by truncation followed by sign extension.
-            let quotient = Expr::apply(
-                BvOp::SDiv,
-                &[x.sign_extend(bits * 2)?, y.sign_extend(bits * 2)?],
-            )?;
-            let result = quotient.extract(bits - 1, 0)?;
-            let zero = y.compare(&Expr::bv(bits, 0)?, IntPredicate::new(false, 2))?;
-            let overflow =
-                quotient.compare(&result.sign_extend(bits * 2)?, IntPredicate::new(false, 5))?;
-            let traps = if args.iter().any(|a| a == "--broken") {
-                vec![(zero, Trap::DivisionByZero)]
+            let op = if args.iter().any(|a| a == "--broken") {
+                BvOp::UDiv
             } else {
-                vec![
-                    (zero, Trap::DivisionByZero),
-                    (overflow, Trap::IntegerOverflow),
-                ]
+                BvOp::SDiv
             };
-            (source, Function::with_traps([sort, sort], [result], traps)?)
+            let wide = Expr::apply(op, &[x.sign_extend(bits * 2)?, y.sign_extend(bits * 2)?])?;
+            (
+                source,
+                Function::new([sort, sort], wide.extract(bits - 1, 0)?)?,
+            )
         }
         "shift" => {
             let source = program(Opcode::IShrS).instantiate(&[sort, sort], &[sort], &[])?;

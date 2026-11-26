@@ -1,52 +1,51 @@
 // ----- roundtrip
 // run: roundtrip
-// check: = call.notrap target(
 // check: = call target(
-// check: = call-indirect.notrap
-// check: = idiv-u.notrap
-// check: = irem-s.notrap
+// check: = call-indirect
+// check: = idiv-u
+// check: = irem-s
 // check: mask=
 // check: import function target(i32) -> i32 notrap
 local function sites(fp: ptr, x: i32, lanes: i32<4>, mask: mask<4>) -> i32
 block0():
-  a: i32 = call.notrap target(x) : (i32) -> i32
-  b: i32 = call target(a) : (i32) -> i32
-  c: i32 = call-indirect.notrap fp(b) : (i32) -> i32
-  q: i32 = idiv-u.notrap c, i32(2)
-  v: i32<4> = irem-s.notrap lanes, i32<4>(0x02000000020000000200000002000000), mask=mask
+  b: i32 = call target(x) : (i32) -> i32
+  c: i32 = call-indirect fp(b) : (i32) -> i32
+  q: i32 = idiv-u c, i32(2)
+  v: i32<4> = irem-s lanes, i32<4>(0x02000000020000000200000002000000), mask=mask
   return q
 import function target(i32) -> i32 notrap
 
 // ----- memory
 // run: roundtrip
-// check: = load.notrap.align4.region7
-// check: store.volatile.notrap.align4.region7
-// check: = load-stride.notrap.align4.region7
-// check: store-stride.notrap
-// check: = gather.notrap
-// check: scatter.volatile.notrap.region7
+// check: = load.align4.region7
+// check: store.volatile.align4.region7
+// check: = load-stride.align4.region7
+// check: store-stride
+// check: = gather
+// check: scatter.volatile.region7
 local function memory(ptr: ptr, stride: i32, index: i32<4>, mask: mask<4>)
 block0():
-  scalar: i32 = load.align4.region7.notrap ptr, offset=4
-  store.region7.notrap.volatile.align4 scalar, ptr, offset=8
-  lanes: i32<4> = load-stride.align4.notrap.region7 ptr, stride=stride, offset=0, mask=mask
-  store-stride.notrap lanes, ptr, stride=stride, offset=16
-  gathered: i32<4> = gather.notrap ptr, index=index, scale=4, offset=0
-  scatter.region7.volatile.notrap gathered, ptr, index=index, scale=4, offset=16, mask=mask
+  scalar: i32 = load.align4.region7 ptr, offset=4
+  store.region7.volatile.align4 scalar, ptr, offset=8
+  lanes: i32<4> = load-stride.align4.region7 ptr, stride=stride, offset=0, mask=mask
+  store-stride lanes, ptr, stride=stride, offset=16
+  gathered: i32<4> = gather ptr, index=index, scale=4, offset=0
+  scatter.region7.volatile gathered, ptr, index=index, scale=4, offset=16, mask=mask
   return
 
-// ----- unsupported-opcode
+// ----- direct-call-rejects-notrap
 // run: parse-error
-// check: flags are not supported
+// check: unknown opcode suffix `notrap`
+import function target(i32) -> i32 notrap
 local function main(x: i32) -> i32
 block0():
-  sum: i32 = iadd.notrap x, x
-  return sum
+  result: i32 = call.notrap target(x) : (i32) -> i32
+  return result
 
-// ----- memory-only-suffix
+// ----- indirect-call-rejects-notrap
 // run: parse-error
-// check: only .notrap is supported
-local function main(x: i32) -> i32
+// check: unknown opcode suffix `notrap`
+local function main(fp: ptr, x: i32) -> i32
 block0():
-  q: i32 = idiv-u.volatile.notrap x, i32(2)
-  return q
+  result: i32 = call-indirect.notrap fp(x) : (i32) -> i32
+  return result

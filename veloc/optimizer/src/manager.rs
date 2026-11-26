@@ -80,8 +80,8 @@ impl PassManager {
         pm.add_function_pass(crate::passes::loop_memory::LoopMemoryPass);
         pm.add_function_pass(crate::passes::load_cse::LoadCsePass);
         pm.add_function_pass(crate::passes::rotate::RotatePass);
-        // Expression extraction canonicalizes addresses before validity queries.
-        pm.add_function_pass(crate::passes::memory_validity::MemoryValidityPass);
+        // Revisit memory accesses after address canonicalization and loop rewrites.
+        pm.add_function_pass(crate::passes::MemoryPass);
         pm.add_function_pass(crate::passes::bits::BitsPass);
         pm.add_function_pass(crate::passes::predicates::PredicatePass);
         pm.add_function_pass(crate::passes::threading::ThreadingPass);

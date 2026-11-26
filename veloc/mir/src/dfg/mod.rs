@@ -2,6 +2,7 @@ use super::inst::{Inst, InstFields, InstView, InstWriter, StoredInst};
 use crate::constant::Constant;
 use crate::types::{Block, Type, Value, ValueData, ValueDef, ValueList, ValueListPool};
 use alloc::boxed::Box;
+use core::borrow::Borrow;
 use cranelift_entity::{PrimaryMap, SecondaryMap};
 use hashbrown::HashMap;
 
@@ -256,11 +257,12 @@ impl DataFlowGraph {
     }
 
     /// Erase a closed set, including mutually dependent dead instructions.
-    pub(crate) fn remove_insts(&mut self, insts: &[Inst]) {
+    pub(crate) fn remove_insts(&mut self, insts: impl IntoIterator<Item = impl Borrow<Inst>>) {
+        let insts = insts.into_iter().map(|inst| *inst.borrow());
         #[cfg(debug_assertions)]
-        {
-            let dead: hashbrown::HashSet<_> = insts.iter().copied().collect();
-            for &inst in insts {
+        let insts = {
+            let dead: hashbrown::HashSet<_> = insts.collect();
+            for &inst in &dead {
                 for &value in self.inst_results(inst) {
                     assert!(
                         self.uses(value).all(|site| dead.contains(&site.inst())),
@@ -268,8 +270,9 @@ impl DataFlowGraph {
                     );
                 }
             }
-        }
-        for &inst in insts {
+            dead
+        };
+        for inst in insts {
             self.clear_inst(inst);
         }
     }

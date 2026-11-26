@@ -1,6 +1,6 @@
 // run: roundtrip
 // check: (sum.$(id29=v\d+): i32, overflow.$(id30=v\d+): bool) = iadd-with-overflow $(id1=v\d+), i32(-7)
-// check: = load.volatile.notrap.align4.region255
+// check: = load.volatile.align4.region255
 // check: = shuffle
 // check: br-table $id1, [block3($(id22=v\d+))], block3($(id11=v\d+))
 global counter: i32 (local)
@@ -17,7 +17,7 @@ block0():
   v13: bool = fcmp eq v2, f32(0x3f800000)
   v14: i32 = load.align4 v0, offset=4
   store.volatile v14, v0, offset=8
-  v15: i32 = load.region255.align4.volatile.notrap ss0, offset=4
+  v15: i32 = load.region255.align4.volatile ss0, offset=4
   store.region255 v15, ss0, offset=8
   v16: ptr = ptr-offset ss0, 0
   v17: ptr = ptr-offset v0, -4

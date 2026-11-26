@@ -92,8 +92,7 @@ pub(crate) struct Slot {
 }
 
 pub(crate) struct Op {
-    pub allows_notrap: bool,
-    pub trap_callee: Option<String>,
+    pub traps: Traps,
     pub memory_callee: Option<String>,
     pub declaration: crate::syntax::Signature,
     pub offset: usize,
@@ -120,11 +119,15 @@ pub(crate) enum Projection {
 }
 
 impl Op {
+    pub(crate) fn may_trap(&self) -> bool {
+        !matches!(self.traps, Traps::Never)
+    }
+
     /// A normal-result recipe alone cannot evaluate a potentially trapping operation.
     pub(crate) fn executable_semantics(&self) -> Option<&Semantic> {
         self.semantics
             .as_ref()
-            .filter(|sem| !self.traits.contains("MAY_TRAP") || !sem.traps.is_empty())
+            .filter(|sem| !self.may_trap() || !sem.traps.is_empty())
     }
 
     pub(crate) fn bindings(&self) -> &BTreeMap<String, Binding> {
@@ -151,22 +154,35 @@ pub(crate) enum Binding {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Control {
+    Call,
     Terminator,
     Abort,
 }
 
 impl Control {
+    pub(crate) fn is_terminator(self) -> bool {
+        matches!(self, Self::Terminator | Self::Abort)
+    }
+
     pub(crate) fn parse(source: &str, node: &Node) -> Result<Self, Error> {
         match &node.kind {
+            Kind::Name(name) if name == "call" => Ok(Self::Call),
             Kind::Name(name) if name == "terminator" => Ok(Self::Terminator),
             Kind::Name(name) if name == "abort" => Ok(Self::Abort),
             _ => Err(Error::at(
                 source,
                 node.offset,
-                "expected terminator or abort",
+                "expected call, terminator or abort",
             )),
         }
     }
+}
+
+pub(crate) enum Traps {
+    Never,
+    Possible,
+    Always,
+    Callee(String),
 }
 
 pub(crate) enum SignatureSource {
@@ -321,14 +337,11 @@ impl Definitions {
                 return Err(fail(format!("invalid mnemonic `{}`", op.mnemonic)));
             }
             let method = op.method_name();
-            let annotated = op.allows_notrap.then(|| format!("{method}_notrap"));
-            for name in std::iter::once(method).chain(annotated) {
-                if let Some(previous) = methods.insert(name.clone(), &op.mnemonic) {
-                    return Err(fail(format!(
-                        "mnemonics `{previous}` and `{}` produce the same method name `{name}`",
-                        op.mnemonic
-                    )));
-                }
+            if let Some(previous) = methods.insert(method.clone(), &op.mnemonic) {
+                return Err(fail(format!(
+                    "mnemonics `{previous}` and `{}` produce the same method name `{method}`",
+                    op.mnemonic
+                )));
             }
             if let storage::Strategy::Packed = self.storage.strategy {
                 let format = self

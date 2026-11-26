@@ -81,7 +81,12 @@ fn protected_memory_traps_and_grows() {
         out_of_bounds(load8.call(&mut store, &[Val::I32(65536)]));
         out_of_bounds(load32.call(&mut store, &[Val::I32(65533)]));
         out_of_bounds(store32.call(&mut store, &[Val::I32(65534)]));
-        out_of_bounds(discard.call(&mut store, &[Val::I32(65536)]));
+        let result = discard.call(&mut store, &[Val::I32(65536)]);
+        if opt_level == 0 {
+            out_of_bounds(result);
+        } else {
+            assert!(result.unwrap().is_empty());
+        }
         out_of_bounds(large_offset.call(&mut store, &[]));
         assert_eq!(
             load8.call(&mut store, &[Val::I32(65535)]).unwrap(),
@@ -124,7 +129,7 @@ fn imported_memory_and_start_function_are_protected() {
         r#"
         (module
           (memory 1)
-          (func $start i32.const 65536 i32.load8_u drop)
+          (func $start i32.const 65536 i32.const 1 i32.store8)
           (start $start))
         "#,
     )
@@ -139,14 +144,14 @@ fn imported_memory_and_start_function_are_protected() {
 #[test]
 fn software_mode_keeps_wasm_bounds_checks() {
     let wasm = wat::parse_str(
-        "(module (memory 1) (func (export \"load\") (result i32) i32.const 65536 i32.load8_u))",
+        "(module (memory 1) (func (export \"load\") i32.const 65536 i32.load8_u drop))",
     )
     .unwrap();
     let module = Module::new(&engine(false, 1), &wasm).unwrap();
     let mut store = Store::new();
     let instance = Linker::new().instantiate(&mut store, module).unwrap();
     let load = instance.get_func(&store, "load").unwrap();
-    assert!(load.call(&mut store, &[]).is_err());
+    out_of_bounds(load.call(&mut store, &[]));
 }
 
 #[test]

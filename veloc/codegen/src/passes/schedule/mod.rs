@@ -1,7 +1,7 @@
 //! Local list scheduling with register dependencies and pressure control.
 //!
 //! Only operations explicitly declared movable by the target enter a region.
-//! Nontrapping reads may reorder; writes retain order with every memory access.
+//! Alias dependencies preserve the order of conflicting accesses.
 //! Volatile, unknown and control effects remain barriers.
 //! Selection has already resolved hardware state to physical register operands.
 use crate::analysis::{LivenessInfo, RegSet};
